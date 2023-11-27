@@ -2,13 +2,15 @@ use actix_web::{dev::Server, middleware::Logger, web, App, HttpServer};
 use clap::Parser;
 use ethers::{
     providers::{Http, Middleware, Provider},
-    types::TransactionRequest,
+    types::{Address, TransactionRequest},
     utils::keccak256,
 };
 use eyre::Result;
 use std::{
     collections::HashMap,
+    str::FromStr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::Notify;
 
@@ -16,8 +18,8 @@ use crate::routes::{get_data, get_status, post_data};
 
 mod routes;
 
-const MAX_BLOB_DATA_LEN: usize = 131072; // 32 * 4096;
-const MIN_BLOB_DATA_TO_PUBLISH: usize = 104857; // 80%
+const MAX_BLOB_DATA_LEN: usize = 32 * 4096; // 32 * 4096;
+const MIN_BLOB_DATA_TO_PUBLISH: usize = (80 * MAX_BLOB_DATA_LEN) / 100; // 80%
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 #[derive(Parser, Debug)]
@@ -34,6 +36,10 @@ struct Args {
     /// JSON RPC endpoint for an ethereum execution node
     #[arg(long)]
     eth_provider: String,
+
+    /// JSON RPC polling interval in miliseconds, used for testing
+    #[arg(long)]
+    eth_provider_interval: Option<u64>,
 }
 
 impl Args {
@@ -60,7 +66,7 @@ struct BlobTx {
 }
 
 struct PublishConfig {
-    l1_inbox_address: String,
+    l1_inbox_address: Address,
 }
 
 struct AppData {
@@ -121,10 +127,14 @@ async fn blob_sender_task(app_data: Arc<AppData>) {
 // TODO: write optimizer algo to find a better distribution
 // TODO: is ok to represent wei units as usize?
 fn select_next_blob_items(items: &DataIntents, _wei_per_byte: usize) -> Option<Vec<DataIntent>> {
+    // Sort items by data length
+    let mut items = items.values().collect::<Vec<_>>();
+    items.sort_by(|a, b| b.data.len().cmp(&a.data.len()));
+
     let mut intents_for_blob: Vec<&DataIntent> = vec![];
     let mut used_len = 0;
 
-    for item in items.values() {
+    for item in items {
         if used_len + item.data.len() > MAX_BLOB_DATA_LEN {
             break;
         }
@@ -143,6 +153,7 @@ fn select_next_blob_items(items: &DataIntents, _wei_per_byte: usize) -> Option<V
 fn construct_blob_tx(next_blob_items: Vec<DataIntent>) -> BlobTx {
     let mut data = vec![];
     for mut item in next_blob_items.into_iter() {
+        log::warn!("appending {:?}", item.data.get(0));
         data.append(&mut item.data);
     }
 
@@ -159,15 +170,24 @@ async fn send_blob_tx(
 
     // craft the tx
     let tx = TransactionRequest::new()
-        .to(&publish_config.l1_inbox_address)
+        .to(publish_config.l1_inbox_address)
         .value(0)
         .data(blob_tx.data)
         .from(from);
 
     // broadcast it via the eth_sendTransaction API
-    let tx = provider.send_transaction(tx, None).await?.await?;
+    let tx = provider.send_transaction(tx, None).await?;
 
-    log::info!("Sent blob transaction {}", serde_json::to_string(&tx)?);
+    log::info!(
+        "Sent blob transaction {} {:?}",
+        &tx.tx_hash().to_string(),
+        &tx
+    );
+
+    let tx = tx.confirmations(0);
+    let receipt = tx.await?;
+
+    log::info!("Confirmed blob transaction {:?}", &receipt);
 
     Ok(())
 }
@@ -183,13 +203,22 @@ async fn main() -> Result<()> {
 async fn run_app(args: Args) -> Result<Server> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
+    let provider = Provider::<Http>::try_from(&args.eth_provider)?;
+
+    // Pass interval option
+    let provider = if let Some(interval) = args.eth_provider_interval {
+        provider.interval(Duration::from_millis(interval))
+    } else {
+        provider
+    };
+
     let app_data = Arc::new(AppData {
         notify: <_>::default(),
         queue: <_>::default(),
         publish_config: PublishConfig {
-            l1_inbox_address: ADDRESS_ZERO.to_string(),
+            l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
         },
-        provider: Provider::<Http>::try_from(&args.eth_provider)?,
+        provider,
     });
 
     let eth_client_version = app_data.provider.client_version().await?;
@@ -225,38 +254,12 @@ async fn run_app(args: Args) -> Result<Server> {
 
 #[cfg(test)]
 mod tests {
-    use ethers::core::utils::Anvil;
+    use ethers::{core::utils::Anvil, types::Transaction};
     use eyre::Result;
     use std::time::Duration;
     use tokio::time::sleep;
 
     use crate::{routes::PostDataIntent, *};
-
-    async fn post_data_intent(base_url: &str, from: &str, data: Vec<u8>, id: &str) {
-        // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
-        let response = reqwest::Client::new()
-            .post(&format!("{}/data", &base_url))
-            .json(&PostDataIntent {
-                from: from.into(),
-                data,
-                max_price: 1,
-            })
-            .send()
-            .await
-            .unwrap();
-        assert!(response.status().is_success());
-        log::info!("posted data intent: {}", id);
-    }
-
-    async fn get_data_intents(base_url: &str) -> Vec<PostDataIntent> {
-        let response = reqwest::Client::new()
-            .get(&format!("{}/data", &base_url))
-            .send()
-            .await
-            .unwrap();
-        assert!(response.status().is_success());
-        response.json().await.unwrap()
-    }
 
     #[tokio::test]
     async fn run_blob_sharing_service() -> Result<()> {
@@ -266,42 +269,134 @@ mod tests {
             port: 8000,
             bind_address: "127.0.0.1".to_string(),
             eth_provider: anvil.endpoint(),
+            // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
+            eth_provider_interval: Some(1),
         };
         let base_url = format!("http://{}", args.address());
 
         let server = run_app(args).await?;
         let _ = tokio::spawn(server);
 
-        // Test health of server
-        // $ curl -vv localhost:8000/health
-        let response = reqwest::Client::new()
-            .get(&format!("{}/health", &base_url))
-            .send()
-            .await
-            .unwrap();
-        assert!(response.status().is_success());
-        log::info!("health ok");
+        let testing_harness = TestingHarness::new(base_url, anvil.endpoint());
+
+        testing_harness.test_health().await;
+
+        // monitor chain
+        print_state(anvil.endpoint()).await;
 
         // Submit data intent
         let from = "0x0000000000000000000000000000000000000000".to_string();
         let data_1 = vec![0xaa_u8; MAX_BLOB_DATA_LEN / 2];
-        let data_2 = vec![0xbb_u8; MAX_BLOB_DATA_LEN / 2];
+        let data_2 = vec![0xbb_u8; MAX_BLOB_DATA_LEN / 2 - 1];
 
         // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
-        post_data_intent(&base_url, &from, data_1, "data_intent_1").await;
+        testing_harness
+            .post_data_intent(&from, data_1.clone(), "data_intent_1")
+            .await;
 
         // Check data intent is stored
-        let intents = get_data_intents(&base_url).await;
+        let intents = testing_harness.get_data_intents().await;
         assert_eq!(intents.len(), 1);
 
-        post_data_intent(&base_url, &from, data_2, "data_intent_2").await;
+        testing_harness
+            .post_data_intent(&from, data_2.clone(), "data_intent_2")
+            .await;
 
         sleep(Duration::from_millis(100)).await;
 
         // After sending enough intents the blob transaction should be emitted
-        let intents = get_data_intents(&base_url).await;
+        let intents = testing_harness.get_data_intents().await;
         assert_eq!(intents.len(), 0);
 
+        testing_harness.wait_for_block(1).await;
+        let tx = testing_harness.get_block_first_tx(1).await;
+        let expected_data = [data_1, data_2].concat();
+        // Assert correctly constructed transaction
+        assert_eq!(hex::encode(&tx.input), hex::encode(expected_data));
+        assert_eq!(tx.to, Some(Address::from_str(ADDRESS_ZERO).unwrap()));
+
         Ok(())
+    }
+
+    struct TestingHarness {
+        client: reqwest::Client,
+        base_url: String,
+        eth_provider: Provider<Http>,
+    }
+
+    impl TestingHarness {
+        fn new(api_base_url: String, eth_provider_url: String) -> Self {
+            let provider = Provider::<Http>::try_from(&eth_provider_url).unwrap();
+            let provider = provider.interval(Duration::from_millis(1));
+
+            Self {
+                client: reqwest::Client::new(),
+                base_url: api_base_url,
+                eth_provider: provider,
+            }
+        }
+
+        // Test health of server
+        // $ curl -vv localhost:8000/health
+        async fn test_health(&self) {
+            let response = self
+                .client
+                .get(&format!("{}/health", &self.base_url))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            log::info!("health ok");
+        }
+
+        // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
+        async fn post_data_intent(&self, from: &str, data: Vec<u8>, id: &str) {
+            let response = self
+                .client
+                .post(&format!("{}/data", &self.base_url))
+                .json(&PostDataIntent {
+                    from: from.into(),
+                    data,
+                    max_price: 1,
+                })
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            log::info!("posted data intent: {}", id);
+        }
+
+        async fn get_data_intents(&self) -> Vec<PostDataIntent> {
+            let response = self
+                .client
+                .get(&format!("{}/data", &self.base_url))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            response.json().await.unwrap()
+        }
+
+        async fn get_block_first_tx(&self, block_number: u64) -> Transaction {
+            let block = self
+                .eth_provider
+                .get_block_with_txs(block_number)
+                .await
+                .unwrap()
+                .expect("block should exist");
+            block.transactions.get(0).unwrap().clone()
+        }
+
+        async fn wait_for_block(&self, block_number: u64) {
+            while self.eth_provider.get_block_number().await.unwrap().as_u64() < block_number {
+                sleep(Duration::from_millis(5)).await;
+            }
+        }
+    }
+
+    async fn print_state(url: String) {
+        let provider = Provider::<Http>::try_from(&url).unwrap();
+        let block_num = provider.get_block_number().await.unwrap();
+        log::info!("block number {}", block_num);
     }
 }
