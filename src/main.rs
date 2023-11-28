@@ -1,8 +1,10 @@
 use actix_web::{dev::Server, middleware::Logger, web, App, HttpServer};
+use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
 use ethers::{
     providers::{Http, Middleware, Provider},
-    types::{Address, TransactionRequest},
+    signers::{coins_bip39::English, LocalWallet, MnemonicBuilder},
+    types::Address,
     utils::keccak256,
 };
 use eyre::Result;
@@ -14,13 +16,26 @@ use std::{
 };
 use tokio::sync::Notify;
 
-use crate::routes::{get_data, get_status, post_data};
+use crate::{
+    gas::GasConfig,
+    kzg::{construct_blob_tx, send_blob_tx},
+    routes::{get_data, get_status, post_data},
+    trusted_setup::TrustedSetup,
+};
 
+mod gas;
+mod kzg;
 mod routes;
+mod trusted_setup;
+mod tx_eip4844;
+mod tx_sidecar;
 
-const MAX_BLOB_DATA_LEN: usize = 32 * 4096; // 32 * 4096;
-const MIN_BLOB_DATA_TO_PUBLISH: usize = (80 * MAX_BLOB_DATA_LEN) / 100; // 80%
+/// Current encoding needs one byte per field element
+const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
+const MIN_BLOB_DATA_TO_PUBLISH: usize = (80 * MAX_USABLE_BLOB_DATA_LEN) / 100; // 80%
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
+
+pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -61,17 +76,15 @@ type DataIntentId = (String, DataHash);
 
 type DataIntents = HashMap<DataIntentId, DataIntent>;
 
-struct BlobTx {
-    data: Vec<u8>,
-}
-
 struct PublishConfig {
     l1_inbox_address: Address,
 }
 
 struct AppData {
+    kzg_settings: c_kzg::KzgSettings,
     queue: Mutex<DataIntents>,
     provider: Provider<Http>,
+    sender_wallet: LocalWallet,
     publish_config: PublishConfig,
     notify: Notify,
 }
@@ -110,10 +123,21 @@ async fn blob_sender_task(app_data: Arc<AppData>) {
                 }
             }
 
-            let blob_tx = construct_blob_tx(next_blob_items);
+            let gas_config = GasConfig::estimate(&app_data.provider)
+                .await
+                .expect("TODO: handle fetch error");
+
+            let blob_tx = construct_blob_tx(
+                &app_data.kzg_settings,
+                &app_data.publish_config,
+                &gas_config,
+                &app_data.sender_wallet,
+                next_blob_items,
+            )
+            .expect("TODO: handle bad data");
             // TODO: do not await here, spawn another task
             // TODO: monitor transaction, if gas is insufficient return data intents to the pool
-            send_blob_tx(&app_data.provider, &app_data.publish_config, blob_tx)
+            send_blob_tx(&app_data.provider, blob_tx)
                 .await
                 .unwrap_or_else(|e| {
                     log::error!("error sending blob transaction {:?}", e);
@@ -135,7 +159,7 @@ fn select_next_blob_items(items: &DataIntents, _wei_per_byte: usize) -> Option<V
     let mut used_len = 0;
 
     for item in items {
-        if used_len + item.data.len() > MAX_BLOB_DATA_LEN {
+        if used_len + item.data.len() > MAX_USABLE_BLOB_DATA_LEN {
             break;
         }
 
@@ -148,48 +172,6 @@ fn select_next_blob_items(items: &DataIntents, _wei_per_byte: usize) -> Option<V
     }
 
     return Some(intents_for_blob.into_iter().cloned().collect());
-}
-
-fn construct_blob_tx(next_blob_items: Vec<DataIntent>) -> BlobTx {
-    let mut data = vec![];
-    for mut item in next_blob_items.into_iter() {
-        log::warn!("appending {:?}", item.data.get(0));
-        data.append(&mut item.data);
-    }
-
-    BlobTx { data }
-}
-
-async fn send_blob_tx(
-    provider: &Provider<Http>,
-    publish_config: &PublishConfig,
-    blob_tx: BlobTx,
-) -> Result<()> {
-    let accounts = provider.get_accounts().await?;
-    let from = accounts[0];
-
-    // craft the tx
-    let tx = TransactionRequest::new()
-        .to(publish_config.l1_inbox_address)
-        .value(0)
-        .data(blob_tx.data)
-        .from(from);
-
-    // broadcast it via the eth_sendTransaction API
-    let tx = provider.send_transaction(tx, None).await?;
-
-    log::info!(
-        "Sent blob transaction {} {:?}",
-        &tx.tx_hash().to_string(),
-        &tx
-    );
-
-    let tx = tx.confirmations(0);
-    let receipt = tx.await?;
-
-    log::info!("Confirmed blob transaction {:?}", &receipt);
-
-    Ok(())
 }
 
 #[actix_web::main]
@@ -212,13 +194,30 @@ async fn run_app(args: Args) -> Result<Server> {
         provider
     };
 
+    // TODO: read as param
+    let phrase = "work man father plunge mystery proud hollow address reunion sauce theory bonus";
+    // Child key at derivation path: m/44'/60'/0'/0/{index}
+    let wallet = MnemonicBuilder::<English>::default()
+        .phrase(phrase)
+        .index(0u32)?
+        .build()?;
+
+    // TODO: Load properly
+    let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)?;
+    let kzg_settings = c_kzg::KzgSettings::load_trusted_setup(
+        &trusted_setup.g1_points(),
+        &trusted_setup.g2_points(),
+    )?;
+
     let app_data = Arc::new(AppData {
+        kzg_settings,
         notify: <_>::default(),
         queue: <_>::default(),
         publish_config: PublishConfig {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
         },
         provider,
+        sender_wallet: wallet,
     });
 
     let eth_client_version = app_data.provider.client_version().await?;
@@ -286,8 +285,8 @@ mod tests {
 
         // Submit data intent
         let from = "0x0000000000000000000000000000000000000000".to_string();
-        let data_1 = vec![0xaa_u8; MAX_BLOB_DATA_LEN / 2];
-        let data_2 = vec![0xbb_u8; MAX_BLOB_DATA_LEN / 2 - 1];
+        let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 2];
+        let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
 
         // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
         testing_harness
