@@ -27,6 +27,7 @@ sha2 = "0.10.7"
 alloy-primitives = "0.5"
 bytes = "1.5.0"
 alloy-rlp = "0.3.3"
+async-trait = "0.1.74"
 
 [dev-dependencies]
 hex = "0.4.3"

@@ -23,9 +23,11 @@ use crate::{
     trusted_setup::TrustedSetup,
 };
 
+mod blob_tx_data;
 mod gas;
 mod kzg;
 mod routes;
+mod sync;
 mod trusted_setup;
 mod tx_eip4844;
 mod tx_sidecar;
@@ -55,6 +57,10 @@ struct Args {
     /// JSON RPC polling interval in miliseconds, used for testing
     #[arg(long)]
     eth_provider_interval: Option<u64>,
+
+    /// First block for service to start accounting
+    #[arg(long, default_value_t = 0)]
+    starting_block: u64,
 }
 
 impl Args {
@@ -270,6 +276,7 @@ mod tests {
             eth_provider: anvil.endpoint(),
             // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
             eth_provider_interval: Some(1),
+            starting_block: 0,
         };
         let base_url = format!("http://{}", args.address());
 

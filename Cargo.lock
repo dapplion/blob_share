@@ -689,6 +689,7 @@ dependencies = [
  "actix-web",
  "alloy-primitives",
  "alloy-rlp",
+ "async-trait",
  "bytes",
  "c-kzg",
  "clap",
