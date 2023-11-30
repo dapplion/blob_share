@@ -1,18 +1,19 @@
 use std::{str::FromStr, time::Duration};
 
 use crate::{
-    geth::spawn_geth,
     helpers::{TestHarness, ADDRESS_ZERO},
+    spawn_geth,
 };
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
-use ethers::types::Address;
+use ethers::{
+    providers::{Http, Middleware, Provider},
+    types::Address,
+};
 use tokio::time::sleep;
 
 #[tokio::test]
-async fn test_geth() {
+async fn test_spawn_geth() {
     spawn_geth().await;
-    println!("### Geth initialized");
-    sleep(Duration::from_secs(60)).await;
 }
 
 #[tokio::test]

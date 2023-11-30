@@ -15,6 +15,8 @@ use tokio::time::sleep;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
+use crate::{spawn_geth, GethInstance};
+
 pub const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 // Ensure that the `tracing` stack is only initialised once using `once_cell`
@@ -34,19 +36,19 @@ pub struct TestHarness {
     client: reqwest::Client,
     base_url: String,
     eth_provider: Provider<Http>,
-    anvil: AnvilInstance,
+    geth_instance: GethInstance,
 }
 
 impl TestHarness {
     pub async fn spawn() -> Self {
         Lazy::force(&TRACING);
 
-        let anvil = Anvil::new().spawn();
+        let geth_instance = spawn_geth().await;
 
         let args = Args {
             port: 0,
             bind_address: "127.0.0.1".to_string(),
-            eth_provider: anvil.endpoint(),
+            eth_provider: geth_instance.http_url().to_string(),
             // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
             eth_provider_interval: Some(1),
             starting_block: 0,
@@ -59,14 +61,14 @@ impl TestHarness {
         // Run app server in the background
         let _ = tokio::spawn(server.run());
 
-        let eth_provider = Provider::<Http>::try_from(&anvil.endpoint()).unwrap();
+        let eth_provider = Provider::<Http>::try_from(geth_instance.http_url()).unwrap();
         let eth_provider = eth_provider.interval(Duration::from_millis(1));
 
         Self {
             client: reqwest::Client::new(),
             base_url,
             eth_provider,
-            anvil,
+            geth_instance,
         }
     }
 

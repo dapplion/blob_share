@@ -1,10 +1,16 @@
-use ethers::providers::{Http, Middleware, Provider};
+use ethers::{
+    middleware::SignerMiddleware,
+    providers::{Http, Middleware, Provider},
+    signers::{LocalWallet, Signer},
+    types::Address,
+};
 use eyre::{bail, Result};
 use rand::{distributions::Alphanumeric, Rng};
+use serde_json::json;
 use std::{
     future::Future,
-    net::IpAddr,
     process::{Child, Command},
+    str::FromStr,
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
@@ -12,11 +18,36 @@ use tokio::time::sleep;
 /// How long we will wait for anvil to indicate that it is ready.
 const STARTUP_TIMEOUT_MILLIS: u64 = 2000;
 const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
+const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
+const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
 
 pub struct GethInstance {
     pid: Child,
+    container_name: String,
     http_url: String,
     ws_url: String,
+    chain_id: u64,
+}
+
+impl GethInstance {
+    pub fn http_url(&self) -> &str {
+        &self.http_url
+    }
+
+    pub fn ws_url(&self) -> &str {
+        &self.ws_url
+    }
+
+    pub fn http_provider(&self) -> Result<SignerMiddleware<Provider<Http>, LocalWallet>> {
+        let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
+        assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
+        let provider = Provider::<Http>::try_from(self.http_url())?;
+
+        Ok(SignerMiddleware::new(
+            provider,
+            wallet.with_chain_id(self.chain_id),
+        ))
+    }
 }
 
 pub async fn spawn_geth() -> GethInstance {
@@ -34,6 +65,9 @@ pub async fn spawn_geth() -> GethInstance {
     )
     .unwrap();
 
+    let port_http = unused_port();
+    let port_ws = unused_port();
+
     let container_name = format!("geth-dev-cancun-{}", generate_rand_str(10));
 
     let mut cmd = Command::new("docker");
@@ -43,16 +77,14 @@ pub async fn spawn_geth() -> GethInstance {
         // Auto-clean container on exit
         "--rm",
         // Name the contaienr to find it latter
-        "--name",
-        &container_name,
+        &format!("--name={container_name}"),
+        &format!("-p={port_http}:{port_http}"),
+        &format!("-p={port_ws}:{port_ws}"),
         GETH_BUILD_TAG,
     ]);
 
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit());
-
-    let port_http = unused_port();
-    let port_ws = unused_port();
 
     cmd.args(["--dev"]);
     cmd.args([
@@ -66,48 +98,67 @@ pub async fn spawn_geth() -> GethInstance {
         "--ws.origins",
         "\"*\"",
         "--ws.api=admin,debug,eth,miner,net,personal,txpool,web3",
+        // Logging verbosity: 0=silent, 1=error, 2=warn, 3=info, 4=debug, 5=detail
+        "--verbosity=5",
     ]);
 
     let child = cmd.spawn().expect("could not start docker");
 
     // Retrieve the IP of the started container
-    let container_ip = retry_with_timeout(
+    let http_url = format!("http://localhost:{port_http}");
+    let ws_url = format!("ws://localhost:{port_ws}");
+    println!("container urls {http_url} {ws_url}");
+
+    let client = reqwest::ClientBuilder::new()
+        .timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+
+    let client_version = retry_with_timeout(
         Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
         Duration::from_millis(50),
         || async {
-            run_until_exit(
-                "docker",
-                &[
-                    "inspect",
-                    "-f='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'",
-                    &container_name,
-                ],
-            )
+            let request_body = json!({
+                "jsonrpc": "2.0",
+                "method": "web3_clientVersion",
+                "params": [],
+                "id": 1
+            });
+
+            Ok(client
+                .post(&http_url)
+                .json(&request_body)
+                .send()
+                .await?
+                .text()
+                .await?)
         },
     )
     .await
     .unwrap();
-    let container_ip = extract_valid_ip(&container_ip).unwrap();
+    println!("connected to geth client {client_version:?}");
 
-    let http_url = format!("http://{container_ip}:{port_http}");
-    let ws_url = format!("ws://{container_ip}:{port_ws}");
-    println!("got container IPs {http_url}");
-
-    retry_with_timeout(
-        Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
-        Duration::from_millis(50),
-        || async {
-            let provider = Provider::<Http>::try_from(&http_url)?;
-            Ok(provider.client_version().await?)
-        },
-    )
-    .await
-    .unwrap();
+    let chain_id = Provider::<Http>::try_from(&http_url)
+        .unwrap()
+        .get_chainid()
+        .await
+        .unwrap()
+        .as_u64();
 
     GethInstance {
         pid: child,
+        container_name,
         http_url,
         ws_url,
+        chain_id,
+    }
+}
+
+impl Drop for GethInstance {
+    fn drop(&mut self) {
+        if let Err(e) = run_until_exit("docker", &["rm", "--force", &self.container_name]) {
+            eprintln!("error removing geth instance: {e:?}");
+        }
     }
 }
 
@@ -173,9 +224,4 @@ where
             }
         }
     }
-}
-
-fn extract_valid_ip(input: &str) -> Result<IpAddr> {
-    let potential_ip = input.trim_matches(|c: char| !c.is_numeric() && c != '.');
-    Ok(potential_ip.parse()?)
 }
