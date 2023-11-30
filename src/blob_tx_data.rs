@@ -32,8 +32,10 @@ impl BlobTxSummary {
         cost
     }
 
-    pub fn from_tx(tx: Transaction) -> Result<Option<BlobTxSummary>> {
-        if tx.transaction_type.map(|x| x.as_u64() as u8) != Some(BLOB_TX_TYPE) {
+    pub fn from_tx(tx: Transaction, target_address: Address) -> Result<Option<BlobTxSummary>> {
+        if tx.from != target_address
+            || tx.transaction_type.map(|x| x.as_u64() as u8) != Some(BLOB_TX_TYPE)
+        {
             return Ok(None);
         }
 

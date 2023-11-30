@@ -9,17 +9,17 @@ use std::sync::Arc;
 use crate::{compute_data_hash, verify_account_balance, AppData, DataIntent};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct PostDataIntent {
+pub struct PostDataIntent {
     /// Address sending the data
-    pub(crate) from: String,
+    pub from: String,
     #[serde(
         serialize_with = "serialize_as_hex",
         deserialize_with = "deserialize_from_hex"
     )]
     /// Data to be posted
-    pub(crate) data: Vec<u8>,
+    pub data: Vec<u8>,
     /// Max price user is willing to pay in wei
-    pub(crate) max_price: u64,
+    pub max_price: u64,
 }
 
 #[get("/health")]

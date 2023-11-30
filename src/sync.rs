@@ -209,7 +209,7 @@ impl BlockSummary {
             }
 
             // TODO: Handle invalid blob tx errors more gracefully
-            if let Some(blob_tx) = BlobTxSummary::from_tx(tx)? {
+            if let Some(blob_tx) = BlobTxSummary::from_tx(tx, target_address)? {
                 blob_txs.push(blob_tx)
             }
         }
