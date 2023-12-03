@@ -1,30 +1,30 @@
 use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
+use data_intent::{DataHash, DataIntentId};
 use ethers::{
-    providers::{Http, Middleware, Provider},
-    signers::{coins_bip39::English, LocalWallet, MnemonicBuilder},
+    providers::{Middleware, Provider, Ws},
+    signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
-    utils::keccak256,
 };
-use eyre::Result;
-use std::{
-    collections::HashMap,
-    net::TcpListener,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-use tokio::sync::Notify;
+use eyre::{eyre, Result};
+use std::{collections::HashMap, net::TcpListener, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::{Notify, RwLock};
 
 use crate::{
-    gas::GasConfig,
-    kzg::{construct_blob_tx, send_blob_tx},
-    routes::{get_data, get_status, post_data},
+    blob_sender_task::blob_sender_task,
+    block_subscriber_task::block_subscriber_task,
+    gas::GasTracker,
+    routes::{get_data, get_sender, get_status, post_data},
+    sync::BlockSync,
     trusted_setup::TrustedSetup,
 };
 
+mod blob_sender_task;
 mod blob_tx_data;
+mod block_subscriber_task;
+pub mod client;
+mod data_intent;
 mod gas;
 mod kzg;
 mod routes;
@@ -32,12 +32,14 @@ mod sync;
 mod trusted_setup;
 mod tx_eip4844;
 mod tx_sidecar;
+mod utils;
 
-pub use routes::PostDataIntent;
+pub use client::Client;
+pub use data_intent::DataIntent;
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
-const MIN_BLOB_DATA_TO_PUBLISH: usize = (80 * MAX_USABLE_BLOB_DATA_LEN) / 100; // 80%
+const MIN_BLOB_DATA_TO_PUBLISH: usize = MAX_USABLE_BLOB_DATA_LEN / 2; // 50%
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
@@ -64,6 +66,11 @@ pub struct Args {
     /// First block for service to start accounting
     #[arg(long, default_value_t = 0)]
     pub starting_block: u64,
+
+    /// Mnemonic for tx sender
+    /// TODO: UNSAFE, handle hot keys better
+    #[arg(long)]
+    pub mnemonic: String,
 }
 
 impl Args {
@@ -72,125 +79,41 @@ impl Args {
     }
 }
 
-#[derive(Clone)]
-struct DataIntent {
-    from: String,
-    data: Vec<u8>,
-    max_price: u64,
-    data_hash: DataHash,
-}
-
-type DataHash = [u8; 32];
-type DataIntentId = (String, DataHash);
-
 type DataIntents = HashMap<DataIntentId, DataIntent>;
 
 struct PublishConfig {
-    l1_inbox_address: Address,
+    pub(crate) l1_inbox_address: Address,
 }
 
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
-    queue: Mutex<DataIntents>,
-    provider: Provider<Http>,
+    pending_intents: RwLock<DataIntents>,
+    sync: BlockSync,
+    gas_tracker: GasTracker,
+    provider: Provider<Ws>,
     sender_wallet: LocalWallet,
     publish_config: PublishConfig,
     notify: Notify,
-}
-
-fn compute_data_hash(data: &[u8]) -> DataHash {
-    keccak256(data)
-}
-
-async fn verify_account_balance(_account: &str) -> bool {
-    // TODO: Check account solvency with offchain or on-chain system
-    true
-}
-
-async fn blob_sender_task(app_data: Arc<AppData>) {
-    loop {
-        app_data.notify.notified().await;
-
-        let wei_per_byte = 1; // TODO: Fetch from chain
-
-        let next_blob_items = {
-            let items = app_data.queue.lock().unwrap();
-            select_next_blob_items(&items, wei_per_byte)
-        };
-
-        if let Some(next_blob_items) = next_blob_items {
-            log::info!(
-                "selected items for blob tx, count {}",
-                next_blob_items.len()
-            );
-
-            // Clear items from pool
-            {
-                let mut items = app_data.queue.lock().unwrap();
-                for item in next_blob_items.iter() {
-                    items.remove(&(item.from.clone(), item.data_hash));
-                }
-            }
-
-            let gas_config = GasConfig::estimate(&app_data.provider)
-                .await
-                .expect("TODO: handle fetch error");
-
-            let blob_tx = construct_blob_tx(
-                &app_data.kzg_settings,
-                &app_data.publish_config,
-                &gas_config,
-                &app_data.sender_wallet,
-                next_blob_items,
-            )
-            .expect("TODO: handle bad data");
-            // TODO: do not await here, spawn another task
-            // TODO: monitor transaction, if gas is insufficient return data intents to the pool
-            send_blob_tx(&app_data.provider, blob_tx)
-                .await
-                .unwrap_or_else(|e| {
-                    log::error!("error sending blob transaction {:?}", e);
-                });
-        } else {
-            log::info!("no viable set of items for blob");
-        }
-    }
-}
-
-// TODO: write optimizer algo to find a better distribution
-// TODO: is ok to represent wei units as usize?
-fn select_next_blob_items(items: &DataIntents, _wei_per_byte: usize) -> Option<Vec<DataIntent>> {
-    // Sort items by data length
-    let mut items = items.values().collect::<Vec<_>>();
-    items.sort_by(|a, b| b.data.len().cmp(&a.data.len()));
-
-    let mut intents_for_blob: Vec<&DataIntent> = vec![];
-    let mut used_len = 0;
-
-    for item in items {
-        if used_len + item.data.len() > MAX_USABLE_BLOB_DATA_LEN {
-            break;
-        }
-
-        used_len += item.data.len();
-        intents_for_blob.push(item);
-    }
-
-    if used_len < MIN_BLOB_DATA_TO_PUBLISH {
-        return None;
-    }
-
-    return Some(intents_for_blob.into_iter().cloned().collect());
+    chain_id: u64,
 }
 
 pub struct App {
-    server: Server,
     port: u16,
+    server: Server,
+    data: Arc<AppData>,
+}
+
+enum StartingPoint {
+    Genesis,
 }
 
 impl App {
+    /// Instantiates components, fetching initial data, binds http server. Does not make progress
+    /// on the server future. To actually run the app, call `Self::run`.
     pub async fn build(args: Args) -> Result<Self> {
-        let provider = Provider::<Http>::try_from(&args.eth_provider)?;
+        let starting_point = StartingPoint::Genesis;
+
+        let provider = Provider::<Ws>::connect(&args.eth_provider).await?;
 
         // Pass interval option
         let provider = if let Some(interval) = args.eth_provider_interval {
@@ -199,31 +122,58 @@ impl App {
             provider
         };
 
+        let chain_id = provider.get_chainid().await?.as_u64();
+
         // TODO: read as param
-        let phrase =
-            "work man father plunge mystery proud hollow address reunion sauce theory bonus";
         // Child key at derivation path: m/44'/60'/0'/0/{index}
         let wallet = MnemonicBuilder::<English>::default()
-            .phrase(phrase)
+            .phrase(args.mnemonic.as_str())
             .index(0u32)?
-            .build()?;
+            .build()?
+            .with_chain_id(chain_id);
+        // Address to send funds to increase an account's balance
+        let target_address = wallet.address();
 
-        // TODO: Load properly
-        let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)?;
-        let kzg_settings = c_kzg::KzgSettings::load_trusted_setup(
-            &trusted_setup.g1_points(),
-            &trusted_setup.g2_points(),
-        )?;
+        // TODO: choose starting point that's not genesis
+        let (anchor_block_root, anchor_block_number) = match starting_point {
+            StartingPoint::Genesis => {
+                let anchor_block = provider
+                    .get_block(0)
+                    .await?
+                    .ok_or_else(|| eyre!("genesis block not available"))?;
+                (
+                    anchor_block
+                        .hash
+                        .ok_or_else(|| eyre!("block has no hash property"))?,
+                    anchor_block
+                        .number
+                        .ok_or_else(|| eyre!("block has no number property"))?
+                        .as_u64(),
+                )
+            }
+        };
+        let sync = BlockSync::new(target_address, anchor_block_root, anchor_block_number);
+
+        // Initialize gas tracker with current head
+        let head_number = provider.get_block_number().await?;
+        let current_head = provider
+            .get_block(head_number)
+            .await?
+            .ok_or_else(|| eyre!("head block not available {head_number}"))?;
+        let gas_tracker = GasTracker::new(&current_head)?;
 
         let app_data = Arc::new(AppData {
-            kzg_settings,
+            kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
-            queue: <_>::default(),
+            pending_intents: <_>::default(),
+            sync,
+            gas_tracker,
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             },
             provider,
             sender_wallet: wallet,
+            chain_id,
         });
 
         let eth_client_version = app_data.provider.client_version().await?;
@@ -235,38 +185,54 @@ impl App {
             eth_net_version
         );
 
-        let data_clone = app_data.clone();
-        tokio::spawn(async move {
-            blob_sender_task(data_clone).await;
-        });
-
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
         let listener_port = listener.local_addr().unwrap().port();
-        log::info!("Starting server on {}:{}", args.bind_address, listener_port);
+        log::info!("Binding server on {}:{}", args.bind_address, listener_port);
 
+        let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
             actix_web::App::new()
                 .wrap(Logger::default())
-                .app_data(web::Data::new(app_data.clone()))
+                .app_data(web::Data::new(app_data_clone.clone()))
                 .service(get_status)
                 .service(post_data)
                 .service(get_data)
+                .service(get_sender)
         })
         .listen(listener)?
         .run();
 
         Ok(App {
-            server,
             port: listener_port,
+            server,
+            data: app_data,
         })
     }
 
-    pub async fn run(self) -> Result<(), std::io::Error> {
-        self.server.await
+    /// Long running future progressing server and background tasks futures
+    pub async fn run(self) -> Result<()> {
+        tokio::try_join!(
+            run_server(self.server),
+            blob_sender_task(self.data.clone()),
+            block_subscriber_task(self.data.clone()),
+        )?;
+        Ok(())
     }
 
     pub fn port(&self) -> u16 {
         self.port
     }
+}
+
+pub async fn run_server(server: Server) -> Result<()> {
+    Ok(server.await?)
+}
+
+pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
+    let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)?;
+    Ok(c_kzg::KzgSettings::load_trusted_setup(
+        &trusted_setup.g1_points(),
+        &trusted_setup.g2_points(),
+    )?)
 }

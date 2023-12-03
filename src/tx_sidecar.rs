@@ -1,6 +1,4 @@
-use reth_primitives::{
-    keccak256, Signature, Transaction, TransactionSigned, TxHash, EIP4844_TX_TYPE_ID,
-};
+use reth_primitives::{keccak256, Signature, TxHash, EIP4844_TX_TYPE_ID};
 
 use alloy_rlp::{Decodable, Encodable, Error as RlpError, Header};
 use bytes::BufMut;
@@ -27,6 +25,7 @@ pub struct BlobTransaction {
     pub sidecar: BlobTransactionSidecar,
 }
 
+#[allow(dead_code)]
 impl BlobTransaction {
     /// Encodes the [BlobTransaction] fields as RLP, with a tx type. If `with_header` is `false`,
     /// the following will be encoded:

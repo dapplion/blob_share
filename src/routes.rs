@@ -1,72 +1,65 @@
 use actix_web::{get, post, web, HttpResponse, Responder};
-use hex;
-use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use ethers::signers::Signer;
+use ethers::types::Address;
+use eyre::eyre;
+use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::{compute_data_hash, verify_account_balance, AppData, DataIntent};
+use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
+use crate::utils::{deserialize_from_hex, e400, serialize_as_hex};
+use crate::AppData;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataIntent {
-    /// Address sending the data
-    pub from: String,
-    #[serde(
-        serialize_with = "serialize_as_hex",
-        deserialize_with = "deserialize_from_hex"
-    )]
-    /// Data to be posted
-    pub data: Vec<u8>,
-    /// Max price user is willing to pay in wei
-    pub max_price: u64,
-}
-
-#[get("/health")]
+#[get("/v1/health")]
 pub(crate) async fn get_status() -> impl Responder {
     HttpResponse::Ok().finish()
 }
 
-#[post("/data")]
+#[get("/v1/sender")]
+pub(crate) async fn get_sender(data: web::Data<Arc<AppData>>) -> impl Responder {
+    HttpResponse::Ok().json(SenderDetails {
+        address: data.sender_wallet.address(),
+    })
+}
+
+#[post("/v1/data")]
 pub(crate) async fn post_data(
-    item: web::Json<PostDataIntent>,
+    body: web::Json<PostDataIntentV1>,
     data: web::Data<Arc<AppData>>,
-) -> impl Responder {
-    if !verify_account_balance(&item.from).await {
-        return HttpResponse::BadRequest().body("Insufficient balance");
+) -> Result<HttpResponse, actix_web::Error> {
+    let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
+    data_intent.verify_signature().map_err(e400)?;
+
+    // TODO: generalize ID when having multiple types
+    let id = data_intent.id();
+
+    let account_balance = data.sync.unfinalized_balance_delta(data_intent.from).await;
+    if account_balance < data_intent.max_cost_wei as i128 {
+        return Err(e400(eyre!("Insufficient balance")));
     }
 
-    // Add data intent to queue and notify background task
-    let data_hash = compute_data_hash(&item.data);
-
-    match data
-        .queue
-        .lock()
-        .unwrap()
-        .entry((item.from.clone(), data_hash))
-    {
-        Entry::Vacant(entry) => entry.insert(DataIntent {
-            from: item.from.clone(),
-            data: item.data.clone(),
-            max_price: item.max_price,
-            data_hash,
-        }),
+    match data.pending_intents.write().await.entry(id.clone()) {
+        Entry::Vacant(entry) => entry.insert(data_intent),
         Entry::Occupied(_) => {
-            return HttpResponse::InternalServerError().body("data intent already known")
+            return Err(e400(eyre!(
+                "data intent with data hash {} already known",
+                data_intent.data_hash
+            )));
         }
     };
 
     data.notify.notify_one();
 
-    HttpResponse::Ok().finish()
+    Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
 }
 
-#[get("/data")]
+#[get("/v1/data")]
 pub(crate) async fn get_data(data: web::Data<Arc<AppData>>) -> impl Responder {
     let items = {
-        data.queue
-            .lock()
-            .unwrap()
+        data.pending_intents
+            .read()
+            .await
             .values()
             .cloned()
             .collect::<Vec<DataIntent>>()
@@ -76,52 +69,102 @@ pub(crate) async fn get_data(data: web::Data<Arc<AppData>>) -> impl Responder {
         items
             .into_iter()
             .map(|v| v.into())
-            .collect::<Vec<PostDataIntent>>(),
+            .collect::<Vec<PostDataIntentV1>>(),
     )
 }
 
-fn serialize_as_hex<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let hex_string = format!("0x{}", hex::encode(bytes));
-    serializer.serialize_str(&hex_string)
+#[get("/v1/data/{id}")]
+pub(crate) async fn get_data_from_data_hash(
+    data: web::Data<Arc<AppData>>,
+    id: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let id = DataIntentId::from_str(&id).map_err(e400)?;
+    let item = {
+        data.pending_intents
+            .read()
+            .await
+            .get(&id)
+            .ok_or_else(|| e400(format!("no item found for ID {}", id.to_string())))?
+            .clone()
+    };
+
+    Ok(HttpResponse::Ok().json(item))
 }
 
-fn deserialize_from_hex<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct HexVisitor;
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SenderDetails {
+    pub address: Address,
+}
 
-    impl<'de> Visitor<'de> for HexVisitor {
-        type Value = Vec<u8>;
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PostDataResponse {
+    pub id: String,
+}
 
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a hex string with a 0x prefix")
-        }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PostDataIntentV1 {
+    /// Address sending the data
+    pub from: Address,
+    #[serde(
+        serialize_with = "serialize_as_hex",
+        deserialize_with = "deserialize_from_hex"
+    )]
+    /// Data to be posted
+    pub data: Vec<u8>,
+    #[serde(
+        serialize_with = "serialize_as_hex",
+        deserialize_with = "deserialize_from_hex"
+    )]
+    pub signature: Vec<u8>,
+    /// Max price user is willing to pay in wei
+    pub max_cost_wei: u128,
+}
 
-        fn visit_str<E>(self, value: &str) -> Result<Vec<u8>, E>
-        where
-            E: de::Error,
-        {
-            if value.starts_with("0x") || value.starts_with("0X") {
-                hex::decode(&value[2..]).map_err(E::custom)
-            } else {
-                Err(E::custom("Expected a hex string with a 0x prefix"))
-            }
-        }
+impl TryInto<DataIntent> for PostDataIntentV1 {
+    type Error = eyre::Report;
+    fn try_into(self) -> Result<DataIntent, Self::Error> {
+        let data_hash = DataHash::from_data(&self.data);
+        Ok(DataIntent {
+            from: self.from,
+            data: self.data,
+            data_hash,
+            signature: deserialize_signature(&self.signature)?,
+            max_cost_wei: self.max_cost_wei,
+        })
     }
-
-    deserializer.deserialize_str(HexVisitor)
 }
 
-impl From<DataIntent> for PostDataIntent {
+impl From<DataIntent> for PostDataIntentV1 {
     fn from(value: DataIntent) -> Self {
         Self {
             from: value.from,
             data: value.data,
-            max_price: value.max_price,
+            signature: value.signature.to_vec(),
+            max_cost_wei: value.max_cost_wei,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use ethers::types::Address;
+    use eyre::Result;
+    use std::str::FromStr;
+
+    use crate::routes::PostDataIntentV1;
+
+    #[test]
+    fn route_post_data_intent_v1_serde() -> Result<()> {
+        let data_intent = PostDataIntentV1 {
+            from: Address::from_str("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")?,
+            data: vec![0xaa; 50],
+            signature: vec![0xbb; 65],
+            max_cost_wei: 1000000000,
+        };
+
+        assert_eq!(&serde_json::to_string(&data_intent)?, "{\"from\":\"0xd8da6bf26964af9d7eed9e03e53415d37aa96045\",\"data\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"max_cost_wei\":1000000000}");
+
+        Ok(())
     }
 }

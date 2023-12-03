@@ -35,10 +35,6 @@ impl TrustedSetup {
     pub fn g2_points(&self) -> Vec<[u8; BYTES_PER_G2_POINT]> {
         self.g2_points.iter().map(|p| p.0).collect()
     }
-
-    pub fn g1_len(&self) -> usize {
-        self.g1_points.len()
-    }
 }
 
 impl Serialize for G1Point {
@@ -140,4 +136,3 @@ fn strip_prefix(s: &str) -> &str {
         s
     }
 }
-

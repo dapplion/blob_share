@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
-use crate::{helpers::TestHarness, spawn_geth};
+use crate::spawn_geth;
 use ethers::{
-    providers::{Http, Middleware, Provider},
+    providers::Middleware,
     types::{Address, TransactionRequest},
 };
 use eyre::Result;
@@ -10,12 +10,6 @@ use eyre::Result;
 #[tokio::test]
 async fn test_spawn_geth() {
     spawn_geth().await;
-}
-
-#[tokio::test]
-async fn health_check_works() {
-    let testing_harness = TestHarness::spawn().await;
-    testing_harness.test_health().await;
 }
 
 #[tokio::test]

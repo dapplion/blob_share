@@ -29,7 +29,10 @@
   "coinbase": "0x3333333333333333333333333333333333333333",
   "alloc": {
     "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277": {
-      "balance": "0x09184e72a0000000"
+      "balance": "0x3635c9adc5dea00000"
+    },
+    "0xffdb339065c91c88e8a3cc6857359b6c2fb78cf5": {
+      "balance": "0x3635c9adc5dea00000"
     }
   }
 }

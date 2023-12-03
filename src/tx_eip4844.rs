@@ -1,8 +1,7 @@
 use alloy_rlp::{length_of_length, Decodable, Encodable, Header};
 use bytes::BytesMut;
 use reth_primitives::{
-    constants::eip4844::DATA_GAS_PER_BLOB, keccak256, AccessList, Address, Bytes, ChainId,
-    Signature, TxType, TxValue, B256,
+    keccak256, AccessList, Address, Bytes, ChainId, Signature, TxType, TxValue, B256,
 };
 use serde::{Deserialize, Serialize};
 use std::mem;
@@ -73,32 +72,8 @@ pub struct TxEip4844 {
     pub input: Bytes,
 }
 
+#[allow(dead_code)]
 impl TxEip4844 {
-    /// Returns the effective gas price for the given `base_fee`.
-    pub fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        match base_fee {
-            None => self.max_fee_per_gas,
-            Some(base_fee) => {
-                // if the tip is greater than the max priority fee per gas, set it to the max
-                // priority fee per gas + base fee
-                let tip = self.max_fee_per_gas.saturating_sub(base_fee as u128);
-                if tip > self.max_priority_fee_per_gas {
-                    self.max_priority_fee_per_gas + base_fee as u128
-                } else {
-                    // otherwise return the max fee per gas
-                    self.max_fee_per_gas
-                }
-            }
-        }
-    }
-
-    /// Returns the total gas for all blobs in this transaction.
-    #[inline]
-    pub fn blob_gas(&self) -> u64 {
-        // SAFETY: we don't expect u64::MAX / DATA_GAS_PER_BLOB hashes in a single transaction
-        self.blob_versioned_hashes.len() as u64 * DATA_GAS_PER_BLOB
-    }
-
     /// Decodes the inner [TxEip4844] fields from RLP bytes.
     ///
     /// NOTE: This assumes a RLP header has already been decoded, and _just_ decodes the following

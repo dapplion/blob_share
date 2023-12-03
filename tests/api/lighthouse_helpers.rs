@@ -17,23 +17,8 @@ use tokio::time::sleep;
 
 /// How long we will wait for anvil to indicate that it is ready.
 const STARTUP_TIMEOUT_MILLIS: u64 = 2000;
-const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
 const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
-
-pub fn get_wallet(
-    eth_provider_url: &str,
-    chain_id: u64,
-) -> Result<SignerMiddleware<Provider<Http>, LocalWallet>> {
-    let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
-    assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
-    let provider = Provider::<Http>::try_from(eth_provider_url)?;
-
-    Ok(SignerMiddleware::new(
-        provider,
-        wallet.with_chain_id(chain_id),
-    ))
-}
 
 pub struct GethInstance {
     pid: Child,
@@ -43,7 +28,7 @@ pub struct GethInstance {
     chain_id: u64,
 }
 
-impl GethInstance {
+impl LighthouseInstance {
     pub fn http_url(&self) -> &str {
         &self.http_url
     }
@@ -53,29 +38,24 @@ impl GethInstance {
     }
 
     pub fn http_provider(&self) -> Result<SignerMiddleware<Provider<Http>, LocalWallet>> {
-        get_wallet(self.http_url(), self.chain_id)
+        let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
+        assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
+        let provider = Provider::<Http>::try_from(self.http_url())?;
+
+        Ok(SignerMiddleware::new(
+            provider,
+            wallet.with_chain_id(self.chain_id),
+        ))
     }
 }
 
-pub async fn spawn_geth() -> GethInstance {
-    let geth_version = "v1.13.5";
-
-    // Make sure image is available
-    run_until_exit(
-        "docker",
-        &[
-            "build",
-            &format!("--build-arg='tag={geth_version}'"),
-            &format!("--tag={GETH_BUILD_TAG}"),
-            "./tests/api/geth",
-        ],
-    )
-    .unwrap();
+pub async fn spawn_geth() -> LighthouseInstance {
+    let lighthouse_image_tag = "sigp/lighthouse:latest-unstable";
 
     let port_http = unused_port();
     let port_ws = unused_port();
 
-    let container_name = format!("geth-dev-cancun-{}", generate_rand_str(10));
+    let container_name = format!("lighthouse-dev-cancun-{}", generate_rand_str(10));
 
     let mut cmd = Command::new("docker");
     // Don't run as host, fetch IP latter
@@ -152,7 +132,7 @@ pub async fn spawn_geth() -> GethInstance {
         .unwrap()
         .as_u64();
 
-    GethInstance {
+    LighthouseInstance {
         pid: child,
         container_name,
         http_url,
@@ -161,7 +141,7 @@ pub async fn spawn_geth() -> GethInstance {
     }
 }
 
-impl Drop for GethInstance {
+impl Drop for LighthouseInstance {
     fn drop(&mut self) {
         if let Err(e) = run_until_exit("docker", &["rm", "--force", &self.container_name]) {
             eprintln!("error removing geth instance: {e:?}");
