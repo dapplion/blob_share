@@ -5,7 +5,7 @@ use eyre::{Context, Result};
 
 use crate::{
     kzg::{construct_blob_tx, TxParams},
-    AppData, DataIntent, DataIntents, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
+    AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
@@ -105,7 +105,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
 // TODO: is ok to represent wei units as usize?
 fn select_next_blob_items(
     items: &mut [&DataIntent],
-    blob_gas_price: u128,
+    _blob_gas_price: u128,
 ) -> Option<Vec<DataIntent>> {
     // Sort items by data length
     items.sort_by(|a, b| {
@@ -131,7 +131,7 @@ fn select_next_blob_items(
         return None;
     }
 
-    return Some(intents_for_blob.into_iter().cloned().collect());
+    Some(intents_for_blob.into_iter().cloned().collect())
 }
 
 #[cfg(test)]

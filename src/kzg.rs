@@ -77,10 +77,10 @@ pub(crate) fn construct_blob_tx(
     }
 
     let blob = c_kzg::Blob::from_bytes(&chunked_blob_data)?;
-    let commitment = c_kzg::KzgCommitment::blob_to_kzg_commitment(&blob, &kzg_settings)?;
+    let commitment = c_kzg::KzgCommitment::blob_to_kzg_commitment(&blob, kzg_settings)?;
     let versioned_hash = kzg_to_versioned_hash(&commitment);
     let proof =
-        c_kzg::KzgProof::compute_blob_kzg_proof(&blob, &commitment.to_bytes(), &kzg_settings)?
+        c_kzg::KzgProof::compute_blob_kzg_proof(&blob, &commitment.to_bytes(), kzg_settings)?
             .to_bytes();
 
     // TODO customize by participant request on include signature or not
@@ -92,7 +92,7 @@ pub(crate) fn construct_blob_tx(
         max_priority_fee_per_gas: gas_config.max_priority_fee_per_gas,
         max_fee_per_gas: gas_config.max_fee_per_gas,
         // TODO Adjust gas with input
-        gas_limit: 100_000_u64.into(),
+        gas_limit: 100_000_u64,
         to: Address::from(publish_config.l1_inbox_address.to_fixed_bytes()),
         value: <_>::default(),
         input: input.into(),
@@ -103,7 +103,7 @@ pub(crate) fn construct_blob_tx(
 
     let sigature_hash = tx.signature_hash();
 
-    let signature = wallet.sign_hash(H256::from_slice(&sigature_hash.to_vec()))?;
+    let signature = wallet.sign_hash(H256::from_slice(sigature_hash.as_ref()))?;
     // Convert Signature from ethers-rs to alloy
     let signature = Signature {
         r: U256::from_limbs(signature.r.0),
@@ -157,7 +157,7 @@ pub(crate) fn construct_blob_tx(
         tx_summary: BlobTxSummary {
             participants,
             // TODO: set actual cost,
-            tx_hash: H256::from_slice(&tx_hash.to_vec()),
+            tx_hash: H256::from_slice(tx_hash.as_ref()),
             from: wallet.address(),
             nonce: tx_params.nonce,
             used_bytes,

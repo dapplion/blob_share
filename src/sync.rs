@@ -101,8 +101,7 @@ impl BlockSync {
                 .read()
                 .await
                 .iter()
-                .find(|x| block.hash == x.hash)
-                .is_some()
+                .any(|x| block.hash == x.hash)
         {
             // Block already known
             return Ok(());

@@ -41,7 +41,7 @@ impl DataIntent {
         max_cost_wei: u128,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
-        let signature: Signature = wallet.sign_message(&data_hash.0).await?;
+        let signature: Signature = wallet.sign_message(data_hash.0).await?;
 
         Ok(DataIntent {
             from: wallet.address(),
@@ -101,7 +101,7 @@ pub struct DataHash([u8; 32]);
 
 impl Display for DataHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&hex::encode(&self.0))
+        f.write_str(&hex::encode(self.0))
     }
 }
 

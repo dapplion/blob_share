@@ -64,7 +64,7 @@ async fn is_ok_response(response: Response) -> Result<Response> {
         let status = response.status().as_u16();
         let body = match response.text().await {
             Ok(body) => body,
-            Err(e) => format!("error getting error response text body: {}", e.to_string()),
+            Err(e) => format!("error getting error response text body: {}", e),
         };
         bail!("non-success response status {} body: {}", status, body);
     }

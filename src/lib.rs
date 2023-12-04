@@ -1,7 +1,7 @@
 use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
-use data_intent::{DataHash, DataIntentId};
+use data_intent::DataIntentId;
 use ethers::{
     providers::{Middleware, Provider, Ws},
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},

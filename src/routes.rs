@@ -39,7 +39,7 @@ pub(crate) async fn post_data(
         return Err(e400(eyre!("Insufficient balance")));
     }
 
-    match data.pending_intents.write().await.entry(id.clone()) {
+    match data.pending_intents.write().await.entry(id) {
         Entry::Vacant(entry) => entry.insert(data_intent),
         Entry::Occupied(_) => {
             return Err(e400(eyre!(
