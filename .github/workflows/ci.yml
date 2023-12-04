@@ -80,7 +80,7 @@ jobs:
       - name: Check README
         run: ./scripts/check_synced_readme.py
  
-  build-and-publish-docker:
+  docker-build-and-publish-dev:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -90,8 +90,8 @@ jobs:
         with:
           context: .
           load: true
-          tags: blobshare:latest
+          tags: blobshare:dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Test image
-        run: docker run --rm blobshare:latest --help
+        run: docker run --rm blobshare:dev --help
