@@ -5,7 +5,7 @@ use ethers::types::{Address, Transaction, H256, U256};
 use eyre::{bail, eyre, Context, Result};
 
 pub const BLOB_TX_TYPE: u8 = 0x03;
-const PARTICIPANT_DATA_SIZE: usize = 28;
+const PARTICIPANT_DATA_SIZE: usize = 20 + 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlobTxSummary {
@@ -30,15 +30,25 @@ impl BlobTxSummary {
 
         for participant in &self.participants {
             if participant.address == address {
-                // TODO: do math properly
-                let share_of_used_data = participant.data_len / self.used_bytes;
+                let unused_bytes = BYTES_PER_BLOB.saturating_sub(self.used_bytes);
+                // Max product here is half blob unsued, half used by a single participant. Max
+                // blob size is 2**17, so the max intermediary value is 2**16 * 2**16 = 2**32
                 let attributable_unused_data =
-                    share_of_used_data * (BYTES_PER_BLOB - self.used_bytes);
+                    (unused_bytes as u128 * participant.data_len as u128) / self.used_bytes as u128;
 
-                let blob_data_cost = (attributable_unused_data + participant.data_len) as u128
+                let blob_data_cost = (attributable_unused_data + participant.data_len as u128)
                     * blob_gas_price.unwrap_or(self.max_fee_per_blob_gas);
                 let evm_gas_cost = participant.evm_gas() as u128
                     * self.effective_gas_price(block_base_fee_per_gas);
+
+                dbg!(
+                    self.effective_gas_price(block_base_fee_per_gas),
+                    block_base_fee_per_gas,
+                    participant.data_len,
+                    blob_data_cost,
+                    evm_gas_cost,
+                    unused_bytes,
+                );
 
                 cost += blob_data_cost + evm_gas_cost;
             }
@@ -64,10 +74,9 @@ impl BlobTxSummary {
 
         let mut r = Cursor::new(&tx.input);
 
-        let participants_len = tx.input.len() / PARTICIPANT_DATA_SIZE;
         let mut participants = vec![];
 
-        for _ in 0..participants_len {
+        while r.position() < tx.input.len() as u64 {
             participants
                 .push(BlobTxParticipant::read(&mut r).wrap_err("invalid participant format")?);
         }
@@ -162,15 +171,6 @@ mod tests {
     use super::*;
     use ethers::types::Transaction;
 
-    // Helper function to create a dummy Transaction for testing
-    fn create_dummy_transaction() -> Transaction {
-        let target_address: Address = [1; 20].into();
-        let mut tx = Transaction::default();
-        tx.transaction_type = Some(BLOB_TX_TYPE.into());
-        tx.from = target_address;
-        tx
-    }
-
     fn generate_blob_tx_summary(participants: &[(u8, usize)]) -> BlobTxSummary {
         BlobTxSummary {
             participants: participants
@@ -183,7 +183,7 @@ mod tests {
             tx_hash: H256::default(),
             from: Address::default(),
             nonce: 0,
-            used_bytes: BYTES_PER_BLOB,
+            used_bytes: participants.iter().map(|(_, data_len)| data_len).sum(),
             max_priority_fee_per_gas: 1,
             max_fee_per_gas: 1,
             max_fee_per_blob_gas: 1,
@@ -194,14 +194,14 @@ mod tests {
         [b; 20].into()
     }
 
-    fn test_cost_to_participant(address: u8, participants: &[(u8, usize)], expected_cost: u128) {
+    fn test_cost_to_participant(address: u8, participants: &[(u8, usize)], expected_cost: usize) {
         assert_eq!(
             generate_blob_tx_summary(&participants).cost_to_participant(
                 gen_addr(address),
                 None,
                 None
             ),
-            expected_cost
+            expected_cost as u128
         );
     }
 
@@ -217,12 +217,37 @@ mod tests {
 
     #[test]
     fn test_cost_to_participant_single_match() {
-        test_cost_to_participant(1, &[(2, 10), (1, 10)], 20);
+        test_cost_to_participant(
+            1,
+            &[(2, 3 * BYTES_PER_BLOB / 4), (1, BYTES_PER_BLOB / 4)],
+            BYTES_PER_BLOB / 4 + 16 * 24, // blob + evm gas
+        );
     }
 
     #[test]
     fn test_cost_to_participant_multiple_match() {
-        test_cost_to_participant(1, &[(2, 10), (1, 20), (3, 30), (1, 40)], 60);
+        test_cost_to_participant(
+            1,
+            &[
+                (2, 6 * BYTES_PER_BLOB / 16),
+                (1, BYTES_PER_BLOB / 16),
+                (3, 7 * BYTES_PER_BLOB / 16),
+                (1, 2 * BYTES_PER_BLOB / 16),
+            ],
+            3 * BYTES_PER_BLOB / 16 + 2 * 16 * 24, // blob + 2 * evm gas
+        );
+    }
+
+    #[test]
+    fn test_cost_to_participant_account_for_unused_bytes() {
+        test_cost_to_participant(
+            1,
+            &[(2, 2 * BYTES_PER_BLOB / 4), (1, BYTES_PER_BLOB / 4)],
+            // Unused data portion
+            (BYTES_PER_BLOB / 4) / 3 +
+            // Actual data portion
+            BYTES_PER_BLOB / 4 + 16 * 24, // blob + 2 * evm gas
+        );
     }
 
     #[test]
@@ -233,30 +258,36 @@ mod tests {
                 data_len: 10000 * i as usize,
             })
             .collect::<Vec<_>>();
+        let used_bytes = (1..4).sum::<usize>() * 10000;
 
         let input = encode_blob_tx_data(&participants).unwrap();
         let nonce = 1234;
-        let tx_hash = [0xdc; 32];
+        let tx_hash = H256([0xdc; 32]);
 
         assert_eq!(hex::encode(&input), "01000027100b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0100004e200c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c01000075300d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d");
 
         let target_address: Address = [0xab; 20].into();
         let mut tx = Transaction::default();
         tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.hash = tx_hash;
         tx.from = target_address;
         tx.nonce = nonce.into();
         tx.input = input.into();
+        tx.max_fee_per_gas = Some(1.into());
+        tx.max_priority_fee_per_gas = Some(2.into());
+        tx.other
+            .insert("max_fee_per_blob_gas".to_string(), "3".into());
 
         let blob_tx_summary = BlobTxSummary::from_tx(tx, target_address).unwrap().unwrap();
         let expected_blob_tx_summary = BlobTxSummary {
             participants,
-            tx_hash: H256(tx_hash),
+            tx_hash,
             from: target_address,
             nonce,
-            used_bytes: BYTES_PER_BLOB,
+            used_bytes,
             max_fee_per_gas: 1,
-            max_priority_fee_per_gas: 1,
-            max_fee_per_blob_gas: 1,
+            max_priority_fee_per_gas: 2,
+            max_fee_per_blob_gas: 3,
         };
 
         assert_eq!(blob_tx_summary, expected_blob_tx_summary);

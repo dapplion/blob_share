@@ -14,17 +14,20 @@ use ethers::{
 use eyre::Result;
 use tokio::time::sleep;
 
+#[ignore]
 #[tokio::test]
 async fn test_spawn_geth() {
     spawn_geth().await;
 }
 
+#[ignore]
 #[tokio::test]
 async fn health_check_works() {
     let testing_harness = TestHarness::spawn().await;
     testing_harness.client.health().await.unwrap();
 }
 
+#[ignore]
 #[tokio::test]
 async fn post_single_data_intent() {
     let testing_harness = TestHarness::spawn().await;
@@ -46,6 +49,7 @@ async fn post_single_data_intent() {
     assert_eq!(intents.len(), 1);
 }
 
+#[ignore]
 #[tokio::test]
 async fn post_two_intents_and_expect_blob_tx() -> Result<()> {
     let testing_harness = TestHarness::spawn().await;

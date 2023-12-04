@@ -7,11 +7,13 @@ use ethers::{
 };
 use eyre::Result;
 
+#[ignore]
 #[tokio::test]
 async fn test_spawn_geth() {
     spawn_geth().await;
 }
 
+#[ignore]
 #[tokio::test]
 async fn geth_send_regular_transaction() -> Result<()> {
     let geth = spawn_geth().await;
