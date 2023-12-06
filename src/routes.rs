@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::client::DataIntentStatus;
 use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
 use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
 use crate::AppData;
@@ -50,7 +51,7 @@ pub(crate) async fn post_data(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items = { data.data_intent_tracker.get_all_pending().await };
+    let items: Vec<DataIntent> = { data.data_intent_tracker.get_all_pending().await };
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -60,7 +61,7 @@ pub(crate) async fn get_data_by_id(
     id: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let id = DataIntentId::from_str(&id).map_err(e400)?;
-    let item = {
+    let item: DataIntent = {
         data.data_intent_tracker
             .data_by_id(&id)
             .await
@@ -75,12 +76,7 @@ pub(crate) async fn get_status_by_id(
     id: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let id = DataIntentId::from_str(&id).map_err(e400)?;
-    let item = {
-        data.data_intent_tracker
-            .status_by_id(&data.sync, &id)
-            .await
-            .ok_or_else(|| e400(format!("no item found for ID {}", id.to_string())))?
-    };
+    let item: DataIntentStatus = data.data_intent_tracker.status_by_id(&data.sync, &id).await;
     Ok(HttpResponse::Ok().json(item))
 }
 

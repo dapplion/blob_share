@@ -12,7 +12,11 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     loop {
         app_data.notify.notified().await;
         if let Err(e) = maybe_send_blob_tx(app_data.clone()).await {
-            log::error!("error sending blob tx {e:?}");
+            if app_data.config.panic_on_background_task_errors {
+                return Err(e);
+            } else {
+                log::error!("error sending blob tx {e:?}");
+            }
         }
     }
 }

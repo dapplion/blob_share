@@ -22,8 +22,9 @@ pub enum DataIntentItem {
     Included(DataIntent, TxHash),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum DataIntentStatus {
+    Unknown,
     Pending,
     InPendingTx { tx_hash: TxHash },
     InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
@@ -90,31 +91,25 @@ impl DataIntentTracker {
             })
     }
 
-    pub async fn status_by_id(
-        &self,
-        sync: &BlockSync,
-        id: &DataIntentId,
-    ) -> Option<DataIntentStatus> {
+    pub async fn status_by_id(&self, sync: &BlockSync, id: &DataIntentId) -> DataIntentStatus {
         match self.pending_intents.read().await.get(id) {
-            Some(DataIntentItem::Pending(_)) => Some(DataIntentStatus::Pending),
+            Some(DataIntentItem::Pending(_)) => DataIntentStatus::Pending,
             Some(DataIntentItem::Included(_, tx_hash)) => {
                 match sync.get_tx_status(*tx_hash).await {
                     Some(TxInclusion::Pending) => {
-                        Some(DataIntentStatus::InPendingTx { tx_hash: *tx_hash })
+                        DataIntentStatus::InPendingTx { tx_hash: *tx_hash }
                     }
-                    Some(TxInclusion::Included(block_hash)) => {
-                        Some(DataIntentStatus::InConfirmedTx {
-                            tx_hash: *tx_hash,
-                            block_hash,
-                        })
-                    }
+                    Some(TxInclusion::Included(block_hash)) => DataIntentStatus::InConfirmedTx {
+                        tx_hash: *tx_hash,
+                        block_hash,
+                    },
                     None => {
                         // Should never happen, review this case
-                        None
+                        DataIntentStatus::Unknown
                     }
                 }
             }
-            None => None,
+            None => DataIntentStatus::Unknown,
         }
     }
 }

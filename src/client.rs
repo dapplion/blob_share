@@ -63,7 +63,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_status_by_id(&self, id: &str) -> Result<Option<DataIntentStatus>> {
+    pub async fn get_status_by_id(&self, id: &str) -> Result<DataIntentStatus> {
         let response = self
             .client
             .get(&format!("{}/v1/status/{}", &self.base_url, id))

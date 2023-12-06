@@ -29,6 +29,13 @@ pub enum TxInclusion {
     Included(H256),
 }
 
+#[derive(Debug)]
+pub enum SyncBlockOutcome {
+    BlockKnown,
+    Synced(Vec<H256>),
+    Reorg,
+}
+
 impl BlockSync {
     pub fn new(target_address: Address, anchor_block_hash: H256, anchor_block_number: u64) -> Self {
         let anchor_block = BlockSummary {
@@ -99,7 +106,7 @@ impl BlockSync {
         &self,
         provider: &T,
         block: BlockWithTxs,
-    ) -> Result<()> {
+    ) -> Result<SyncBlockOutcome> {
         let block = BlockSummary::from_block(block, self.target_address)?;
 
         // let block_number = provider.get_block_number().await?;
@@ -125,16 +132,16 @@ impl BlockSync {
                 .any(|x| block.hash == x.hash)
         {
             // Block already known
-            return Ok(());
+            return Ok(SyncBlockOutcome::BlockKnown);
         } else if block.parent_hash == last_block_hash {
             // Next unknown block is descendant of head
-            self.sync_block(block).await;
+            let blob_txs = self.sync_block(block).await;
+            return Ok(SyncBlockOutcome::Synced(blob_txs));
         } else {
             // Next unknown block is not descendant of head: re-org
             self.handle_reorg(provider, block).await?;
+            return Ok(SyncBlockOutcome::Reorg);
         }
-
-        Ok(())
     }
 
     async fn handle_reorg<T: BlockProvider>(
@@ -223,15 +230,29 @@ impl BlockSync {
         Ok(())
     }
 
-    async fn sync_block(&self, block: BlockSummary) {
+    async fn sync_block(&self, block: BlockSummary) -> Vec<H256> {
+        let blob_txs = block
+            .blob_txs
+            .iter()
+            .map(|tx| tx.tx_hash)
+            .collect::<Vec<_>>();
+
         // Drop pending transactions
         for tx in &block.blob_txs {
             self.pending_transactions
                 .write()
                 .await
                 .remove(&(tx.from, tx.nonce));
+            log::info!(
+                "pending blob tx included from {} nonce {} tx_hash {}",
+                tx.from,
+                tx.nonce,
+                tx.tx_hash
+            );
         }
         self.unfinalized_head_chain.write().await.push(block);
+
+        blob_txs
     }
 }
 
@@ -566,8 +587,7 @@ mod tests {
         tx.nonce = nonce.into();
         tx.max_priority_fee_per_gas = Some(0.into()); // set to 0 to make effective gas fee always 1
         tx.max_fee_per_gas = Some(1.into());
-        tx.other
-            .insert("max_fee_per_blob_gas".to_string(), "1".into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
         tx.transaction_type = Some(BLOB_TX_TYPE.into());
         tx.input = encode_blob_tx_data(&[BlobTxParticipant {
             address: participant,

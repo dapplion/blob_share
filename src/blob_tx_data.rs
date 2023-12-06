@@ -89,7 +89,7 @@ impl BlobTxSummary {
             .as_u128();
         let max_fee_per_blob_gas: U256 = tx
             .other
-            .get_deserialized("max_fee_per_blob_gas")
+            .get_deserialized("maxFeePerBlobGas")
             .ok_or_else(|| eyre!("not a type 3 tx, no max_fee_per_blob_gas"))??;
         let max_fee_per_blob_gas = max_fee_per_blob_gas.as_u128();
 
@@ -266,8 +266,7 @@ mod tests {
         tx.input = input.into();
         tx.max_fee_per_gas = Some(1.into());
         tx.max_priority_fee_per_gas = Some(2.into());
-        tx.other
-            .insert("max_fee_per_blob_gas".to_string(), "3".into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "3".into());
 
         let blob_tx_summary = BlobTxSummary::from_tx(tx, target_address).unwrap().unwrap();
         let expected_blob_tx_summary = BlobTxSummary {

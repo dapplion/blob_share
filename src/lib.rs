@@ -57,7 +57,7 @@ pub struct Args {
     pub bind_address: String,
 
     /// JSON RPC endpoint for an ethereum execution node
-    #[arg(long)]
+    #[arg(long, default_value = "ws://127.0.0.1:8546")]
     pub eth_provider: String,
 
     /// JSON RPC polling interval in miliseconds, used for testing
@@ -70,8 +70,15 @@ pub struct Args {
 
     /// Mnemonic for tx sender
     /// TODO: UNSAFE, handle hot keys better
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value = "any any any any any any any any any any any any any any"
+    )]
     pub mnemonic: String,
+
+    /// FOR TESTING ONLY: panic if a background task experiences an error for a single event
+    #[arg(long)]
+    pub panic_on_background_task_errors: bool,
 }
 
 impl Args {
@@ -84,6 +91,10 @@ struct PublishConfig {
     pub(crate) l1_inbox_address: Address,
 }
 
+struct AppConfig {
+    panic_on_background_task_errors: bool,
+}
+
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
     data_intent_tracker: DataIntentTracker,
@@ -94,6 +105,7 @@ struct AppData {
     publish_config: PublishConfig,
     notify: Notify,
     chain_id: u64,
+    config: AppConfig,
 }
 
 pub struct App {
@@ -173,6 +185,9 @@ impl App {
             provider,
             sender_wallet: wallet,
             chain_id,
+            config: AppConfig {
+                panic_on_background_task_errors: args.panic_on_background_task_errors,
+            },
         });
 
         let eth_client_version = app_data.provider.client_version().await?;
@@ -219,6 +234,10 @@ impl App {
             block_subscriber_task(self.data.clone()),
         )?;
         Ok(())
+    }
+
+    pub fn sender_address(&self) -> Address {
+        self.data.sender_wallet.address()
     }
 
     pub fn port(&self) -> u16 {
