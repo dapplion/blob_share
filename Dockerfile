@@ -1,6 +1,7 @@
-FROM rust:1.73.0 as builder
+FROM rust:1.73.0-bullseye AS builder
+RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev
 WORKDIR /app
-COPY . .
+COPY . . 
 RUN cargo build --release
 
 # Final layer to minimize size
