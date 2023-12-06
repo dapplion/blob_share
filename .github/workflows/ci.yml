@@ -44,8 +44,8 @@ jobs:
               # TODO: Support windows
               # - name: windows / stable-x86_64-gnu
               # os: windows-latest
-            rust: stable-x86_64-pc-windows-gnu
-            target: x86_64-pc-windows-gnu
+              # rust: stable-x86_64-pc-windows-gnu
+              # target: x86_64-pc-windows-gnu
 
     steps:
       - name: Checkout
