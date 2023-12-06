@@ -7,11 +7,14 @@ use ethers::{
 use eyre::{bail, Result};
 use rand::{distributions::Alphanumeric, Rng};
 use serde_json::json;
-use std::{env, path::PathBuf};
 use std::{
+    env,
     future::Future,
+    io::{BufRead, BufReader, Read},
+    process::ChildStdout,
     process::{Child, Command},
     str::FromStr,
+    thread,
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
@@ -124,7 +127,7 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     ]);
 
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::piped());
 
     match mode {
         GethMode::Dev => cmd.args(["--dev"]),
@@ -153,7 +156,10 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
         "--verbosity=5",
     ]);
 
-    let child = cmd.spawn().expect("could not start docker");
+    let mut child = cmd.spawn().expect("could not start docker");
+
+    pipe_stdout_on_thread(child.stdout.take(), "geth stdout");
+    pipe_stdout_on_thread(child.stderr.take(), "geth stderr");
 
     // Retrieve the IP of the started container
     let http_url = format!("http://localhost:{port_http}");
@@ -227,6 +233,20 @@ pub(crate) fn unused_port() -> u16 {
     local_addr.port()
 }
 
+pub fn pipe_stdout_on_thread<R: Read + Send + 'static>(stdout: Option<R>, prefix: &'static str) {
+    let reader = BufReader::new(stdout.expect(&format!("stdout is None for {}", prefix)));
+
+    // Spawn a new thread to handle stdout
+    thread::spawn(move || {
+        for line in reader.lines() {
+            match line {
+                Ok(line) => println!("[{}]: {}", prefix, line),
+                Err(e) => eprintln!("Error reading line of {}: {}", prefix, e),
+            }
+        }
+    });
+}
+
 pub fn run_until_exit(program: &str, args: &[&str]) -> Result<String> {
     // Replace "your_command" with the command you want to run
     // and add any arguments as additional strings in the array
@@ -266,10 +286,10 @@ where
         match f().await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                if Instant::now().duration_since(start) < timeout {
-                    sleep(retry_interval).await;
+                if Instant::now().duration_since(start) > timeout {
+                    return Err(e.wrap_err(format!("timeout {timeout:?}")));
                 } else {
-                    return Err(e);
+                    sleep(retry_interval).await;
                 }
             }
         }

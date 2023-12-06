@@ -8,7 +8,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
-use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice};
+use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice, info};
 
 type Nonce = u64;
 
@@ -243,11 +243,9 @@ impl BlockSync {
                 .write()
                 .await
                 .remove(&(tx.from, tx.nonce));
-            log::info!(
+            info!(
                 "pending blob tx included from {} nonce {} tx_hash {}",
-                tx.from,
-                tx.nonce,
-                tx.tx_hash
+                tx.from, tx.nonce, tx.tx_hash
             );
         }
         self.unfinalized_head_chain.write().await.push(block);

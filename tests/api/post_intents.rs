@@ -4,6 +4,7 @@ use crate::helpers::{TestHarness, TestMode, ADDRESS_ZERO, MS_100};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
 use ethers::{providers::Middleware, types::Address};
 use eyre::Result;
+use log::LevelFilter;
 use tokio::time::sleep;
 
 #[tokio::test]

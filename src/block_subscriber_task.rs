@@ -7,12 +7,13 @@ use ethers::{
 use eyre::{eyre, Result};
 
 use crate::{
+    debug, error, info,
     sync::{BlockSync, BlockWithTxs},
     AppData,
 };
 
 pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> {
-    log::debug!("starting block subscriber task");
+    debug!("starting block subscriber task");
 
     // Subscribes to 'newHeads' which:
     // >  fires a notification each time a new header is appended to the chain, including chain reorganizations
@@ -29,11 +30,9 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
             if app_data.config.panic_on_background_task_errors {
                 return Err(e);
             } else {
-                log::error!(
+                error!(
                     "error syncing block {:?} {:?}: {:?}",
-                    block.number,
-                    block.hash,
-                    e
+                    block.number, block.hash, e
                 );
             }
         }
@@ -59,13 +58,14 @@ async fn sync_block(
         .await?
         .ok_or_else(|| eyre!("block with txs not available {}", block_hash))?;
 
-    println!("### {:?}", block_with_txs.transactions);
-
     let sync_block_outcome = sync
         .sync_next_block(provider, BlockWithTxs::from_ethers_block(block_with_txs)?)
         .await?;
 
-    println!("### {:?}", sync_block_outcome);
+    info!(
+        "synced block {:?} {:?} outcome {:?}",
+        block.number, block.hash, sync_block_outcome
+    );
 
     Ok(())
 }

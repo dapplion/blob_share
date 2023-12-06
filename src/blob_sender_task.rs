@@ -4,8 +4,9 @@ use ethers::providers::Middleware;
 use eyre::{Context, Result};
 
 use crate::{
+    debug, error,
     kzg::{construct_blob_tx, TxParams},
-    AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
+    warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
@@ -15,7 +16,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
             if app_data.config.panic_on_background_task_errors {
                 return Err(e);
             } else {
-                log::error!("error sending blob tx {e:?}");
+                error!("error sending blob tx {e:?}");
             }
         }
     }
@@ -29,7 +30,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         if let Some(next_blob_items) = select_next_blob_items(items.as_mut_slice(), wei_per_byte) {
             next_blob_items
         } else {
-            log::debug!("no viable set of items for blob");
+            debug!("no viable set of items for blob");
             return Ok(());
         }
     };
@@ -39,7 +40,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         .map(|item| item.id())
         .collect::<Vec<_>>();
 
-    log::debug!(
+    debug!(
         "selected {} items for blob tx: {:?}",
         next_blob_items.len(),
         data_intent_ids
@@ -82,7 +83,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
                 ),
                 blob_tx.blob_tx_networking,
             ) {
-                log::warn!(
+                warn!(
                     "error persisting invalid tx {} {e:?}",
                     hex::encode(blob_tx.tx_hash)
                 );
@@ -93,7 +94,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
 
     // Sanity check on correct hash
     if blob_tx.tx_hash != tx.tx_hash() {
-        log::warn!(
+        warn!(
             "internally computed transaction hash {} does not match returned hash {}",
             blob_tx.tx_hash,
             tx.tx_hash()

@@ -5,10 +5,11 @@ use std::{
 };
 
 use crate::geth_helpers::{
-    generate_rand_str, get_jwtsecret_filepath, retry_with_timeout, run_until_exit, unused_port,
+    generate_rand_str, get_jwtsecret_filepath, pipe_stdout_on_thread, retry_with_timeout,
+    run_until_exit, unused_port,
 };
 
-const STARTUP_TIMEOUT_MILLIS: u64 = 10000;
+const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
 
 pub struct LodestarInstance {
     pid: Child,
@@ -56,7 +57,7 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     ]);
 
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::piped());
 
     cmd.args([
         "dev",
@@ -79,7 +80,10 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
         &format!("--genesisEth1Hash={}", runner_args.genesis_eth1_hash),
     ]);
 
-    let child = cmd.spawn().expect("could not start docker");
+    let mut child = cmd.spawn().expect("could not start docker");
+
+    pipe_stdout_on_thread(child.stdout.take(), "lodestar stdout");
+    pipe_stdout_on_thread(child.stderr.take(), "lodestar stderr");
 
     // Retrieve the IP of the started container
     let rest_url = format!("http://localhost:{port_rest}");

@@ -38,6 +38,16 @@ mod utils;
 pub use client::Client;
 pub use data_intent::DataIntent;
 
+// Use log crate when building application
+#[cfg(not(test))]
+pub(crate) use log::{debug, error, info, warn};
+
+// Workaround to use prinltn! for logs.
+// std stdio has dedicated logic to capture logs during test execution
+// https://github.com/rust-lang/rust/blob/1fdfe1234795a289af1088aefa92ef80191cb611/library/std/src/io/stdio.rs#L18
+#[cfg(test)]
+pub(crate) use std::{println as error, println as warn, println as info, println as debug};
+
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
 const MIN_BLOB_DATA_TO_PUBLISH: usize = MAX_USABLE_BLOB_DATA_LEN / 2; // 50%
@@ -192,17 +202,15 @@ impl App {
 
         let eth_client_version = app_data.provider.client_version().await?;
         let eth_net_version = app_data.provider.client_version().await?;
-        log::info!(
+        info!(
             "connected to eth node at {} version {} chain {}",
-            &args.eth_provider,
-            eth_client_version,
-            eth_net_version
+            &args.eth_provider, eth_client_version, eth_net_version
         );
 
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
         let listener_port = listener.local_addr().unwrap().port();
-        log::info!("Binding server on {}:{}", args.bind_address, listener_port);
+        info!("Binding server on {}:{}", args.bind_address, listener_port);
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {

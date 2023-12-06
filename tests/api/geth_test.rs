@@ -47,14 +47,11 @@ async fn geth_send_regular_transaction_no_inclusion() -> Result<()> {
 async fn geth_send_regular_transaction_with_inclusion() -> Result<()> {
     let geth = spawn_geth(GethMode::Interop).await;
 
-    println!("#### STARTING LODESTAR");
-    let lodestar = spawn_lodestar(RunLodestarArgs {
+    let _lodestar = spawn_lodestar(RunLodestarArgs {
         execution_url: geth.authrpc_url(true),
         genesis_eth1_hash: geth.genesis_block_hash_hex(),
     })
     .await;
-
-    println!("#### STARTED LODESTAR");
 
     let client = geth.http_provider().unwrap();
 

@@ -5,6 +5,7 @@ use ethers::{
     utils::parse_ether,
 };
 use eyre::{bail, Result};
+use log::LevelFilter;
 use once_cell::sync::Lazy;
 use std::{
     future::Future,
@@ -80,7 +81,18 @@ impl TestHarness {
     }
 
     pub async fn build(test_mode: TestMode) -> Self {
-        Lazy::force(&TRACING);
+        //  Lazy::force(&TRACING);
+
+        // From env_logger docs to capture logs in tests
+        // REF: https://docs.rs/env_logger/latest/env_logger/#capturing-logs-in-tests
+        let _ = env_logger::builder()
+            .format_timestamp_millis()
+            // Enabling debug for everything causes hyper and reqwest to spam logs
+            .filter(None, LevelFilter::Info)
+            // Enable debug for this crate
+            .filter(Some("blob_share"), LevelFilter::Debug)
+            .is_test(true)
+            .try_init();
 
         let (geth_instance, lodestar_instance) = match test_mode {
             TestMode::ELOnly => {
