@@ -65,7 +65,7 @@ pub(crate) async fn get_data_by_id(
         data.data_intent_tracker
             .data_by_id(&id)
             .await
-            .ok_or_else(|| e400(format!("no item found for ID {}", id.to_string())))?
+            .ok_or_else(|| e400(format!("no item found for ID {}", id)))?
     };
     Ok(HttpResponse::Ok().json(item))
 }

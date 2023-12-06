@@ -132,15 +132,15 @@ impl BlockSync {
                 .any(|x| block.hash == x.hash)
         {
             // Block already known
-            return Ok(SyncBlockOutcome::BlockKnown);
+            Ok(SyncBlockOutcome::BlockKnown)
         } else if block.parent_hash == last_block_hash {
             // Next unknown block is descendant of head
             let blob_txs = self.sync_block(block).await;
-            return Ok(SyncBlockOutcome::Synced(blob_txs));
+            Ok(SyncBlockOutcome::Synced(blob_txs))
         } else {
             // Next unknown block is not descendant of head: re-org
             self.handle_reorg(provider, block).await?;
-            return Ok(SyncBlockOutcome::Reorg);
+            Ok(SyncBlockOutcome::Reorg)
         }
     }
 
