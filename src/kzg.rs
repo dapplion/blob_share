@@ -22,7 +22,7 @@ pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
 
 pub struct BlobTx {
     pub blob_tx_payload_body: Bytes,
-    pub tx_hash: B256,
+    pub tx_hash: H256,
     pub blob_tx_networking: Bytes,
     pub tx_summary: BlobTxSummary,
 }
@@ -152,7 +152,7 @@ pub(crate) fn construct_blob_tx(
 
     Ok(BlobTx {
         blob_tx_payload_body: tx_rlp_with_sig.into(),
-        tx_hash,
+        tx_hash: H256(tx_hash.into()),
         blob_tx_networking: tx_rlp_networking.into(),
         tx_summary: BlobTxSummary {
             participants,

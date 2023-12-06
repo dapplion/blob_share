@@ -3,16 +3,15 @@ use ethers::signers::Signer;
 use ethers::types::Address;
 use eyre::eyre;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::Entry;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
-use crate::utils::{deserialize_from_hex, e400, serialize_as_hex};
+use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
 use crate::AppData;
 
 #[get("/v1/health")]
-pub(crate) async fn get_status() -> impl Responder {
+pub(crate) async fn get_health() -> impl Responder {
     HttpResponse::Ok().finish()
 }
 
@@ -31,23 +30,16 @@ pub(crate) async fn post_data(
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
     data_intent.verify_signature().map_err(e400)?;
 
-    // TODO: generalize ID when having multiple types
-    let id = data_intent.id();
-
     let account_balance = data.sync.unfinalized_balance_delta(data_intent.from).await;
     if account_balance < data_intent.max_cost_wei as i128 {
         return Err(e400(eyre!("Insufficient balance")));
     }
 
-    match data.pending_intents.write().await.entry(id) {
-        Entry::Vacant(entry) => entry.insert(data_intent),
-        Entry::Occupied(_) => {
-            return Err(e400(eyre!(
-                "data intent with data hash {} already known",
-                data_intent.data_hash
-            )));
-        }
-    };
+    let id = data
+        .data_intent_tracker
+        .add(data_intent)
+        .await
+        .map_err(e500)?;
 
     data.notify.notify_one();
 
@@ -55,39 +47,40 @@ pub(crate) async fn post_data(
 }
 
 #[get("/v1/data")]
-pub(crate) async fn get_data(data: web::Data<Arc<AppData>>) -> impl Responder {
-    let items = {
-        data.pending_intents
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<DataIntent>>()
-    };
-
-    HttpResponse::Ok().json(
-        items
-            .into_iter()
-            .map(|v| v.into())
-            .collect::<Vec<PostDataIntentV1>>(),
-    )
+pub(crate) async fn get_data(
+    data: web::Data<Arc<AppData>>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let items = { data.data_intent_tracker.get_all_pending().await };
+    Ok(HttpResponse::Ok().json(items))
 }
 
 #[get("/v1/data/{id}")]
-pub(crate) async fn get_data_from_data_hash(
+pub(crate) async fn get_data_by_id(
     data: web::Data<Arc<AppData>>,
     id: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let id = DataIntentId::from_str(&id).map_err(e400)?;
     let item = {
-        data.pending_intents
-            .read()
+        data.data_intent_tracker
+            .data_by_id(&id)
             .await
-            .get(&id)
             .ok_or_else(|| e400(format!("no item found for ID {}", id.to_string())))?
-            .clone()
     };
+    Ok(HttpResponse::Ok().json(item))
+}
 
+#[get("/v1/status/{id}")]
+pub(crate) async fn get_status_by_id(
+    data: web::Data<Arc<AppData>>,
+    id: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let id = DataIntentId::from_str(&id).map_err(e400)?;
+    let item = {
+        data.data_intent_tracker
+            .status_by_id(&data.sync, &id)
+            .await
+            .ok_or_else(|| e400(format!("no item found for ID {}", id.to_string())))?
+    };
     Ok(HttpResponse::Ok().json(item))
 }
 

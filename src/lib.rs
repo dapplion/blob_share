@@ -1,21 +1,21 @@
 use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
-use data_intent::DataIntentId;
+use data_intent_tracker::DataIntentTracker;
 use ethers::{
     providers::{Middleware, Provider, Ws},
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
 use eyre::{eyre, Result};
-use std::{collections::HashMap, net::TcpListener, str::FromStr, sync::Arc, time::Duration};
-use tokio::sync::{Notify, RwLock};
+use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::Notify;
 
 use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     gas::GasTracker,
-    routes::{get_data, get_sender, get_status, post_data},
+    routes::{get_data, get_data_by_id, get_health, get_sender, get_status_by_id, post_data},
     sync::BlockSync,
     trusted_setup::TrustedSetup,
 };
@@ -25,6 +25,7 @@ mod blob_tx_data;
 mod block_subscriber_task;
 pub mod client;
 mod data_intent;
+mod data_intent_tracker;
 mod gas;
 mod kzg;
 mod routes;
@@ -79,15 +80,13 @@ impl Args {
     }
 }
 
-type DataIntents = HashMap<DataIntentId, DataIntent>;
-
 struct PublishConfig {
     pub(crate) l1_inbox_address: Address,
 }
 
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
-    pending_intents: RwLock<DataIntents>,
+    data_intent_tracker: DataIntentTracker,
     sync: BlockSync,
     gas_tracker: GasTracker,
     provider: Provider<Ws>,
@@ -165,7 +164,7 @@ impl App {
         let app_data = Arc::new(AppData {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
-            pending_intents: <_>::default(),
+            data_intent_tracker: <_>::default(),
             sync,
             gas_tracker,
             publish_config: PublishConfig {
@@ -195,10 +194,12 @@ impl App {
             actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
-                .service(get_status)
+                .service(get_health)
+                .service(get_sender)
                 .service(post_data)
                 .service(get_data)
-                .service(get_sender)
+                .service(get_data_by_id)
+                .service(get_status_by_id)
         })
         .listen(listener)?
         .run();

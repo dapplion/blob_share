@@ -41,15 +41,6 @@ impl BlobTxSummary {
                 let evm_gas_cost = participant.evm_gas() as u128
                     * self.effective_gas_price(block_base_fee_per_gas);
 
-                dbg!(
-                    self.effective_gas_price(block_base_fee_per_gas),
-                    block_base_fee_per_gas,
-                    participant.data_len,
-                    blob_data_cost,
-                    evm_gas_cost,
-                    unused_bytes,
-                );
-
                 cost += blob_data_cost + evm_gas_cost;
             }
         }

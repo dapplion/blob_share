@@ -2,6 +2,7 @@ use eyre::{bail, Result};
 use reqwest::Response;
 
 pub use crate::routes::{PostDataIntentV1, PostDataResponse, SenderDetails};
+pub use crate::{data_intent::DataIntentId, data_intent_tracker::DataIntentStatus, DataIntent};
 
 pub struct Client {
     base_url: String,
@@ -16,8 +17,6 @@ impl Client {
         }
     }
 
-    // Test health of server
-    // $ curl -vv localhost:8000/health
     pub async fn health(&self) -> Result<u16> {
         let response = self
             .client
@@ -27,7 +26,15 @@ impl Client {
         Ok(response.status().as_u16())
     }
 
-    // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
+    pub async fn get_sender(&self) -> Result<SenderDetails> {
+        let response = self
+            .client
+            .get(&format!("{}/v1/sender", &self.base_url))
+            .send()
+            .await?;
+        Ok(is_ok_response(response).await?.json().await?)
+    }
+
     pub async fn post_data(&self, data: &PostDataIntentV1) -> Result<PostDataResponse> {
         let response = self
             .client
@@ -38,7 +45,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_data(&self) -> Result<Vec<PostDataIntentV1>> {
+    pub async fn get_data(&self) -> Result<Vec<DataIntent>> {
         let response = self
             .client
             .get(&format!("{}/v1/data", &self.base_url))
@@ -47,10 +54,19 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_sender(&self) -> Result<SenderDetails> {
+    pub async fn get_data_by_id(&self, id: &str) -> Result<DataIntent> {
         let response = self
             .client
-            .get(&format!("{}/sender", &self.base_url))
+            .get(&format!("{}/v1/data/{}", &self.base_url, id))
+            .send()
+            .await?;
+        Ok(is_ok_response(response).await?.json().await?)
+    }
+
+    pub async fn get_status_by_id(&self, id: &str) -> Result<Option<DataIntentStatus>> {
+        let response = self
+            .client
+            .get(&format!("{}/v1/status/{}", &self.base_url, id))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)

@@ -21,10 +21,8 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
     let wei_per_byte = 1; // TODO: Fetch from chain
 
     let next_blob_items = {
-        let items = app_data.pending_intents.read().await;
-        if let Some(next_blob_items) =
-            select_next_blob_items(&mut items.values().collect::<Vec<_>>(), wei_per_byte)
-        {
+        let mut items = app_data.data_intent_tracker.get_all_pending().await;
+        if let Some(next_blob_items) = select_next_blob_items(items.as_mut_slice(), wei_per_byte) {
             next_blob_items
         } else {
             log::debug!("no viable set of items for blob");
@@ -32,18 +30,16 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         }
     };
 
-    log::debug!(
-        "selected items for blob tx, count {}",
-        next_blob_items.len()
-    );
+    let data_intent_ids = next_blob_items
+        .iter()
+        .map(|item| item.id())
+        .collect::<Vec<_>>();
 
-    // Clear items from pool
-    {
-        let mut items = app_data.pending_intents.write().await;
-        for item in next_blob_items.iter() {
-            items.remove(&item.id());
-        }
-    }
+    log::debug!(
+        "selected {} items for blob tx: {:?}",
+        next_blob_items.len(),
+        data_intent_ids
+    );
 
     let gas_config = app_data.gas_tracker.estimate(&app_data.provider).await?;
 
@@ -60,6 +56,13 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         &app_data.sender_wallet,
         next_blob_items,
     )?;
+
+    // Declare items as pending on the computed tx_hash
+    app_data
+        .data_intent_tracker
+        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
+        .await
+        .wrap_err("consistency error with blob_tx intents")?;
 
     // TODO: do not await here, spawn another task
     // TODO: monitor transaction, if gas is insufficient return data intents to the pool
@@ -85,7 +88,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         })?;
 
     // Sanity check on correct hash
-    if blob_tx.tx_hash != tx.tx_hash().as_fixed_bytes() {
+    if blob_tx.tx_hash != tx.tx_hash() {
         log::warn!(
             "internally computed transaction hash {} does not match returned hash {}",
             blob_tx.tx_hash,
@@ -104,7 +107,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
 // TODO: write optimizer algo to find a better distribution
 // TODO: is ok to represent wei units as usize?
 fn select_next_blob_items(
-    items: &mut [&DataIntent],
+    items: &mut [DataIntent],
     _blob_gas_price: u128,
 ) -> Option<Vec<DataIntent>> {
     // Sort items by data length
@@ -184,12 +187,12 @@ mod tests {
         blob_gas_price: u128,
         selected_items: Option<&[(usize, u128)]>,
     ) {
-        let all_items = generate_data_intents(all_items);
+        let mut all_items = generate_data_intents(all_items);
         let selected_items = selected_items.map(|items| generate_data_intents(items));
 
         assert_eq!(
             items_to_summary(select_next_blob_items(
-                &mut all_items.iter().collect::<Vec<_>>(),
+                all_items.as_mut_slice(),
                 blob_gas_price
             )),
             items_to_summary(selected_items)

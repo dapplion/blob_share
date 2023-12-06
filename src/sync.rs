@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use ethers::{
     providers::{Http, Middleware, Provider, Ws},
-    types::{Address, Block, Transaction, H256},
+    types::{Address, Block, Transaction, TxHash, H256},
 };
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
@@ -22,6 +22,11 @@ pub struct BlockSync {
 pub trait BlockProvider {
     // async fn get_block_number(&self) -> Result<u64>;
     async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>>;
+}
+
+pub enum TxInclusion {
+    Pending,
+    Included(H256),
 }
 
 impl BlockSync {
@@ -62,9 +67,25 @@ impl BlockSync {
             .map(|tx| tx.cost_to_participant(address, None, None))
             .sum::<u128>();
 
-        dbg!(balance_delta_block_inclusions, cost_of_pending_txs);
-
         balance_delta_block_inclusions - cost_of_pending_txs as i128
+    }
+
+    pub async fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
+        for block in self.unfinalized_head_chain.read().await.iter() {
+            for tx in &block.blob_txs {
+                if tx_hash == tx.tx_hash {
+                    return Some(TxInclusion::Included(block.hash));
+                }
+            }
+        }
+
+        for tx in self.pending_transactions.read().await.values() {
+            if tx_hash == tx.tx_hash {
+                return Some(TxInclusion::Pending);
+            }
+        }
+
+        None
     }
 
     pub async fn register_pending_blob_tx(&self, tx: BlobTxSummary) {
