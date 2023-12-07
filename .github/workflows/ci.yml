@@ -17,14 +17,19 @@ jobs:
     name: Check Style
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
+        # </setup>
       - run: cargo fmt -- --check
       - run: cargo clippy -- --deny warnings
 
@@ -49,18 +54,22 @@ jobs:
               # target: x86_64-pc-windows-gnu
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust || 'stable' }}
           targets: ${{ matrix.target }}
-
+        # </setup>
       - name: Check
         run: cargo check
-
       - name: Test
         run: cargo test -- --test-threads=1 --nocapture
 
@@ -68,17 +77,21 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
+        # </setup>
       - name: Check documentation
         run: cargo doc --no-deps --document-private-items --all-features  
         env:
           RUSTDOCFLAGS: -D warnings
-
       - name: Check README
         run: ./scripts/check_synced_readme.py
  
