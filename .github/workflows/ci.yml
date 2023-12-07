@@ -32,6 +32,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: [style]
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
