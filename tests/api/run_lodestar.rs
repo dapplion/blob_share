@@ -31,6 +31,9 @@ pub struct RunLodestarArgs {
 pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     let lodestar_docker_tag = "chainsafe/lodestar";
 
+    // Make sure image is available
+    run_until_exit("docker", &["pull", &lodestar_docker_tag]).unwrap();
+
     let port_rest = unused_port();
 
     let container_name = format!("lodestar-dev-cancun-{}", generate_rand_str(10));
