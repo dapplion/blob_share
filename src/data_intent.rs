@@ -41,7 +41,7 @@ impl DataIntent {
         max_cost_wei: u128,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
-        let signature: Signature = wallet.sign_message(&data_hash.0).await?;
+        let signature: Signature = wallet.sign_message(data_hash.0).await?;
 
         Ok(DataIntent {
             from: wallet.address(),
@@ -66,9 +66,9 @@ impl DataIntentId {
     }
 }
 
-impl ToString for DataIntentId {
-    fn to_string(&self) -> String {
-        format!("v1-{}-{}", self.0, self.1)
+impl Display for DataIntentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "v1-{}-{}", hex::encode(self.0), hex::encode(self.1 .0))
     }
 }
 
@@ -101,7 +101,7 @@ pub struct DataHash([u8; 32]);
 
 impl Display for DataHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&hex::encode(&self.0))
+        f.write_str(&format!("0x{}", hex::encode(self.0)))
     }
 }
 
@@ -132,11 +132,19 @@ mod tests {
 
     use ethers::{
         signers::{LocalWallet, Signer},
-        types::Address,
+        types::{Address, H160},
     };
     use eyre::Result;
 
-    use super::DataIntent;
+    use super::{DataIntent, DataIntentId};
+
+    #[test]
+    fn data_intent_id_str_serde() {
+        let id = DataIntentId::new(H160([0xab; 20]), [0xfe; 32].into());
+        let id_str = id.to_string();
+        assert_eq!(id_str, "v1-abababababababababababababababababababab-fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe");
+        assert_eq!(DataIntentId::from_str(&id_str).unwrap(), id);
+    }
 
     #[tokio::test]
     async fn data_intent_signature() -> Result<()> {

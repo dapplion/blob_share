@@ -1,21 +1,21 @@
 use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
-use data_intent::{DataHash, DataIntentId};
+use data_intent_tracker::DataIntentTracker;
 use ethers::{
     providers::{Middleware, Provider, Ws},
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
 use eyre::{eyre, Result};
-use std::{collections::HashMap, net::TcpListener, str::FromStr, sync::Arc, time::Duration};
-use tokio::sync::{Notify, RwLock};
+use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::Notify;
 
 use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     gas::GasTracker,
-    routes::{get_data, get_sender, get_status, post_data},
+    routes::{get_data, get_data_by_id, get_health, get_sender, get_status_by_id, post_data},
     sync::BlockSync,
     trusted_setup::TrustedSetup,
 };
@@ -25,6 +25,7 @@ mod blob_tx_data;
 mod block_subscriber_task;
 pub mod client;
 mod data_intent;
+mod data_intent_tracker;
 mod gas;
 mod kzg;
 mod routes;
@@ -36,6 +37,16 @@ mod utils;
 
 pub use client::Client;
 pub use data_intent::DataIntent;
+
+// Use log crate when building application
+#[cfg(not(test))]
+pub(crate) use log::{debug, error, info, warn};
+
+// Workaround to use prinltn! for logs.
+// std stdio has dedicated logic to capture logs during test execution
+// https://github.com/rust-lang/rust/blob/1fdfe1234795a289af1088aefa92ef80191cb611/library/std/src/io/stdio.rs#L18
+#[cfg(test)]
+pub(crate) use std::{println as error, println as warn, println as info, println as debug};
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
@@ -56,7 +67,7 @@ pub struct Args {
     pub bind_address: String,
 
     /// JSON RPC endpoint for an ethereum execution node
-    #[arg(long)]
+    #[arg(long, default_value = "ws://127.0.0.1:8546")]
     pub eth_provider: String,
 
     /// JSON RPC polling interval in miliseconds, used for testing
@@ -69,8 +80,15 @@ pub struct Args {
 
     /// Mnemonic for tx sender
     /// TODO: UNSAFE, handle hot keys better
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value = "any any any any any any any any any any any any any any"
+    )]
     pub mnemonic: String,
+
+    /// FOR TESTING ONLY: panic if a background task experiences an error for a single event
+    #[arg(long)]
+    pub panic_on_background_task_errors: bool,
 }
 
 impl Args {
@@ -79,15 +97,17 @@ impl Args {
     }
 }
 
-type DataIntents = HashMap<DataIntentId, DataIntent>;
-
 struct PublishConfig {
     pub(crate) l1_inbox_address: Address,
 }
 
+struct AppConfig {
+    panic_on_background_task_errors: bool,
+}
+
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
-    pending_intents: RwLock<DataIntents>,
+    data_intent_tracker: DataIntentTracker,
     sync: BlockSync,
     gas_tracker: GasTracker,
     provider: Provider<Ws>,
@@ -95,6 +115,7 @@ struct AppData {
     publish_config: PublishConfig,
     notify: Notify,
     chain_id: u64,
+    config: AppConfig,
 }
 
 pub struct App {
@@ -165,7 +186,7 @@ impl App {
         let app_data = Arc::new(AppData {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
-            pending_intents: <_>::default(),
+            data_intent_tracker: <_>::default(),
             sync,
             gas_tracker,
             publish_config: PublishConfig {
@@ -174,31 +195,34 @@ impl App {
             provider,
             sender_wallet: wallet,
             chain_id,
+            config: AppConfig {
+                panic_on_background_task_errors: args.panic_on_background_task_errors,
+            },
         });
 
         let eth_client_version = app_data.provider.client_version().await?;
         let eth_net_version = app_data.provider.client_version().await?;
-        log::info!(
+        info!(
             "connected to eth node at {} version {} chain {}",
-            &args.eth_provider,
-            eth_client_version,
-            eth_net_version
+            &args.eth_provider, eth_client_version, eth_net_version
         );
 
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
         let listener_port = listener.local_addr().unwrap().port();
-        log::info!("Binding server on {}:{}", args.bind_address, listener_port);
+        info!("Binding server on {}:{}", args.bind_address, listener_port);
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
             actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
-                .service(get_status)
+                .service(get_health)
+                .service(get_sender)
                 .service(post_data)
                 .service(get_data)
-                .service(get_sender)
+                .service(get_data_by_id)
+                .service(get_status_by_id)
         })
         .listen(listener)?
         .run();
@@ -218,6 +242,10 @@ impl App {
             block_subscriber_task(self.data.clone()),
         )?;
         Ok(())
+    }
+
+    pub fn sender_address(&self) -> Address {
+        self.data.sender_wallet.address()
     }
 
     pub fn port(&self) -> u16 {

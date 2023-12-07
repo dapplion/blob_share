@@ -5,6 +5,7 @@ use serde::{
 use std::fmt::{self, Debug, Display};
 
 // Return an opaque 500 while preserving the error root's cause for logging.
+#[allow(dead_code)]
 pub(crate) fn e500<T>(e: T) -> actix_web::Error
 where
     T: Debug + Display + 'static,

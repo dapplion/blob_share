@@ -1,103 +1,87 @@
 use std::{str::FromStr, time::Duration};
 
-use crate::{
-    geth_helpers::get_wallet,
-    helpers::{TestHarness, ADDRESS_ZERO},
-    spawn_geth,
-};
+use crate::helpers::{TestHarness, TestMode, ADDRESS_ZERO, MS_100};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
-use ethers::{
-    providers::Middleware,
-    types::{Address, TransactionRequest},
-    utils::parse_ether,
-};
+use ethers::{providers::Middleware, types::Address};
 use eyre::Result;
+use log::LevelFilter;
 use tokio::time::sleep;
 
 #[tokio::test]
-async fn test_spawn_geth() {
-    spawn_geth().await;
-}
-
-#[tokio::test]
 async fn health_check_works() {
-    let testing_harness = TestHarness::spawn().await;
+    let testing_harness = TestHarness::spawn_with_el_only().await;
     testing_harness.client.health().await.unwrap();
 }
 
 #[tokio::test]
-async fn post_single_data_intent() {
-    let testing_harness = TestHarness::spawn().await;
+async fn post_two_intents_and_expect_blob_tx() {
+    TestHarness::build(TestMode::WithChain)
+        .await
+        .spawn_with_fn(|test_harness| {
+            async move {
+                // Submit data intent
+                let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 3];
+                let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2];
 
-    // TODO: automate
-    let eth_provider_url = "http://localhost:8545";
-    let chain_id = 999;
-    let wallet = get_wallet(eth_provider_url, chain_id).unwrap();
+                let wallet = test_harness.get_wallet_genesis_funds();
+                // Fund account
+                test_harness.fund_sender_account(&wallet).await;
 
-    // Submit data intent
-    let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 2];
+                // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
+                let intent_1_id = test_harness
+                    .post_data(&wallet.signer(), data_1.clone())
+                    .await;
+                test_harness
+                    .wait_for_known_intent(&intent_1_id, MS_100)
+                    .await?;
 
-    testing_harness
-        .post_data(&wallet.signer(), data_1.clone(), "data_intent_1")
-        .await;
+                // Check data intent is stored
+                let intents = test_harness.client.get_data().await?;
+                assert_eq!(intents.len(), 1);
 
-    // Check data intent is stored
-    let intents = testing_harness.get_data().await;
-    assert_eq!(intents.len(), 1);
-}
+                let intent_2_id = test_harness
+                    .post_data(&wallet.signer(), data_2.clone())
+                    .await;
 
-#[tokio::test]
-async fn post_two_intents_and_expect_blob_tx() -> Result<()> {
-    let testing_harness = TestHarness::spawn().await;
+                sleep(Duration::from_millis(100)).await;
 
-    // Submit data intent
-    let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 2];
-    let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
+                // After sending enough intents the blob transaction should be emitted
+                let intents = test_harness.client.get_data().await?;
+                assert_eq!(intents.len(), 0);
 
-    // TODO: automate
-    let eth_provider_url = "http://localhost:8545";
-    let chain_id = 999;
-    let sender = testing_harness.get_sender().await;
-    let wallet = get_wallet(eth_provider_url, chain_id)?;
+                let intent_1_txhash = test_harness
+                    .wait_for_intent_inclusion_in_any_tx(&intent_1_id, Duration::from_secs(1))
+                    .await?;
+                let intent_2_txhash = test_harness
+                    .wait_for_intent_inclusion_in_any_tx(&intent_2_id, Duration::from_secs(1))
+                    .await?;
+                assert_eq!(
+                    intent_1_txhash, intent_2_txhash,
+                    "two intents should be in the same tx"
+                );
 
-    // Fund account
-    let tx = TransactionRequest::new()
-        .from(wallet.address())
-        .to(sender.address)
-        .value(parse_ether("0.1")?);
-    let tx = wallet.send_transaction(tx, None).await?;
-    tx.confirmations(1).await?;
+                let (intent_1_txhash_block, intent_1_block) = test_harness
+                    .wait_for_intent_inclusion_in_any_block(
+                        &intent_1_id,
+                        Some(intent_1_txhash),
+                        Duration::from_secs(10),
+                    )
+                    .await?;
 
-    // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
-    let intent_1_id = testing_harness
-        .post_data(&wallet.signer(), data_1.clone(), "intent_1")
-        .await;
+                let block = test_harness
+                    .eth_provider
+                    .get_block_with_txs(intent_1_block)
+                    .await?
+                    .expect(&format!("block {intent_1_block} should be known"));
+                let intent_1_tx = block
+                    .transactions
+                    .iter()
+                    .find(|tx| tx.hash == intent_1_txhash_block)
+                    .expect("blob transaction not found in block");
 
-    // Check data intent is stored
-    let intents = testing_harness.get_data().await;
-    assert_eq!(intents.len(), 1);
-
-    let intent_2_id = testing_harness
-        .post_data(&wallet.signer(), data_2.clone(), "intent_2")
-        .await;
-
-    sleep(Duration::from_millis(100)).await;
-
-    // After sending enough intents the blob transaction should be emitted
-    let intents = testing_harness.get_data().await;
-    assert_eq!(intents.len(), 0);
-
-    let tx = testing_harness
-        .wait_for_block_with_tx_from(
-            testing_harness.sender_address(),
-            Duration::from_millis(20000),
-            Some(Duration::from_millis(500)),
-        )
-        .await;
-    let expected_data = [data_1, data_2].concat();
-    // Assert correctly constructed transaction
-    assert_eq!(hex::encode(&tx.input), hex::encode(expected_data));
-    assert_eq!(tx.to, Some(Address::from_str(ADDRESS_ZERO).unwrap()));
-
-    Ok(())
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
 }

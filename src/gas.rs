@@ -56,7 +56,7 @@ impl GasTracker {
         Ok(GasConfig {
             max_priority_fee_per_gas: max_priority_fee_per_gas.as_u64().try_into()?,
             max_fee_per_gas: max_fee_per_gas.as_u64().try_into()?,
-            max_fee_per_blob_gas: max_fee_per_blob_gas.try_into()?,
+            max_fee_per_blob_gas,
         })
     }
 }
@@ -78,20 +78,20 @@ impl BlockGasSummary {
 
 fn calc_excess_blob_gas(parent_excess_blob_gas: u128, parent_blob_gas_used: u128) -> u128 {
     if parent_excess_blob_gas + parent_blob_gas_used < TARGET_BLOB_GAS_PER_BLOCK {
-        return 0;
+        0
     } else {
-        return parent_excess_blob_gas + parent_blob_gas_used - TARGET_BLOB_GAS_PER_BLOCK;
+        parent_excess_blob_gas + parent_blob_gas_used - TARGET_BLOB_GAS_PER_BLOCK
     }
 }
 
 /// All transactions in a block must satisfy that
 /// assert tx.max_fee_per_blob_gas >= get_blob_gasprice(block.header)
 pub(crate) fn get_blob_gasprice(excess_blob_gas: u128) -> u128 {
-    return fake_exponential(
+    fake_exponential(
         MIN_BLOB_GASPRICE,
         excess_blob_gas,
         BLOB_GASPRICE_UPDATE_FRACTION,
-    );
+    )
 }
 
 fn fake_exponential(factor: u128, numerator: u128, denominator: u128) -> u128 {

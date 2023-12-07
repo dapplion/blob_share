@@ -2,15 +2,19 @@ use ethers::{
     middleware::SignerMiddleware,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
-    types::Address,
+    types::{Address, H256},
 };
 use eyre::{bail, Result};
 use rand::{distributions::Alphanumeric, Rng};
 use serde_json::json;
 use std::{
+    env,
     future::Future,
+    io::{BufRead, BufReader, Read},
+    process::ChildStdout,
     process::{Child, Command},
     str::FromStr,
+    thread,
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
@@ -21,10 +25,16 @@ const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
 const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
 
-pub fn get_wallet(
+pub fn get_jwtsecret_filepath() -> String {
+    path_from_cwd(&["tests", "artifacts", "jwtsecret"])
+}
+
+pub type WalletWithProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
+
+pub fn get_wallet_genesis_funds(
     eth_provider_url: &str,
     chain_id: u64,
-) -> Result<SignerMiddleware<Provider<Http>, LocalWallet>> {
+) -> Result<WalletWithProvider> {
     let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
     assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
     let provider = Provider::<Http>::try_from(eth_provider_url)?;
@@ -40,7 +50,9 @@ pub struct GethInstance {
     container_name: String,
     http_url: String,
     ws_url: String,
+    port_authrpc: u16,
     chain_id: u64,
+    genesis_block_hash: H256,
 }
 
 impl GethInstance {
@@ -52,13 +64,32 @@ impl GethInstance {
         &self.ws_url
     }
 
-    pub fn http_provider(&self) -> Result<SignerMiddleware<Provider<Http>, LocalWallet>> {
-        get_wallet(self.http_url(), self.chain_id)
+    pub fn authrpc_url(&self, from_docker: bool) -> String {
+        if from_docker {
+            format!("http://host.docker.internal:{}", self.port_authrpc)
+        } else {
+            format!("http://localhost:{}", self.port_authrpc)
+        }
+    }
+
+    pub fn http_provider(&self) -> Result<WalletWithProvider> {
+        get_wallet_genesis_funds(self.http_url(), self.chain_id)
+    }
+
+    pub fn genesis_block_hash_hex(&self) -> String {
+        format!("0x{}", hex::encode(self.genesis_block_hash))
     }
 }
 
-pub async fn spawn_geth() -> GethInstance {
+pub enum GethMode {
+    Interop,
+    Dev,
+}
+
+pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     let geth_version = "v1.13.5";
+
+    let geth_dockerfile_dirpath = path_from_cwd(&["tests", "artifacts", "geth"]);
 
     // Make sure image is available
     run_until_exit(
@@ -67,15 +98,18 @@ pub async fn spawn_geth() -> GethInstance {
             "build",
             &format!("--build-arg='tag={geth_version}'"),
             &format!("--tag={GETH_BUILD_TAG}"),
-            "./tests/api/geth",
+            &geth_dockerfile_dirpath,
         ],
     )
     .unwrap();
 
     let port_http = unused_port();
     let port_ws = unused_port();
+    let port_authrpc = unused_port();
 
     let container_name = format!("geth-dev-cancun-{}", generate_rand_str(10));
+    let jwtsecret_path_host = get_jwtsecret_filepath();
+    let jwtsecret_path_container = "/jwtsecret";
 
     let mut cmd = Command::new("docker");
     // Don't run as host, fetch IP latter
@@ -87,14 +121,28 @@ pub async fn spawn_geth() -> GethInstance {
         &format!("--name={container_name}"),
         &format!("-p={port_http}:{port_http}"),
         &format!("-p={port_ws}:{port_ws}"),
+        &format!("-p={port_authrpc}:{port_authrpc}"),
+        &format!("-v={jwtsecret_path_host}:/{jwtsecret_path_container}"),
         GETH_BUILD_TAG,
     ]);
 
     cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::piped());
 
-    cmd.args(["--dev"]);
+    match mode {
+        GethMode::Dev => cmd.args(["--dev"]),
+        GethMode::Interop => cmd.args([
+            // Interop flags with CL
+            "--authrpc.addr=0.0.0.0",
+            &format!("--authrpc.port={}", port_authrpc),
+            // WARNING! this * may have to be surrounded by quotes in some platforms
+            "--authrpc.vhosts=*",
+            &format!("--authrpc.jwtsecret={jwtsecret_path_container}"),
+        ]),
+    };
+
     cmd.args([
+        "--nodiscover",
         "--http",
         "--http.addr=0.0.0.0",
         &format!("--http.port={port_http}"),
@@ -102,14 +150,16 @@ pub async fn spawn_geth() -> GethInstance {
         "--ws",
         "--ws.addr=0.0.0.0",
         &format!("--ws.port={port_ws}"),
-        "--ws.origins",
-        "\"*\"",
+        "--ws.origins=\"*\"",
         "--ws.api=admin,debug,eth,miner,net,personal,txpool,web3",
         // Logging verbosity: 0=silent, 1=error, 2=warn, 3=info, 4=debug, 5=detail
         "--verbosity=5",
     ]);
 
-    let child = cmd.spawn().expect("could not start docker");
+    let mut child = cmd.spawn().expect("could not start docker");
+
+    pipe_stdout_on_thread(child.stdout.take(), "geth stdout");
+    pipe_stdout_on_thread(child.stderr.take(), "geth stderr");
 
     // Retrieve the IP of the started container
     let http_url = format!("http://localhost:{port_http}");
@@ -145,19 +195,18 @@ pub async fn spawn_geth() -> GethInstance {
     .unwrap();
     println!("connected to geth client {client_version:?}");
 
-    let chain_id = Provider::<Http>::try_from(&http_url)
-        .unwrap()
-        .get_chainid()
-        .await
-        .unwrap()
-        .as_u64();
+    let client = Provider::<Http>::try_from(&http_url).unwrap();
+    let chain_id = client.get_chainid().await.unwrap().as_u64();
+    let genesis_block = client.get_block(0).await.unwrap().unwrap();
 
     GethInstance {
         pid: child,
         container_name,
         http_url,
         ws_url,
+        port_authrpc,
         chain_id,
+        genesis_block_hash: genesis_block.hash.unwrap(),
     }
 }
 
@@ -184,7 +233,21 @@ pub(crate) fn unused_port() -> u16 {
     local_addr.port()
 }
 
-fn run_until_exit(program: &str, args: &[&str]) -> Result<String> {
+pub fn pipe_stdout_on_thread<R: Read + Send + 'static>(stdout: Option<R>, prefix: &'static str) {
+    let reader = BufReader::new(stdout.expect(&format!("stdout is None for {}", prefix)));
+
+    // Spawn a new thread to handle stdout
+    thread::spawn(move || {
+        for line in reader.lines() {
+            match line {
+                Ok(line) => println!("[{}]: {}", prefix, line),
+                Err(e) => eprintln!("Error reading line of {}: {}", prefix, e),
+            }
+        }
+    });
+}
+
+pub fn run_until_exit(program: &str, args: &[&str]) -> Result<String> {
     // Replace "your_command" with the command you want to run
     // and add any arguments as additional strings in the array
     let output = Command::new(program)
@@ -202,7 +265,7 @@ fn run_until_exit(program: &str, args: &[&str]) -> Result<String> {
     }
 }
 
-fn generate_rand_str(len: usize) -> String {
+pub fn generate_rand_str(len: usize) -> String {
     let rng = rand::thread_rng();
     rng.sample_iter(&Alphanumeric)
         .take(len)
@@ -210,7 +273,7 @@ fn generate_rand_str(len: usize) -> String {
         .collect()
 }
 
-async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(
+pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(
     timeout: Duration,
     retry_interval: Duration,
     mut f: F,
@@ -223,12 +286,20 @@ where
         match f().await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                if Instant::now().duration_since(start) < timeout {
-                    sleep(retry_interval).await;
+                if Instant::now().duration_since(start) > timeout {
+                    return Err(e.wrap_err(format!("timeout {timeout:?}")));
                 } else {
-                    return Err(e);
+                    sleep(retry_interval).await;
                 }
             }
         }
     }
+}
+
+pub fn path_from_cwd(parts: &[&str]) -> String {
+    let mut path = env::current_dir().unwrap();
+    for part in parts {
+        path.push(part);
+    }
+    path.to_str().unwrap().to_string()
 }

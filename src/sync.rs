@@ -3,12 +3,12 @@ use std::collections::{HashMap, HashSet};
 use async_trait::async_trait;
 use ethers::{
     providers::{Http, Middleware, Provider, Ws},
-    types::{Address, Block, Transaction, H256},
+    types::{Address, Block, Transaction, TxHash, H256},
 };
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
-use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice};
+use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice, info};
 
 type Nonce = u64;
 
@@ -22,6 +22,18 @@ pub struct BlockSync {
 pub trait BlockProvider {
     // async fn get_block_number(&self) -> Result<u64>;
     async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>>;
+}
+
+pub enum TxInclusion {
+    Pending,
+    Included(H256),
+}
+
+#[derive(Debug)]
+pub enum SyncBlockOutcome {
+    BlockKnown,
+    Synced(Vec<H256>),
+    Reorg,
 }
 
 impl BlockSync {
@@ -65,6 +77,24 @@ impl BlockSync {
         balance_delta_block_inclusions - cost_of_pending_txs as i128
     }
 
+    pub async fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
+        for block in self.unfinalized_head_chain.read().await.iter() {
+            for tx in &block.blob_txs {
+                if tx_hash == tx.tx_hash {
+                    return Some(TxInclusion::Included(block.hash));
+                }
+            }
+        }
+
+        for tx in self.pending_transactions.read().await.values() {
+            if tx_hash == tx.tx_hash {
+                return Some(TxInclusion::Pending);
+            }
+        }
+
+        None
+    }
+
     pub async fn register_pending_blob_tx(&self, tx: BlobTxSummary) {
         self.pending_transactions
             .write()
@@ -76,7 +106,7 @@ impl BlockSync {
         &self,
         provider: &T,
         block: BlockWithTxs,
-    ) -> Result<()> {
+    ) -> Result<SyncBlockOutcome> {
         let block = BlockSummary::from_block(block, self.target_address)?;
 
         // let block_number = provider.get_block_number().await?;
@@ -99,20 +129,19 @@ impl BlockSync {
                 .read()
                 .await
                 .iter()
-                .find(|x| block.hash == x.hash)
-                .is_some()
+                .any(|x| block.hash == x.hash)
         {
             // Block already known
-            return Ok(());
+            Ok(SyncBlockOutcome::BlockKnown)
         } else if block.parent_hash == last_block_hash {
             // Next unknown block is descendant of head
-            self.sync_block(block).await;
+            let blob_txs = self.sync_block(block).await;
+            Ok(SyncBlockOutcome::Synced(blob_txs))
         } else {
             // Next unknown block is not descendant of head: re-org
             self.handle_reorg(provider, block).await?;
+            Ok(SyncBlockOutcome::Reorg)
         }
-
-        Ok(())
     }
 
     async fn handle_reorg<T: BlockProvider>(
@@ -201,15 +230,27 @@ impl BlockSync {
         Ok(())
     }
 
-    async fn sync_block(&self, block: BlockSummary) {
+    async fn sync_block(&self, block: BlockSummary) -> Vec<H256> {
+        let blob_txs = block
+            .blob_txs
+            .iter()
+            .map(|tx| tx.tx_hash)
+            .collect::<Vec<_>>();
+
         // Drop pending transactions
         for tx in &block.blob_txs {
             self.pending_transactions
                 .write()
                 .await
                 .remove(&(tx.from, tx.nonce));
+            info!(
+                "pending blob tx included from {} nonce {} tx_hash {}",
+                tx.from, tx.nonce, tx.tx_hash
+            );
         }
         self.unfinalized_head_chain.write().await.push(block);
+
+        blob_txs
     }
 }
 
@@ -228,6 +269,12 @@ struct BlockSummary {
 struct TopupTx {
     pub from: Address,
     pub value: u128,
+}
+
+impl TopupTx {
+    fn is_from(&self, address: Address) -> bool {
+        self.from == address
+    }
 }
 
 impl BlockSummary {
@@ -264,7 +311,7 @@ impl BlockSummary {
         let mut balance_delta = 0;
 
         for tx in &self.topup_txs {
-            if tx.from == address {
+            if tx.is_from(address) {
                 balance_delta += tx.value as i128;
             }
         }
@@ -401,8 +448,8 @@ mod tests {
         let provider = MockEthereumProvider::with_blocks(&[block_2b]);
 
         let user = get_addr(1);
-        const TOP_UP: i128 = 2000;
-        const TXCOST: i128 = 500;
+        const TOP_UP: i128 = 2 * BYTES_PER_BLOB as i128;
+        const TXCOST: i128 = (BYTES_PER_BLOB + 16 * 24) as i128;
         const NONCE0: u64 = 0;
         const NONCE1: u64 = 1;
 
@@ -412,30 +459,32 @@ mod tests {
         assert_eq!(sync.unfinalized_balance_delta(user).await, TOP_UP);
 
         // Register pending tx for user
-        sync.register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user, TXCOST))
+        sync.register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
             .await;
-        assert_eq!(sync.unfinalized_balance_delta(user).await, 1500); // TOPUP - TXCOST
+        assert_eq!(sync.unfinalized_balance_delta(user).await, TOP_UP - TXCOST); // TOPUP - TXCOST
         assert_eq!(pending_tx_len(&sync).await, 1);
 
         // Register blocks with blob txs, should not change the user balance
-        block_2a
-            .transactions
-            .push(generate_blob_tx(NONCE0, user, TXCOST));
+        block_2a.transactions.push(generate_blob_tx(NONCE0, user));
         block_3a.transactions.push(generate_topup_tx(user, TOP_UP));
-        block_3a
-            .transactions
-            .push(generate_blob_tx(NONCE1, user, TXCOST));
+        block_3a.transactions.push(generate_blob_tx(NONCE1, user));
         sync.sync_next_block(&provider, block_2a).await.unwrap();
         sync.sync_next_block(&provider, block_3a).await.unwrap();
         assert_chain(&sync, &[hash_0, hash_1, hash_2a, hash_3a]).await;
-        assert_eq!(sync.unfinalized_balance_delta(user).await, 3000); // 2 * TOP_UP - 2 * TXCOST
+        assert_eq!(
+            sync.unfinalized_balance_delta(user).await,
+            2 * TOP_UP - 2 * TXCOST
+        );
         assert_eq!(pending_tx_len(&sync).await, 0);
 
         // Trigger re-org with blocks that do not include the blob transactions, user balance
         // should not change since the transactions are re-added to the pool
         sync.sync_next_block(&provider, block_3b).await.unwrap();
         assert_chain(&sync, &[hash_0, hash_1, hash_2b, hash_3b]).await;
-        assert_eq!(sync.unfinalized_balance_delta(user).await, 1000); // TOPUP - 2 * TXCOST
+        assert_eq!(
+            sync.unfinalized_balance_delta(user).await,
+            TOP_UP - 2 * TXCOST
+        );
         assert_eq!(pending_tx_len(&sync).await, 2);
     }
 
@@ -492,7 +541,6 @@ mod tests {
     }
 
     const ADDRESS_SENDER: Address = H160([0xab; 20]);
-    const SAMPLE_WEI_PER_BYTE: u128 = 1;
 
     fn get_hash(i: u64) -> H256 {
         H256::from_low_u64_be(i)
@@ -513,10 +561,11 @@ mod tests {
         }
     }
 
-    fn generate_pending_blob_tx(nonce: u64, participant: Address, data_len: i128) -> BlobTxSummary {
+    fn generate_pending_blob_tx(nonce: u64, participant: Address) -> BlobTxSummary {
         let participant = BlobTxParticipant {
             address: participant,
-            data_len: data_len as usize,
+            // Note: this length is not possible but makes the math easy in the test
+            data_len: BYTES_PER_BLOB,
         };
         BlobTxSummary {
             tx_hash: [0u8; 32].into(),
@@ -524,22 +573,23 @@ mod tests {
             nonce,
             participants: vec![participant],
             used_bytes: BYTES_PER_BLOB,
-            max_priority_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0, // set to 0 to make effective gas fee always 1
             max_fee_per_gas: 1,
             max_fee_per_blob_gas: 1,
         }
     }
 
-    fn generate_blob_tx(nonce: u64, participant: Address, data_len: i128) -> Transaction {
+    fn generate_blob_tx(nonce: u64, participant: Address) -> Transaction {
         let mut tx = Transaction::default();
         tx.from = ADDRESS_SENDER;
         tx.nonce = nonce.into();
-        // TODO: use actual eip4844 pricing
-        tx.gas_price = Some(SAMPLE_WEI_PER_BYTE.into());
+        tx.max_priority_fee_per_gas = Some(0.into()); // set to 0 to make effective gas fee always 1
+        tx.max_fee_per_gas = Some(1.into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
         tx.transaction_type = Some(BLOB_TX_TYPE.into());
         tx.input = encode_blob_tx_data(&[BlobTxParticipant {
             address: participant,
-            data_len: data_len as usize,
+            data_len: BYTES_PER_BLOB as usize,
         }])
         .unwrap()
         .into();
