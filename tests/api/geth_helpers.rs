@@ -73,7 +73,8 @@ impl GethInstance {
         if IS_MACOS {
             format!("http://host.docker.internal:{}", self.port_authrpc)
         } else {
-            format!("http://localhost:{}", self.port_authrpc)
+            // internal docker default bridge network gateway
+            format!("http://172.17.0.1:{}", self.port_authrpc)
         }
     }
 
@@ -170,7 +171,7 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     // Retrieve the IP of the started container
     let http_url = format!("http://localhost:{port_http}");
     let ws_url = format!("ws://localhost:{port_ws}");
-    println!("container urls {http_url} {ws_url}");
+    log::info!("Attempting to connect to Geth JSON RPC {http_url} {ws_url}");
 
     let client = reqwest::ClientBuilder::new()
         .timeout(Duration::from_millis(100))
@@ -199,7 +200,7 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     )
     .await
     .unwrap();
-    println!("connected to geth client {client_version:?}");
+    log::info!("connected to Geth client {client_version:?}");
 
     let client = Provider::<Http>::try_from(&http_url).unwrap();
     let chain_id = client.get_chainid().await.unwrap().as_u64();
