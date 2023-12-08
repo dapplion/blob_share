@@ -102,7 +102,7 @@ impl TestHarness {
             TestMode::WithChain => {
                 let geth = spawn_geth(GethMode::Interop).await;
                 let lodestar = spawn_lodestar(RunLodestarArgs {
-                    execution_url: geth.authrpc_url(true),
+                    execution_url: geth.authrpc_url(),
                     genesis_eth1_hash: geth.genesis_block_hash_hex(),
                 })
                 .await;

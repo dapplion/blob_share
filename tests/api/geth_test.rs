@@ -49,7 +49,7 @@ async fn geth_send_regular_transaction_with_inclusion() -> Result<()> {
     let geth = spawn_geth(GethMode::Interop).await;
 
     let _lodestar = spawn_lodestar(RunLodestarArgs {
-        execution_url: geth.authrpc_url(true),
+        execution_url: geth.authrpc_url(),
         genesis_eth1_hash: geth.genesis_block_hash_hex(),
     })
     .await;
