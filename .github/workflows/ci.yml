@@ -67,6 +67,9 @@ jobs:
         with:
           toolchain: ${{ matrix.rust || 'stable' }}
           targets: ${{ matrix.target }}
+      - name: Setup docker (missing on MacOS)
+        if: runner.os == 'macos'
+        run: brew install docker
         # </setup>
       - name: Check
         run: cargo check
