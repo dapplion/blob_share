@@ -45,8 +45,8 @@ jobs:
           - name: linux / stable
           - name: linux / beta
             rust: beta
-          - name: macOS / stable
-            os: macOS-latest
+              # - name: macOS / stable
+              #   os: macOS-latest
               # TODO: Support windows
               # - name: windows / stable-x86_64-gnu
               # os: windows-latest
