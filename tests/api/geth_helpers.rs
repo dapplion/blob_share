@@ -29,6 +29,11 @@ pub fn get_jwtsecret_filepath() -> String {
     path_from_cwd(&["tests", "artifacts", "jwtsecret"])
 }
 
+#[cfg(target_os = "macos")]
+const IS_MACOS: bool = true;
+#[cfg(not(target_os = "macos"))]
+const IS_MACOS: bool = false;
+
 pub type WalletWithProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
 
 pub fn get_wallet_genesis_funds(
@@ -64,8 +69,8 @@ impl GethInstance {
         &self.ws_url
     }
 
-    pub fn authrpc_url(&self, from_docker: bool) -> String {
-        if from_docker {
+    pub fn authrpc_url(&self) -> String {
+        if IS_MACOS {
             format!("http://host.docker.internal:{}", self.port_authrpc)
         } else {
             // internal docker default bridge network gateway

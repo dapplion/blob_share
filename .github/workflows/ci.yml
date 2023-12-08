@@ -45,8 +45,8 @@ jobs:
           - name: linux / stable
           - name: linux / beta
             rust: beta
-          - name: macOS / stable
-            os: macOS-latest
+              # - name: macOS / stable
+              #   os: macOS-latest
               # TODO: Support windows
               # - name: windows / stable-x86_64-gnu
               # os: windows-latest
@@ -67,6 +67,13 @@ jobs:
         with:
           toolchain: ${{ matrix.rust || 'stable' }}
           targets: ${{ matrix.target }}
+      - name: Setup docker (missing on MacOS)
+        if: runner.os == 'macos'
+        run: |
+          brew install docker
+          brew install docker-buildx
+      - name: Test docker
+        run: docker run hello-world
         # </setup>
       - name: Check
         run: cargo check
