@@ -90,6 +90,7 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     let geth_version = "v1.13.5";
 
     let geth_dockerfile_dirpath = path_from_cwd(&["tests", "artifacts", "geth"]);
+    log::info!("spawn geth with Dockerfile {}", geth_dockerfile_dirpath);
 
     // Make sure image is available
     run_until_exit(
