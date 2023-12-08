@@ -13,7 +13,7 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -374,7 +374,10 @@ impl TestHarness {
             .to(sender.address)
             .value(parse_ether("0.1").unwrap());
         let tx = wallet.send_transaction(tx, None).await.unwrap();
-        tx.confirmations(1).await.unwrap();
+        timeout(Duration::from_secs(30), tx.confirmations(1))
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     pub fn get_wallet_genesis_funds(&self) -> WalletWithProvider {

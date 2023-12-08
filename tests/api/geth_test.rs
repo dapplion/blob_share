@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use crate::{
     geth_helpers::GethMode,
@@ -10,6 +10,7 @@ use ethers::{
     types::{Address, TransactionRequest},
 };
 use eyre::Result;
+use tokio::time::timeout;
 
 #[tokio::test]
 async fn geth_test_spawn_dev() {
@@ -69,11 +70,11 @@ async fn geth_send_regular_transaction_with_inclusion() -> Result<()> {
     let nonce1 = client.get_transaction_count(from, None).await?;
 
     // broadcast it via the eth_sendTransaction API
-    let tx = client
-        .send_transaction(tx, None)
-        .await?
-        .confirmations(1)
-        .await?;
+    let tx = timeout(
+        Duration::from_secs(30),
+        client.send_transaction(tx, None).await?.confirmations(1),
+    )
+    .await??;
 
     println!("{}", serde_json::to_string(&tx)?);
 

@@ -10,6 +10,7 @@ use crate::geth_helpers::{
 };
 
 const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
+const SECONDS_PER_SLOT: usize = 2;
 
 pub struct LodestarInstance {
     pid: Child,
@@ -33,6 +34,7 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
 
     // Make sure image is available
     run_until_exit("docker", &["pull", &lodestar_docker_tag]).unwrap();
+    log::info!("pulled lodestar image {}", lodestar_docker_tag);
 
     let port_rest = unused_port();
 
@@ -67,7 +69,7 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
         "--genesisValidators=1",
         "--startValidators=0..1",
         &format!("--genesisTime={genesis_timestamp}"),
-        "--params.SECONDS_PER_SLOT=1",
+        &format!("--params.SECONDS_PER_SLOT={}", SECONDS_PER_SLOT),
         "--params.ALTAIR_FORK_EPOCH=0",
         "--params.BELLATRIX_FORK_EPOCH=0",
         "--params.TERMINAL_TOTAL_DIFFICULTY=0",
@@ -84,13 +86,14 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     ]);
 
     let mut child = cmd.spawn().expect("could not start docker");
+    log::info!("lodestar process started pid {}", child.id());
 
     pipe_stdout_on_thread(child.stdout.take(), "lodestar stdout");
     pipe_stdout_on_thread(child.stderr.take(), "lodestar stderr");
 
     // Retrieve the IP of the started container
     let rest_url = format!("http://localhost:{port_rest}");
-    println!("container urls {port_rest}");
+    log::info!("container urls {port_rest}");
 
     let client = reqwest::ClientBuilder::new()
         .timeout(Duration::from_millis(100))
@@ -111,7 +114,7 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     )
     .await
     .unwrap();
-    println!("connected to lodestar client {client_version:?}");
+    log::info!("connected to lodestar client {client_version:?}");
 
     LodestarInstance {
         pid: child,
