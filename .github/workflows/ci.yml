@@ -67,6 +67,8 @@ jobs:
         with:
           toolchain: ${{ matrix.rust || 'stable' }}
           targets: ${{ matrix.target }}
+      - name: Test docker
+        run: docker run hello-world
       - name: Setup docker (missing on MacOS)
         if: runner.os == 'macos'
         run: brew install docker
