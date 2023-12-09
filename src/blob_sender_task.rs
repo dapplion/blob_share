@@ -115,31 +115,7 @@ fn select_next_blob_items(
     items: &mut [DataIntent],
     _blob_gas_price: u128,
 ) -> Option<Vec<DataIntent>> {
-    // Sort items by data length
-    items.sort_by(|a, b| {
-        a.data
-            .len()
-            .cmp(&b.data.len())
-            .then_with(|| b.max_cost_wei.cmp(&a.max_cost_wei))
-    });
-
-    let mut intents_for_blob: Vec<&DataIntent> = vec![];
-    let mut used_len = 0;
-
-    for item in items {
-        if used_len + item.data.len() > MAX_USABLE_BLOB_DATA_LEN {
-            break;
-        }
-
-        used_len += item.data.len();
-        intents_for_blob.push(item);
-    }
-
-    if used_len < MIN_BLOB_DATA_TO_PUBLISH {
-        return None;
-    }
-
-    Some(intents_for_blob.into_iter().cloned().collect())
+    unimplemented!();
 }
 
 #[cfg(test)]
@@ -212,7 +188,7 @@ mod tests {
                     format!(
                         "(MAX / {}, {})",
                         MAX_USABLE_BLOB_DATA_LEN / d.data.len(),
-                        d.max_cost_wei
+                        d.max_blob_gas_price
                     )
                 })
                 .collect()
@@ -226,7 +202,7 @@ mod tests {
             .collect()
     }
 
-    fn generate_data_intent(data_len: usize, max_cost_wei: u128) -> DataIntent {
+    fn generate_data_intent(data_len: usize, max_blob_gas_price: u128) -> DataIntent {
         DataIntent {
             from: H160([0xff; 20]),
             data: vec![0xbb; data_len],
@@ -236,7 +212,7 @@ mod tests {
                 s: 0.into(),
                 v: 0,
             },
-            max_cost_wei,
+            max_blob_gas_price,
         }
     }
 }
