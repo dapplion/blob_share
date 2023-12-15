@@ -17,10 +17,14 @@ pub struct DataIntent {
     pub data: Vec<u8>,
     pub data_hash: DataHash,
     pub signature: Signature,
-    pub max_cost_wei: u128,
+    pub max_blob_gas_price: u128,
 }
 
 impl DataIntent {
+    pub fn max_cost(&self) -> u128 {
+        self.data.len() as u128 * self.max_blob_gas_price
+    }
+
     pub fn verify_signature(&self) -> Result<()> {
         Ok(self.signature.verify(self.message_to_sign(), self.from)?)
     }
@@ -38,7 +42,7 @@ impl DataIntent {
     pub async fn with_signature(
         wallet: &LocalWallet,
         data: Vec<u8>,
-        max_cost_wei: u128,
+        max_blob_gas_price: u128,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
         let signature: Signature = wallet.sign_message(data_hash.0).await?;
@@ -48,7 +52,7 @@ impl DataIntent {
             data,
             data_hash,
             signature,
-            max_cost_wei,
+            max_blob_gas_price,
         })
     }
 }

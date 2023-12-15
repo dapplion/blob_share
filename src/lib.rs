@@ -28,6 +28,7 @@ mod data_intent;
 mod data_intent_tracker;
 mod gas;
 mod kzg;
+pub mod packing;
 mod routes;
 mod sync;
 mod trusted_setup;
@@ -37,6 +38,8 @@ mod utils;
 
 pub use client::Client;
 pub use data_intent::DataIntent;
+pub use gas::BlockGasSummary;
+pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
 #[cfg(not(test))]
@@ -50,7 +53,6 @@ pub(crate) use std::{println as error, println as warn, println as info, println
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
-const MIN_BLOB_DATA_TO_PUBLISH: usize = MAX_USABLE_BLOB_DATA_LEN / 2; // 50%
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");

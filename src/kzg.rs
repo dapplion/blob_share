@@ -156,7 +156,6 @@ pub(crate) fn construct_blob_tx(
         blob_tx_networking: tx_rlp_networking.into(),
         tx_summary: BlobTxSummary {
             participants,
-            // TODO: set actual cost,
             tx_hash: H256::from_slice(tx_hash.as_ref()),
             from: wallet.address(),
             nonce: tx_params.nonce,

@@ -32,7 +32,7 @@ pub(crate) async fn post_data(
     data_intent.verify_signature().map_err(e400)?;
 
     let account_balance = data.sync.unfinalized_balance_delta(data_intent.from).await;
-    if account_balance < data_intent.max_cost_wei as i128 {
+    if account_balance < data_intent.max_cost() as i128 {
         return Err(e400(eyre!("Insufficient balance")));
     }
 
@@ -106,7 +106,7 @@ pub struct PostDataIntentV1 {
     )]
     pub signature: Vec<u8>,
     /// Max price user is willing to pay in wei
-    pub max_cost_wei: u128,
+    pub max_blob_gas_price: u128,
 }
 
 impl TryInto<DataIntent> for PostDataIntentV1 {
@@ -118,7 +118,7 @@ impl TryInto<DataIntent> for PostDataIntentV1 {
             data: self.data,
             data_hash,
             signature: deserialize_signature(&self.signature)?,
-            max_cost_wei: self.max_cost_wei,
+            max_blob_gas_price: self.max_blob_gas_price,
         })
     }
 }
@@ -129,7 +129,7 @@ impl From<DataIntent> for PostDataIntentV1 {
             from: value.from,
             data: value.data,
             signature: value.signature.to_vec(),
-            max_cost_wei: value.max_cost_wei,
+            max_blob_gas_price: value.max_blob_gas_price,
         }
     }
 }
@@ -149,10 +149,10 @@ mod tests {
             from: Address::from_str("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")?,
             data: vec![0xaa; 50],
             signature: vec![0xbb; 65],
-            max_cost_wei: 1000000000,
+            max_blob_gas_price: 1000000000,
         };
 
-        assert_eq!(&serde_json::to_string(&data_intent)?, "{\"from\":\"0xd8da6bf26964af9d7eed9e03e53415d37aa96045\",\"data\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"max_cost_wei\":1000000000}");
+        assert_eq!(&serde_json::to_string(&data_intent)?, "{\"from\":\"0xd8da6bf26964af9d7eed9e03e53415d37aa96045\",\"data\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"max_blob_gas_price\":1000000000}");
 
         Ok(())
     }

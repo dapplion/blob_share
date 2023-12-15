@@ -2,7 +2,9 @@ use serde::{
     de::{self, Visitor},
     Deserializer, Serializer,
 };
+use std::cmp::PartialEq;
 use std::fmt::{self, Debug, Display};
+use std::ops::{Add, Div, Mul};
 
 // Return an opaque 500 while preserving the error root's cause for logging.
 #[allow(dead_code)]
@@ -56,4 +58,18 @@ where
     }
 
     deserializer.deserialize_str(HexVisitor)
+}
+
+/// Multiplies an integer value by `percent / 100`, if the resulting value is the same, returns the
+/// value + 1.
+pub fn increase_by_min_percent<T>(value: T, percent: T) -> T
+where
+    T: Copy + Mul<Output = T> + Div<Output = T> + Add<Output = T> + PartialEq + From<u8>,
+{
+    let new_value = (percent * value) / T::from(100);
+    if new_value == value {
+        value + T::from(1)
+    } else {
+        value
+    }
 }

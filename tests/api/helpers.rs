@@ -19,7 +19,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use blob_share::{
     client::{DataIntentId, DataIntentStatus, SenderDetails},
-    App, Args, Client, DataIntent,
+    increase_by_min_percent, App, Args, BlockGasSummary, Client, DataIntent,
 };
 
 use crate::{
@@ -185,7 +185,20 @@ impl TestHarness {
 
     // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
     pub async fn post_data(&self, wallet: &LocalWallet, data: Vec<u8>) -> DataIntentId {
-        let max_cost_wei = 10000;
+        // Choose data pricing correctly
+        let head_block_number = self.eth_provider.get_block_number().await.unwrap();
+        let head_block = self
+            .eth_provider
+            .get_block(head_block_number)
+            .await
+            .unwrap()
+            .expect("head block should exist");
+        let blob_gas_price_next_block = BlockGasSummary::from_block(&head_block)
+            .unwrap()
+            .blob_gas_price_next_block();
+
+        // TODO: customize, for now set gas price equal to next block
+        let max_cost_wei = blob_gas_price_next_block;
 
         let res = self
             .client
