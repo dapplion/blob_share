@@ -68,8 +68,8 @@ where
 {
     let new_value = (percent * value) / T::from(100);
     if new_value == value {
-        return value + T::from(1);
+        value + T::from(1)
     } else {
-        return value;
+        value
     }
 }

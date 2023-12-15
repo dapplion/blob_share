@@ -12,9 +12,9 @@ pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u128) -> Option<
 
     // Filter items that don't event meet the current len price
     let mut items = items
-        .into_iter()
+        .iter()
         .filter(|(_, max_len_price)| *max_len_price >= cost_per_len)
-        .map(|e| e.clone())
+        .copied()
         .enumerate()
         .collect::<Vec<(usize, Item)>>();
 
@@ -28,19 +28,13 @@ pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u128) -> Option<
     let index_ordered = items.iter().map(|e| e.0).collect::<Vec<_>>();
     let items_sorted = items.into_iter().map(|e| e.1).collect::<Vec<_>>();
 
-    if let Some(selected_indexes_sorted) =
-        pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len)
-    {
-        Some(
-            selected_indexes_sorted
-                .iter()
-                .map(|i| index_ordered[*i])
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        // TODO: consider other algos
-        None
-    }
+    // TODO: consider other algos
+    pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len).map(|selected_indexes_sorted| {
+        selected_indexes_sorted
+            .iter()
+            .map(|i| index_ordered[*i])
+            .collect::<Vec<_>>()
+    })
 }
 
 /// Returns the combination of items with sum of len closest to `max_len` where all items satisfy
@@ -72,9 +66,9 @@ pub fn pack_items_brute_force(
         let mut selected_len = 0;
         let mut min_len_price_combination = u128::MAX;
 
-        for i in 0..n {
+        for (i, item) in items.iter().enumerate().take(n) {
             if mask & (1 << i) != 0 {
-                let (len, max_len_price) = items[i];
+                let (len, max_len_price) = item;
                 selected_len += len;
 
                 // Invalid combination, stop early
@@ -83,8 +77,8 @@ pub fn pack_items_brute_force(
                 }
 
                 // Track min len price of the combination
-                if max_len_price < min_len_price_combination {
-                    min_len_price_combination = max_len_price;
+                if *max_len_price < min_len_price_combination {
+                    min_len_price_combination = *max_len_price;
                 }
             }
         }
@@ -121,14 +115,10 @@ fn item_is_priced_ok(fixed_cost: u128, selected_len: usize, max_len_price: u128)
     fixed_cost / (selected_len as u128) <= max_len_price
 }
 
-fn unwrap_items(indexes: Vec<usize>, items: &[Item]) -> Vec<Item> {
-    indexes.iter().map(|i| items[*i]).collect()
-}
-
 pub fn pack_items_knapsack(
     items: &[(usize, u128)],
     max_len: usize,
-    cost_per_len: u128,
+    _cost_per_len: u128,
 ) -> Option<Vec<usize>> {
     // TODO: consider max_cost
     let item_lens = items.iter().map(|e| e.0).collect::<Vec<_>>();
@@ -173,7 +163,7 @@ pub fn pack_items_greedy_sorted(
     let mut min_cost_per_len_to_select = cost_per_len;
     loop {
         match pick_first_items_sorted_ascending(
-            &items,
+            items,
             max_len,
             cost_per_len,
             min_cost_per_len_to_select,
@@ -223,12 +213,10 @@ fn pick_first_items_sorted_ascending(
     // effective_cost_per_len = max_len * cost_per_len / len < min_max_price
     if len == 0 {
         PickResult::EmptySelection
+    } else if (max_len as u128 * cost_per_len) / (len as u128) < min_max_price {
+        PickResult::Some(indexes)
     } else {
-        if (max_len as u128 * cost_per_len) / (len as u128) < min_max_price {
-            PickResult::Some(indexes)
-        } else {
-            PickResult::InvalidSelection
-        }
+        PickResult::InvalidSelection
     }
 }
 
@@ -372,5 +360,9 @@ mod tests {
             pack_items_brute_force(&items, max_len, 1).unwrap_or(vec![]);
 
         return selected_indexes_knapsack == selected_indexes_bruteforce;
+    }
+
+    fn unwrap_items(indexes: Vec<usize>, items: &[Item]) -> Vec<Item> {
+        indexes.iter().map(|i| items[*i]).collect()
     }
 }

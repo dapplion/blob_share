@@ -7,7 +7,7 @@ use crate::{
     debug, error,
     kzg::{construct_blob_tx, TxParams},
     packing::{pack_items, Item},
-    warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
+    warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {

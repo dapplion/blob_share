@@ -53,7 +53,6 @@ pub(crate) use std::{println as error, println as warn, println as info, println
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
-const MIN_BLOB_DATA_TO_PUBLISH: usize = MAX_USABLE_BLOB_DATA_LEN / 2; // 50%
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
