@@ -28,7 +28,7 @@ mod data_intent;
 mod data_intent_tracker;
 mod gas;
 mod kzg;
-mod packing;
+pub mod packing;
 mod routes;
 mod sync;
 mod trusted_setup;

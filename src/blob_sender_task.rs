@@ -6,6 +6,7 @@ use eyre::{Context, Result};
 use crate::{
     debug, error,
     kzg::{construct_blob_tx, TxParams},
+    packing::{pack_items, Item},
     warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN, MIN_BLOB_DATA_TO_PUBLISH,
 };
 
@@ -112,10 +113,21 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
 // TODO: write optimizer algo to find a better distribution
 // TODO: is ok to represent wei units as usize?
 fn select_next_blob_items(
-    items: &mut [DataIntent],
-    _blob_gas_price: u128,
+    data_intents: &[DataIntent],
+    blob_gas_price: u128,
 ) -> Option<Vec<DataIntent>> {
-    unimplemented!();
+    let items: Vec<Item> = data_intents
+        .iter()
+        .map(|e| (e.data.len(), e.max_blob_gas_price))
+        .collect::<Vec<_>>();
+
+    pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {
+        selected_indexes
+            .iter()
+            // TODO: do not copy data
+            .map(|i| data_intents[*i].clone())
+            .collect::<Vec<_>>()
+    })
 }
 
 #[cfg(test)]
@@ -166,22 +178,30 @@ mod tests {
     fn run_select_next_blob_items_test(
         all_items: &[(usize, u128)],
         blob_gas_price: u128,
-        selected_items: Option<&[(usize, u128)]>,
+        expected_selected_items: Option<&[(usize, u128)]>,
     ) {
         let mut all_items = generate_data_intents(all_items);
-        let selected_items = selected_items.map(|items| generate_data_intents(items));
+        let expected_selected_items =
+            expected_selected_items.map(|items| generate_data_intents(items));
+
+        let selected_items = select_next_blob_items(all_items.as_mut_slice(), blob_gas_price);
 
         assert_eq!(
-            items_to_summary(select_next_blob_items(
-                all_items.as_mut_slice(),
-                blob_gas_price
-            )),
-            items_to_summary(selected_items)
+            items_to_summary(selected_items),
+            items_to_summary(expected_selected_items)
         )
     }
 
     fn items_to_summary(items: Option<Vec<DataIntent>>) -> Option<Vec<String>> {
-        items.map(|items| {
+        items.map(|mut items| {
+            // Sort for stable comparision
+            items.sort_by(|a, b| {
+                a.data
+                    .len()
+                    .cmp(&b.data.len())
+                    .then_with(|| b.max_blob_gas_price.cmp(&a.max_blob_gas_price))
+            });
+
             items
                 .iter()
                 .map(|d| {

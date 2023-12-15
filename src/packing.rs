@@ -1,33 +1,74 @@
+use std::cmp;
+
 /// (len, max_len_price)
-type PackedItem = (usize, u128);
+pub type Item = (usize, u128);
 
-pub fn pack_items(items: &[PackedItem], len_price: u128, max_len: usize) {
+const MAX_COUNT_FOR_BRUTEFORCE: usize = 8;
+
+pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u128) -> Option<Vec<usize>> {
+    if items.len() < MAX_COUNT_FOR_BRUTEFORCE {
+        return pack_items_brute_force(items, max_len, cost_per_len);
+    }
+
     // Filter items that don't event meet the current len price
-    let items = items
-        .iter()
-        .filter(|(_, max_len_price)| *max_len_price >= len_price)
-        .collect::<Vec<_>>();
+    let mut items = items
+        .into_iter()
+        .filter(|(_, max_len_price)| *max_len_price >= cost_per_len)
+        .map(|e| e.clone())
+        .enumerate()
+        .collect::<Vec<(usize, Item)>>();
 
-    let items_len_sum = items.iter().map(|(len, _)| len).sum::<usize>();
+    // let items_len_sum = items.iter().map(|(len, _)| len).sum::<usize>();
+    // if items_len_sum < max_len {
+    // special case
+    //  }
 
-    if items_len_sum < max_len {
-        // special case
+    items.sort_by(|a, b| a.1 .0.cmp(&b.1 .0));
+
+    let index_ordered = items.iter().map(|e| e.0).collect::<Vec<_>>();
+    let items_sorted = items.into_iter().map(|e| e.1).collect::<Vec<_>>();
+
+    if let Some(selected_indexes_sorted) =
+        pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len)
+    {
+        Some(
+            selected_indexes_sorted
+                .iter()
+                .map(|i| index_ordered[*i])
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        // TODO: consider other algos
+        None
     }
 }
 
-/// Find the optimal
+/// Returns the combination of items with sum of len closest to `max_len` where all items satisfy
+/// the condition `effective_cost_per_len <= item.max_len_price`
+///
+/// # Panics
+///
+/// `items.len()` must be < 32
+///
+/// # Performance
+///
+/// Computational complexity of this function is $O(n2^n)$ where `n = items.len()`. Should only be
+/// used for <= 16 items.
 pub fn pack_items_brute_force(
-    items: &[(usize, u128)],
+    items: &[Item],
     max_len: usize,
     cost_per_len: u128,
 ) -> Option<Vec<usize>> {
     let n = items.len();
+    // Max n to shift mask to
+    assert!(n < 32);
+
     let mut best_combination = None;
     let mut best_selected_len = 0;
     let fixed_cost = max_len as u128 * cost_per_len;
 
     // Iterate over all possible combinations
-    'comb: for mask in 0..(1 << n) as u32 {
+    'comb: for mask in 0..(1_u32 << n) {
         let mut selected_len = 0;
         let mut min_len_price_combination = u128::MAX;
 
@@ -80,8 +121,124 @@ fn item_is_priced_ok(fixed_cost: u128, selected_len: usize, max_len_price: u128)
     fixed_cost / (selected_len as u128) <= max_len_price
 }
 
-fn unwrap_items(indexes: Vec<usize>, items: &[PackedItem]) -> Vec<PackedItem> {
+fn unwrap_items(indexes: Vec<usize>, items: &[Item]) -> Vec<Item> {
     indexes.iter().map(|i| items[*i]).collect()
+}
+
+pub fn pack_items_knapsack(
+    items: &[(usize, u128)],
+    max_len: usize,
+    cost_per_len: u128,
+) -> Option<Vec<usize>> {
+    // TODO: consider max_cost
+    let item_lens = items.iter().map(|e| e.0).collect::<Vec<_>>();
+    Some(knapsack(max_len, &item_lens, &item_lens))
+}
+
+/// Ref: Space optimized Approach for 0/1 Knapsack Problem using Dynamic Programming:
+/// <https://www.geeksforgeeks.org/0-1-knapsack-problem-dp-10>
+fn knapsack(w_max: usize, wt: &[usize], val: &[usize]) -> Vec<usize> {
+    assert_eq!(wt.len(), val.len());
+    let n = wt.len();
+
+    let mut dp = vec![0; w_max + 1];
+    let mut sel: Vec<Vec<usize>> = vec![vec![]; w_max + 1];
+
+    for i in 0..n {
+        for w in (0..=w_max).rev() {
+            if wt[i] <= w {
+                // If the current item's weight is less than the weight ptr
+                let dp_adding = dp[w - wt[i]] + val[i];
+                if dp_adding > dp[w] {
+                    dp[w] = dp_adding;
+
+                    sel[w] = sel[w - wt[i]].clone();
+                    sel[w].push(i);
+                }
+            }
+        }
+    }
+
+    sel[w_max].clone()
+}
+
+/// Expects items to by sorted ascending by data len
+pub fn pack_items_greedy_sorted(
+    items: &[(usize, u128)],
+    max_len: usize,
+    cost_per_len: u128,
+) -> Option<Vec<usize>> {
+    // Keep only items that price at least the current cost
+
+    let mut min_cost_per_len_to_select = cost_per_len;
+    loop {
+        match pick_first_items_sorted_ascending(
+            &items,
+            max_len,
+            cost_per_len,
+            min_cost_per_len_to_select,
+        ) {
+            PickResult::Some(indexes) => return Some(indexes),
+            PickResult::InvalidSelection => {
+                if min_cost_per_len_to_select > cost_per_len * 2 {
+                    return None;
+                } else {
+                    // Handles low values to at ensure that min_cost increases in each loop
+                    min_cost_per_len_to_select = percent_mult_ceil(min_cost_per_len_to_select, 110);
+                }
+            }
+            PickResult::EmptySelection => return None,
+        }
+    }
+}
+
+enum PickResult {
+    Some(Vec<usize>),
+    InvalidSelection,
+    EmptySelection,
+}
+
+fn pick_first_items_sorted_ascending(
+    items: &[(usize, u128)],
+    max_len: usize,
+    cost_per_len: u128,
+    min_cost_per_len_to_select: u128,
+) -> PickResult {
+    let mut len = 0;
+    let mut min_max_price = u128::MAX;
+    let mut indexes = vec![];
+    for (i, item) in items.iter().enumerate() {
+        if item.1 >= min_cost_per_len_to_select {
+            // Ascending sort, any next item will be over the limit
+            if len + item.0 > max_len {
+                break;
+            }
+            len += item.0;
+            min_max_price = cmp::min(min_max_price, item.1);
+            indexes.push(i);
+        }
+    }
+
+    // check if min_max_price is satisfied
+    // effective_cost_per_len = max_len * cost_per_len / len < min_max_price
+    if len == 0 {
+        PickResult::EmptySelection
+    } else {
+        if (max_len as u128 * cost_per_len) / (len as u128) < min_max_price {
+            PickResult::Some(indexes)
+        } else {
+            PickResult::InvalidSelection
+        }
+    }
+}
+
+fn percent_mult_ceil(value: u128, percent: u128) -> u128 {
+    let new_value = (value * percent) / 100;
+    if new_value == value {
+        new_value + 1
+    } else {
+        new_value
+    }
 }
 
 #[cfg(test)]
@@ -127,8 +284,8 @@ mod tests {
     fn run_test_brute_force(
         max_len: usize,
         cost_per_len: u128,
-        expected_best_combination: Option<&[PackedItem]>,
-        extra_items: &[PackedItem],
+        expected_best_combination: Option<&[Item]>,
+        extra_items: &[Item],
     ) {
         let mut items = vec![];
         if let Some(combination) = expected_best_combination {
@@ -166,17 +323,54 @@ mod tests {
         }
     }
 
-    fn is_priced_ok(
-        item: &PackedItem,
-        max_len: usize,
-        cost_per_len: u128,
-        selected_len: usize,
-    ) -> bool {
+    fn is_priced_ok(item: &Item, max_len: usize, cost_per_len: u128, selected_len: usize) -> bool {
         let effective_cost_per_len = (max_len as u128 * cost_per_len) / selected_len as u128;
         effective_cost_per_len <= item.1
     }
 
-    fn items_total_len(items: &[PackedItem]) -> usize {
+    fn items_total_len(items: &[Item]) -> usize {
         items.iter().map(|e| e.0).sum()
+    }
+
+    proptest! {
+        #[test]
+        fn test_knapsack_proptest_max_len(
+            item_lens in prop::collection::vec(1..1000usize, 1..1000),
+            max_len in 1..1000usize, // Random max length
+        ) {
+            let selected_len = run_test_knapsack_proptest_max_len(&item_lens, max_len);
+            prop_assert!(selected_len <= max_len);
+        }
+    }
+
+    fn run_test_knapsack_proptest_max_len(item_lens: &[usize], max_len: usize) -> usize {
+        // score = length of each item
+        let values = item_lens;
+        let selected_indexes = knapsack(max_len, item_lens, values);
+        selected_indexes.iter().map(|i| item_lens[*i]).sum()
+    }
+
+    proptest! {
+        #[test]
+        fn test_knapsack_equals_bruteforce(
+            item_lens in prop::collection::vec(1..1000usize, 1..20),
+            max_len in 1..1000usize, // Random max length
+        ) {
+            prop_assert!(run_test_knapsack_equals_bruteforce(&item_lens, max_len));
+        }
+    }
+
+    fn run_test_knapsack_equals_bruteforce(item_lens: &[usize], max_len: usize) -> bool {
+        let items = item_lens
+            .iter()
+            .map(|len| (*len, 10 * max_len as u128))
+            .collect::<Vec<_>>();
+
+        let selected_indexes_knapsack = pack_items_knapsack(&items, max_len, 1).unwrap();
+
+        let selected_indexes_bruteforce =
+            pack_items_brute_force(&items, max_len, 1).unwrap_or(vec![]);
+
+        return selected_indexes_knapsack == selected_indexes_bruteforce;
     }
 }

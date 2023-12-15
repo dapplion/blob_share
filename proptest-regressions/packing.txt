@@ -8,3 +8,4 @@ cc 680bd337a34b203bc6ea53c74954fc94fe75c480cf76977459c346cb091b0ce2 # shrinks to
 cc c159012933443441955c927ef28ed731f814d70d162cafef141a8e8a365a8725 # shrinks to items = [(3, 94)], max_len = 32, len_price = 3
 cc f3be4e5cd0e5a12e7fd06093c79f5309726c5e7e6ef53185e8ca14b53640a52b # shrinks to items = [(2, 8), (17, 8)], max_len = 17, cost_per_len = 8
 cc 8d32814280d72ab130b6c451900801091961e2b4cd63722f6634942baa9f09f5 # shrinks to items = [(8, 9), (33, 9), (23, 9)], max_len = 32, cost_per_len = 9
+cc 557c655ec6c60cef4e6276c4e8a6ac179caf8a08e9d882c38864b66e8906b082 # shrinks to item_lens = [69], max_len = 1
