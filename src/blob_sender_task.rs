@@ -170,7 +170,7 @@ mod tests {
             Some(&[
                 (MAX_USABLE_BLOB_DATA_LEN / 4, 2),
                 (MAX_USABLE_BLOB_DATA_LEN / 4, 1),
-                (MAX_USABLE_BLOB_DATA_LEN / 2, 4),
+                (MAX_USABLE_BLOB_DATA_LEN / 2, 3),
             ]),
         );
     }

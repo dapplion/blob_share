@@ -45,11 +45,11 @@ impl GasTracker {
         let (max_fee_per_gas, max_priority_fee_per_gas) =
             eth_provider.estimate_eip1559_fees(None).await?;
 
-        let current_head_gas = self.current_head_gas.read().await.clone();
-        let min_blob_gas_price_next_block = get_blob_gasprice(calc_excess_blob_gas(
-            current_head_gas.excess_blob_gas,
-            current_head_gas.blob_gas_used,
-        ));
+        let min_blob_gas_price_next_block = self
+            .current_head_gas
+            .read()
+            .await
+            .blob_gas_price_next_block();
 
         let max_fee_per_blob_gas = (125 * min_blob_gas_price_next_block) / 100;
 
@@ -62,7 +62,7 @@ impl GasTracker {
 }
 
 impl BlockGasSummary {
-    fn from_block(block: &Block<TxHash>) -> Result<Self> {
+    pub fn from_block(block: &Block<TxHash>) -> Result<Self> {
         Ok(Self {
             blob_gas_used: block
                 .blob_gas_used
@@ -73,6 +73,13 @@ impl BlockGasSummary {
                 .ok_or_else(|| eyre!("block missing prop excess_blob_gas"))?
                 .as_u128(),
         })
+    }
+
+    pub fn blob_gas_price_next_block(&self) -> u128 {
+        get_blob_gasprice(calc_excess_blob_gas(
+            self.excess_blob_gas,
+            self.blob_gas_used,
+        ))
     }
 }
 

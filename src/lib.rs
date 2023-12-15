@@ -38,6 +38,8 @@ mod utils;
 
 pub use client::Client;
 pub use data_intent::DataIntent;
+pub use gas::BlockGasSummary;
+pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
 #[cfg(not(test))]
