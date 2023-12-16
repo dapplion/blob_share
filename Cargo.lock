@@ -704,6 +704,7 @@ dependencies = [
  "ethereum_serde_utils",
  "ethers",
  "eyre",
+ "futures",
  "hex",
  "log",
  "once_cell",

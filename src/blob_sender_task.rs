@@ -13,26 +13,42 @@ use crate::{
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     loop {
         app_data.notify.notified().await;
-        if let Err(e) = maybe_send_blob_tx(app_data.clone()).await {
-            if app_data.config.panic_on_background_task_errors {
-                return Err(e);
-            } else {
-                error!("error sending blob tx {e:?}");
+
+        loop {
+            match maybe_send_blob_tx(app_data.clone()).await {
+                // Loop again to try to create another blob transaction
+                Ok(SendResult::SentBlobTx) => continue,
+                // Break out of inner loop and wait for new notification
+                Ok(SendResult::NoViableSet) => break,
+                Err(e) => {
+                    if app_data.config.panic_on_background_task_errors {
+                        return Err(e);
+                    } else {
+                        error!("error sending blob tx {e:?}");
+                        // TODO: Review if breaking out of the inner loop is the best outcome
+                        break;
+                    }
+                }
             }
         }
     }
 }
 
-pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
+pub(crate) enum SendResult {
+    NoViableSet,
+    SentBlobTx,
+}
+
+pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendResult> {
     let wei_per_byte = 1; // TODO: Fetch from chain
 
     let next_blob_items = {
-        let mut items = app_data.data_intent_tracker.get_all_pending().await;
-        if let Some(next_blob_items) = select_next_blob_items(items.as_mut_slice(), wei_per_byte) {
+        let items = app_data.data_intent_tracker.get_all_pending().await;
+        if let Some(next_blob_items) = select_next_blob_items(&items, wei_per_byte) {
             next_blob_items
         } else {
-            debug!("no viable set of items for blob");
-            return Ok(());
+            debug!("no viable set of items for blob, out of {}", items.len());
+            return Ok(SendResult::NoViableSet);
         }
     };
 
@@ -113,7 +129,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
         .register_pending_blob_tx(blob_tx.tx_summary)
         .await;
 
-    Ok(())
+    Ok(SendResult::SentBlobTx)
 }
 
 // TODO: write optimizer algo to find a better distribution

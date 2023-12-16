@@ -100,12 +100,18 @@ impl FromStr for DataIntentId {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct DataHash([u8; 32]);
 
 impl Display for DataHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&format!("0x{}", hex::encode(self.0)))
+    }
+}
+
+impl fmt::Debug for DataHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DataHash({})", hex::encode(self.0))
     }
 }
 

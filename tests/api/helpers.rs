@@ -4,7 +4,8 @@ use ethers::{
     types::{Address, Transaction, TransactionRequest, H256},
     utils::parse_ether,
 };
-use eyre::{bail, Context, Result};
+use eyre::{bail, eyre, Context, Result};
+use futures::future::{join_all, try_join_all};
 use log::LevelFilter;
 use std::{
     future::Future,
@@ -29,7 +30,7 @@ use crate::{
 pub const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const SEC_1: Duration = Duration::from_secs(1);
-pub const MS_100: Duration = Duration::from_millis(100);
+pub const ONE_HUNDRED_MS: Duration = Duration::from_millis(100);
 
 #[allow(dead_code)]
 pub struct TestHarness {
@@ -198,6 +199,7 @@ impl TestHarness {
             .blob_gas_price_next_block();
 
         // TODO: customize, for now set gas price equal to next block
+        // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
         let max_cost_wei = blob_gas_price_next_block;
 
         let res = self
@@ -219,7 +221,7 @@ impl TestHarness {
         data: Vec<u8>,
     ) -> DataIntentId {
         let intent_id = self.post_data(wallet, data).await;
-        self.wait_for_known_intent(&intent_id, Duration::from_millis(100))
+        self.wait_for_known_intents(&[intent_id], ONE_HUNDRED_MS)
             .await
             .unwrap();
         intent_id
@@ -233,19 +235,13 @@ impl TestHarness {
     ) -> Result<(H256, H256)> {
         match retry_with_timeout(
             || async {
-                let status = self.client.get_status_by_id(&id.to_string()).await?;
-                match status {
-                    DataIntentStatus::Unknown
-                    | DataIntentStatus::Pending
-                    | DataIntentStatus::InPendingTx { .. } => bail!("still pending: {:?}", &status),
-                    DataIntentStatus::InConfirmedTx {
-                        tx_hash,
-                        block_hash,
-                    } => Ok((tx_hash, block_hash)),
-                }
+                let status = self.client.get_status_by_id(*id).await?;
+                Ok(status
+                    .is_in_block()
+                    .ok_or_else(|| eyre!("still pending: {status:?}"))?)
             },
             timeout,
-            Duration::from_millis(100),
+            ONE_HUNDRED_MS,
         )
         .await
         {
@@ -276,45 +272,71 @@ impl TestHarness {
 
     pub async fn wait_for_intent_inclusion_in_any_tx(
         &self,
-        id: &DataIntentId,
+        ids: &[DataIntentId],
         timeout: Duration,
-    ) -> Result<H256> {
-        retry_with_timeout(
-            || async {
-                match self.client.get_status_by_id(&id.to_string()).await? {
-                    DataIntentStatus::Unknown | DataIntentStatus::Pending => bail!("pending"),
-                    DataIntentStatus::InPendingTx { tx_hash } => return Ok(tx_hash),
-                    DataIntentStatus::InConfirmedTx { tx_hash, .. } => return Ok(tx_hash),
-                }
-            },
-            timeout,
-            Duration::from_millis(10),
-        )
-        .await
-        .wrap_err(format!("waiting for intent {id} inclusion in tx"))
-    }
-
-    pub async fn wait_for_known_intent(&self, id: &DataIntentId, timeout: Duration) -> Result<()> {
+    ) -> Result<Vec<H256>> {
         match retry_with_timeout(
             || async {
-                match self.client.get_status_by_id(&id.to_string()).await? {
-                    DataIntentStatus::InConfirmedTx { .. }
-                    | DataIntentStatus::InPendingTx { .. }
-                    | DataIntentStatus::Pending => Ok(()),
-                    DataIntentStatus::Unknown => bail!("still pending"),
+                let mut tx_hashes = vec![];
+                for id in ids {
+                    match self.client.get_status_by_id(*id).await?.is_in_tx() {
+                        Some(tx_hash) => tx_hashes.push(tx_hash),
+                        None => bail!("still pending"),
+                    }
+                }
+                Ok(tx_hashes)
+            },
+            timeout,
+            ONE_HUNDRED_MS,
+        )
+        .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                let statuses = try_join_all(
+                    ids.iter()
+                        .map(|id| self.client.get_status_by_id(*id))
+                        .collect::<Vec<_>>(),
+                )
+                .await?;
+                bail!(
+                    "timeout {timeout:?}: waiting for inclusion of intents {ids:?}: {e:?}\ncurrent status: {statuses:?}",
+                );
+            }
+        }
+    }
+
+    pub async fn wait_for_known_intents(
+        &self,
+        ids: &[DataIntentId],
+        timeout: Duration,
+    ) -> Result<()> {
+        match retry_with_timeout(
+            || async {
+                let statuses = try_join_all(
+                    ids.iter()
+                        .map(|id| self.client.get_status_by_id(*id))
+                        .collect::<Vec<_>>(),
+                )
+                .await?;
+
+                if statuses.iter().map(|status| status.is_known()).all(|b| b) {
+                    Ok(())
+                } else {
+                    bail!("some still pending {statuses:?}")
                 }
             },
             timeout,
-            Duration::from_millis(10),
+            ONE_HUNDRED_MS,
         )
         .await
         {
             Ok(result) => Ok(result),
             Err(e) => {
                 let data_intents = self.client.get_data().await?;
-                let ids = data_intents.iter().map(|d| d.id()).collect::<Vec<_>>();
+                let known_ids = data_intents.iter().map(|d| d.id()).collect::<Vec<_>>();
                 bail!(
-                    "timeout {timeout:?}: waiting for intent {id:?} not known: {e:?}\nintents known: {ids:?}",
+                    "timeout {timeout:?}: waiting for intents {ids:?} not known: {e:?}\nintents known: {known_ids:?}",
                 );
             }
         }

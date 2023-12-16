@@ -22,14 +22,6 @@ pub enum DataIntentItem {
     Included(DataIntent, TxHash),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum DataIntentStatus {
-    Unknown,
-    Pending,
-    InPendingTx { tx_hash: TxHash },
-    InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
-}
-
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
     pub async fn get_all_pending(&self) -> Vec<DataIntent> {
@@ -110,6 +102,45 @@ impl DataIntentTracker {
                 }
             }
             None => DataIntentStatus::Unknown,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum DataIntentStatus {
+    Unknown,
+    Pending,
+    InPendingTx { tx_hash: TxHash },
+    InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
+}
+
+impl DataIntentStatus {
+    pub fn is_known(&self) -> bool {
+        match self {
+            DataIntentStatus::InConfirmedTx { .. }
+            | DataIntentStatus::InPendingTx { .. }
+            | DataIntentStatus::Pending => true,
+            DataIntentStatus::Unknown => false,
+        }
+    }
+
+    pub fn is_in_tx(&self) -> Option<TxHash> {
+        match self {
+            DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
+            DataIntentStatus::InPendingTx { tx_hash } => Some(*tx_hash),
+            DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
+        }
+    }
+
+    pub fn is_in_block(&self) -> Option<(H256, TxHash)> {
+        match self {
+            DataIntentStatus::Unknown
+            | DataIntentStatus::Pending
+            | DataIntentStatus::InPendingTx { .. } => None,
+            DataIntentStatus::InConfirmedTx {
+                tx_hash,
+                block_hash,
+            } => Some((*tx_hash, *block_hash)),
         }
     }
 }
