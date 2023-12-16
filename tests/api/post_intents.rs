@@ -182,11 +182,10 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     )
                     .await
                     .unwrap();
-
-                let block_when_all_txs_sent =
-                    test_harness.eth_provider.get_block_number().await.unwrap();
+                assert_eq!(intents_txhash.len() as u64, N / 2);
 
                 // Should eventually include the transactions in multiple blocks (non-determinstic)
+                let mut intents_block_hash = vec![];
                 for id in &intent_ids {
                     let (_, block_hash) = test_harness
                         .wait_for_intent_inclusion_in_any_block(
@@ -196,9 +195,16 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                         )
                         .await
                         .unwrap();
-
                     println!("intent {} included in {}", id, block_hash);
+                    intents_block_hash.push(block_hash);
                 }
+
+                assert!(
+                    intents_txhash.len() < intents_block_hash.len(),
+                    "intents tx count {} < blocks count {}",
+                    intents_txhash.len(),
+                    intents_block_hash.len()
+                );
 
                 Ok(())
             }
