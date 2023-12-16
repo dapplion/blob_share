@@ -19,6 +19,8 @@ use std::{
 };
 use tokio::time::sleep;
 
+use crate::helpers::retry_with_timeout;
+
 /// How long we will wait for anvil to indicate that it is ready.
 const STARTUP_TIMEOUT_MILLIS: u64 = 2000;
 const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
@@ -179,8 +181,6 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
         .unwrap();
 
     let client_version = retry_with_timeout(
-        Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
-        Duration::from_millis(50),
         || async {
             let request_body = json!({
                 "jsonrpc": "2.0",
@@ -197,6 +197,8 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
                 .text()
                 .await?)
         },
+        Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
+        Duration::from_millis(50),
     )
     .await
     .unwrap();
@@ -278,29 +280,6 @@ pub fn generate_rand_str(len: usize) -> String {
         .take(len)
         .map(char::from)
         .collect()
-}
-
-pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(
-    timeout: Duration,
-    retry_interval: Duration,
-    mut f: F,
-) -> Result<T>
-where
-    Fut: Future<Output = Result<T>>,
-{
-    let start = Instant::now();
-    loop {
-        match f().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                if Instant::now().duration_since(start) > timeout {
-                    return Err(e.wrap_err(format!("timeout {timeout:?}")));
-                } else {
-                    sleep(retry_interval).await;
-                }
-            }
-        }
-    }
 }
 
 pub fn path_from_cwd(parts: &[&str]) -> String {

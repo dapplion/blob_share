@@ -13,9 +13,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BlobTxSummary},
     gas::GasConfig,
-    tx_eip4844::TxEip4844,
-    tx_sidecar::{BlobTransaction, BlobTransactionSidecar},
-    DataIntent, PublishConfig,
+    reth_fork::{
+        tx_eip4844::TxEip4844,
+        tx_sidecar::{BlobTransaction, BlobTransactionSidecar},
+    },
+    DataIntent, PublishConfig, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -68,15 +70,7 @@ pub(crate) fn construct_blob_tx(
         Ordering::Greater => bail!("data longer than blob capacity"),
     }
 
-    // Chunk data in 31 bytes to ensure each field element is < BLS_MODULUS
-    // TODO: Should use a more efficient encoding technique in the future
-    // Reference: https://github.com/ethpandaops/goomy-blob/blob/e4b460b17b6e2748995ef3d7b75cbe967dc49da4/txbuilder/blob_encode.go#L36
-    let mut chunked_blob_data = vec![0u8; BYTES_PER_BLOB];
-    for (field_index, chunk) in data.chunks(31).enumerate() {
-        chunked_blob_data[field_index * 32 + 1..field_index * 32 + 32].copy_from_slice(chunk);
-    }
-
-    let blob = c_kzg::Blob::from_bytes(&chunked_blob_data)?;
+    let blob = c_kzg::Blob::from_bytes(&encode_data_to_blob(&data))?;
     let commitment = c_kzg::KzgCommitment::blob_to_kzg_commitment(&blob, kzg_settings)?;
     let versioned_hash = kzg_to_versioned_hash(&commitment);
     let proof =
@@ -167,6 +161,26 @@ pub(crate) fn construct_blob_tx(
     })
 }
 
+// Chunk data in 31 bytes to ensure each field element is < BLS_MODULUS
+// TODO: Should use a more efficient encoding technique in the future
+// Reference: https://github.com/ethpandaops/goomy-blob/blob/e4b460b17b6e2748995ef3d7b75cbe967dc49da4/txbuilder/blob_encode.go#L36
+fn encode_data_to_blob(data: &[u8]) -> Vec<u8> {
+    let mut chunked_blob_data = vec![0u8; BYTES_PER_BLOB];
+    for (field_index, chunk) in data.chunks(31).enumerate() {
+        chunked_blob_data[field_index * 32 + 1..field_index * 32 + 1 + chunk.len()]
+            .copy_from_slice(chunk);
+    }
+    chunked_blob_data
+}
+
+pub(crate) fn decode_blob_to_data(blob: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(MAX_USABLE_BLOB_DATA_LEN);
+    for chunk in blob.chunks(32) {
+        data.extend_from_slice(&chunk[1..32]);
+    }
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -178,13 +192,23 @@ mod tests {
     use eyre::Result;
 
     use crate::{
-        gas::GasConfig, kzg::TxParams, load_kzg_settings, tx_sidecar::BlobTransaction, DataIntent,
-        PublishConfig, ADDRESS_ZERO,
+        gas::GasConfig,
+        kzg::{decode_blob_to_data, TxParams},
+        load_kzg_settings,
+        reth_fork::tx_sidecar::BlobTransaction,
+        DataIntent, PublishConfig, ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
     };
 
-    use super::construct_blob_tx;
+    use super::{construct_blob_tx, encode_data_to_blob};
 
     const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
+
+    #[test]
+    fn encode_decode_blob_data() {
+        let data = vec![0xaa; MAX_USABLE_BLOB_DATA_LEN];
+        let blob = encode_data_to_blob(&data);
+        assert_eq!(hex::encode(&decode_blob_to_data(&blob)), hex::encode(&data));
+    }
 
     #[tokio::test]
     async fn test_construct_blob_tx() -> Result<()> {

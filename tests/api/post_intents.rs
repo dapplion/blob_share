@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use crate::helpers::{TestHarness, TestMode, ADDRESS_ZERO, MS_100};
+use crate::helpers::{retry_with_timeout, TestHarness, TestMode, ADDRESS_ZERO, MS_100};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
 use ethers::{providers::Middleware, types::Address};
 use eyre::Result;
@@ -19,9 +19,14 @@ async fn post_two_intents_and_expect_blob_tx() {
         .await
         .spawn_with_fn(|test_harness| {
             async move {
+                // TODO: Should run this as part of test harness setup
+                test_harness
+                    .wait_for_app_health(Duration::from_secs(1))
+                    .await?;
+
                 // Submit data intent
                 let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 3];
-                let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2];
+                let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
 
                 let wallet = test_harness.get_wallet_genesis_funds();
                 // Fund account
@@ -73,11 +78,28 @@ async fn post_two_intents_and_expect_blob_tx() {
                     .get_block_with_txs(intent_1_block)
                     .await?
                     .expect(&format!("block {intent_1_block} should be known"));
-                let intent_1_tx = block
+                let _intent_1_tx = block
                     .transactions
                     .iter()
                     .find(|tx| tx.hash == intent_1_txhash_block)
                     .expect("blob transaction not found in block");
+
+                let blob_consumer = test_harness.get_blob_consumer(wallet.address());
+                // Allow some time for the consensus client to persist the blobs and serve them
+                let published_data = retry_with_timeout(
+                    || async {
+                        blob_consumer
+                            .extract_data_participation_from_block(&block)
+                            .await
+                    },
+                    Duration::from_secs(5),
+                    Duration::from_millis(50),
+                )
+                .await?;
+
+                // Assert that data returned by blob consumer matches the original publish
+                assert_eq!(hex::encode(data_1), hex::encode(&published_data[0]));
+                assert_eq!(hex::encode(data_2), hex::encode(&published_data[1]));
 
                 Ok(())
             }

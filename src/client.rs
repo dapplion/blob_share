@@ -1,44 +1,38 @@
-use eyre::{bail, Result};
-use reqwest::Response;
+use eyre::Result;
+use url::Url;
 
 pub use crate::routes::{PostDataIntentV1, PostDataResponse, SenderDetails};
+use crate::utils::is_ok_response;
 pub use crate::{data_intent::DataIntentId, data_intent_tracker::DataIntentStatus, DataIntent};
 
 pub struct Client {
-    base_url: String,
+    base_url: Url,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub fn new(base_url: &str) -> Self {
-        Self {
-            base_url: base_url.to_string(),
+    pub fn new(base_url: &str) -> Result<Self> {
+        Ok(Self {
+            base_url: Url::parse(base_url)?,
             client: reqwest::Client::new(),
-        }
+        })
     }
 
-    pub async fn health(&self) -> Result<u16> {
-        let response = self
-            .client
-            .get(&format!("{}/v1/health", &self.base_url))
-            .send()
-            .await?;
-        Ok(response.status().as_u16())
+    pub async fn health(&self) -> Result<()> {
+        let response = self.client.get(&self.url("v1/health")).send().await?;
+        is_ok_response(response).await?;
+        Ok(())
     }
 
     pub async fn get_sender(&self) -> Result<SenderDetails> {
-        let response = self
-            .client
-            .get(&format!("{}/v1/sender", &self.base_url))
-            .send()
-            .await?;
+        let response = self.client.get(&self.url("v1/sender")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn post_data(&self, data: &PostDataIntentV1) -> Result<PostDataResponse> {
         let response = self
             .client
-            .post(&format!("{}/v1/data", &self.base_url))
+            .post(&self.url("v1/data"))
             .json(data)
             .send()
             .await?;
@@ -46,18 +40,14 @@ impl Client {
     }
 
     pub async fn get_data(&self) -> Result<Vec<DataIntent>> {
-        let response = self
-            .client
-            .get(&format!("{}/v1/data", &self.base_url))
-            .send()
-            .await?;
+        let response = self.client.get(&self.url("v1/data")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn get_data_by_id(&self, id: &str) -> Result<DataIntent> {
         let response = self
             .client
-            .get(&format!("{}/v1/data/{}", &self.base_url, id))
+            .get(&self.url(&format!("v1/data/{}", id)))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -66,22 +56,14 @@ impl Client {
     pub async fn get_status_by_id(&self, id: &str) -> Result<DataIntentStatus> {
         let response = self
             .client
-            .get(&format!("{}/v1/status/{}", &self.base_url, id))
+            .get(&self.url(&format!("v1/status/{}", id)))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
-}
 
-async fn is_ok_response(response: Response) -> Result<Response> {
-    if response.status().is_success() {
-        Ok(response)
-    } else {
-        let status = response.status().as_u16();
-        let body = match response.text().await {
-            Ok(body) => body,
-            Err(e) => format!("error getting error response text body: {}", e),
-        };
-        bail!("non-success response status {} body: {}", status, body);
+    /// `path` must not start with /
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
     }
 }

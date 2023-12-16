@@ -6,7 +6,7 @@ use reth_primitives::kzg::{Blob, Bytes48, BYTES_PER_BLOB, BYTES_PER_COMMITMENT, 
 
 use serde::{Deserialize, Serialize};
 
-use crate::tx_eip4844::TxEip4844;
+use super::tx_eip4844::TxEip4844;
 
 /// A response to `GetPooledTransactions` that includes blob data, their commitments, and their
 /// corresponding proofs.

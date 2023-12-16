@@ -4,9 +4,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::geth_helpers::{
-    generate_rand_str, get_jwtsecret_filepath, pipe_stdout_on_thread, retry_with_timeout,
-    run_until_exit, unused_port,
+use crate::{
+    geth_helpers::{
+        generate_rand_str, get_jwtsecret_filepath, pipe_stdout_on_thread, run_until_exit,
+        unused_port,
+    },
+    helpers::retry_with_timeout,
 };
 
 const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
@@ -101,8 +104,6 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
         .unwrap();
 
     let client_version = retry_with_timeout(
-        Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
-        Duration::from_millis(50),
         || async {
             Ok(client
                 .get(&format!("{}/eth/v1/node/identity", rest_url))
@@ -111,6 +112,8 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
                 .text()
                 .await?)
         },
+        Duration::from_millis(STARTUP_TIMEOUT_MILLIS),
+        Duration::from_millis(50),
     )
     .await
     .unwrap();
