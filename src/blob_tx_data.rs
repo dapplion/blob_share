@@ -56,8 +56,8 @@ impl BlobTxSummary {
         }
     }
 
-    pub fn from_tx(tx: &Transaction, target_address: Address) -> Result<Option<BlobTxSummary>> {
-        if tx.from != target_address || !is_blob_tx(tx) {
+    pub fn from_tx(tx: &Transaction) -> Result<Option<BlobTxSummary>> {
+        if !is_blob_tx(tx) {
             return Ok(None);
         }
 
@@ -270,9 +270,7 @@ mod tests {
         tx.max_priority_fee_per_gas = Some(2.into());
         tx.other.insert("maxFeePerBlobGas".to_string(), "3".into());
 
-        let blob_tx_summary = BlobTxSummary::from_tx(&tx, target_address)
-            .unwrap()
-            .unwrap();
+        let blob_tx_summary = BlobTxSummary::from_tx(&tx).unwrap().unwrap();
         let expected_blob_tx_summary = BlobTxSummary {
             participants,
             tx_hash,

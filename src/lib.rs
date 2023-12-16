@@ -16,7 +16,7 @@ use crate::{
     block_subscriber_task::block_subscriber_task,
     gas::GasTracker,
     routes::{get_data, get_data_by_id, get_health, get_sender, get_status_by_id, post_data},
-    sync::BlockSync,
+    sync::{AnchorBlock, BlockSync},
     trusted_setup::TrustedSetup,
 };
 
@@ -160,24 +160,32 @@ impl App {
         let target_address = wallet.address();
 
         // TODO: choose starting point that's not genesis
-        let (anchor_block_root, anchor_block_number) = match starting_point {
+        let anchor_block = match starting_point {
             StartingPoint::Genesis => {
                 let anchor_block = provider
                     .get_block(0)
                     .await?
                     .ok_or_else(|| eyre!("genesis block not available"))?;
-                (
-                    anchor_block
-                        .hash
-                        .ok_or_else(|| eyre!("block has no hash property"))?,
-                    anchor_block
-                        .number
-                        .ok_or_else(|| eyre!("block has no number property"))?
-                        .as_u64(),
-                )
+                let hash = anchor_block
+                    .hash
+                    .ok_or_else(|| eyre!("block has no hash property"))?;
+                let number = anchor_block
+                    .number
+                    .ok_or_else(|| eyre!("block has no number property"))?
+                    .as_u64();
+                let target_address_nonce = provider
+                    .get_transaction_count(target_address, Some(hash.into()))
+                    .await?
+                    .as_u64();
+                AnchorBlock {
+                    hash,
+                    number,
+                    target_address_nonce,
+                }
             }
         };
-        let sync = BlockSync::new(target_address, anchor_block_root, anchor_block_number);
+
+        let sync = BlockSync::new(target_address, anchor_block);
 
         // Initialize gas tracker with current head
         let head_number = provider.get_block_number().await?;

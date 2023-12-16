@@ -64,16 +64,17 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     );
 
     let gas_config = app_data.gas_tracker.estimate(&app_data.provider).await?;
+    let sender_address = app_data.sender_wallet.address();
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
-    let tx_count = app_data
-        .provider
-        .get_transaction_count(app_data.sender_wallet.address(), None)
-        .await?;
 
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
-        nonce: tx_count.as_u64(),
+        nonce: app_data
+            .sync
+            .read()
+            .await
+            .transaction_count_at_head_with_pending_tx(sender_address),
     };
 
     let blob_tx = construct_blob_tx(
@@ -85,13 +86,10 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         next_blob_items,
     )?;
 
-    // Declare items as pending on the computed tx_hash
-    app_data
-        .data_intent_tracker
-        .write()
-        .await
-        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
-        .wrap_err("consistency error with blob_tx intents")?;
+    debug!(
+        "sending blob transaction {}: {:?}",
+        blob_tx.tx_hash, blob_tx.tx_summary
+    );
 
     // TODO: do not await here, spawn another task
     // TODO: monitor transaction, if gas is insufficient return data intents to the pool
@@ -113,7 +111,11 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
                 );
             }
 
-            format!("error sending blob tx {}", hex::encode(blob_tx.tx_hash))
+            format!(
+                "error sending blob tx {}: {:?}",
+                hex::encode(blob_tx.tx_hash),
+                blob_tx.tx_summary
+            )
         })?;
 
     // Sanity check on correct hash
@@ -125,11 +127,24 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         );
     }
 
+    // TODO: Assumes this function is never called concurrently. Therefore it can afford to
+    // register the transaction when it has been accepted by the execution node. If this function
+    // can be called concurrently it should mark the items as 'Pending' before sending the
+    // transaction to the execution client, and remove them if there's an error.
+    //
+    // Declare items as pending on the computed tx_hash
+    app_data
+        .data_intent_tracker
+        .write()
+        .await
+        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
+        .wrap_err("consistency error with blob_tx intents")?;
     app_data
         .sync
         .write()
         .await
-        .register_pending_blob_tx(blob_tx.tx_summary);
+        .register_pending_blob_tx(blob_tx.tx_summary)
+        .wrap_err("consistency error with blob_tx")?;
 
     Ok(SendResult::SentBlobTx)
 }

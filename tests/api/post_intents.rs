@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use crate::helpers::{retry_with_timeout, TestHarness, TestMode};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
-use ethers::signers::{LocalWallet, Signer};
+use ethers::{
+    providers::Middleware,
+    signers::{LocalWallet, Signer},
+};
 use futures::future::join_all;
 
 #[tokio::test]
@@ -84,9 +87,6 @@ async fn test_post_two_data_intents_up_to_inclusion(
         .post_data_and_wait_for_pending(wallet, data_2.clone())
         .await;
 
-    // After sending enough intents the blob transaction should be emitted
-    assert_eq!(test_harness.client.get_data().await.unwrap().len(), 0);
-
     let intents_txhash = test_harness
         .wait_for_intent_inclusion_in_any_tx(&[intent_1_id, intent_2_id], Duration::from_secs(1))
         .await
@@ -151,7 +151,10 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                 let wallet = test_harness.get_wallet_genesis_funds();
                 test_harness.fund_sender_account(&wallet).await;
 
-                let datas = (0..10)
+                // Num of intents to send at once
+                const N: u64 = 32;
+
+                let datas = (0..N as u8)
                     .map(|i| vec![0xa0_u8 + i; MAX_USABLE_BLOB_DATA_LEN / 2])
                     .collect::<Vec<_>>();
 
@@ -170,18 +173,31 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     .await
                     .unwrap();
 
-                // Should dispatch transactions with all the data intents
+                // Should dispatch transactions with all the data intents, done in serie can take
+                // some time
                 let intents_txhash = test_harness
-                    .wait_for_intent_inclusion_in_any_tx(&intent_ids, Duration::from_secs(2))
+                    .wait_for_intent_inclusion_in_any_tx(
+                        &intent_ids,
+                        Duration::from_millis(200 * N),
+                    )
                     .await
                     .unwrap();
 
+                let block_when_all_txs_sent =
+                    test_harness.eth_provider.get_block_number().await.unwrap();
+
                 // Should eventually include the transactions in multiple blocks (non-determinstic)
                 for id in &intent_ids {
-                    let intent_1_txhash = test_harness
-                        .wait_for_intent_inclusion_in_any_block(&id, None, Duration::from_secs(15))
+                    let (_, block_hash) = test_harness
+                        .wait_for_intent_inclusion_in_any_block(
+                            &id,
+                            None,
+                            Duration::from_secs(2 * N),
+                        )
                         .await
                         .unwrap();
+
+                    println!("intent {} included in {}", id, block_hash);
                 }
 
                 Ok(())

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap};
 
 use async_trait::async_trait;
 use ethers::{
@@ -36,8 +36,9 @@ type Nonce = u64;
 ///   3.2. Tx dropped => jump to 2.2.
 ///
 pub struct BlockSync {
+    anchor_block: AnchorBlock,
     unfinalized_head_chain: Vec<BlockSummary>,
-    pending_transactions: HashMap<(Address, Nonce), BlobTxSummary>,
+    pending_transactions: HashMap<Nonce, BlobTxSummary>,
     target_address: Address,
 }
 
@@ -60,22 +61,32 @@ pub enum SyncBlockOutcome {
 }
 
 impl BlockSync {
-    pub fn new(target_address: Address, anchor_block_hash: H256, anchor_block_number: u64) -> Self {
-        let anchor_block = BlockSummary {
-            hash: anchor_block_hash,
-            number: anchor_block_number,
-            // parent hash of anchor block does not matter
-            parent_hash: [0u8; 32].into(),
-            blob_txs: vec![],
-            topup_txs: vec![],
-            base_fee_per_gas: 0,
-            blob_gas_price: 0,
-        };
+    pub fn new(target_address: Address, anchor_block: AnchorBlock) -> Self {
         Self {
-            unfinalized_head_chain: vec![anchor_block].into(),
+            anchor_block,
+            unfinalized_head_chain: <_>::default(),
             pending_transactions: <_>::default(),
             target_address,
         }
+    }
+
+    pub fn transaction_count_at_head(&self, target_address: Address) -> u64 {
+        // TODO: Support multiple sender addresses
+        assert_eq!(target_address, self.target_address);
+
+        let unfinalized_tx_count = self
+            .unfinalized_head_chain
+            .iter()
+            .map(|b| b.blob_txs.len())
+            .sum::<usize>();
+        self.anchor_block.target_address_nonce + unfinalized_tx_count as u64
+    }
+
+    pub fn transaction_count_at_head_with_pending_tx(&self, target_address: Address) -> u64 {
+        // TODO: Support multiple sender addresses
+        assert_eq!(target_address, self.target_address);
+
+        self.transaction_count_at_head(target_address) + self.pending_transactions.len() as u64
     }
 
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
@@ -114,8 +125,24 @@ impl BlockSync {
         None
     }
 
-    pub fn register_pending_blob_tx(&mut self, tx: BlobTxSummary) {
-        self.pending_transactions.insert((tx.from, tx.nonce), tx);
+    /// Register pending transaction with sync
+    pub fn register_pending_blob_tx(&mut self, tx: BlobTxSummary) -> Result<()> {
+        // TODO: Handle multiple senders
+        assert_eq!(tx.from, self.target_address);
+
+        // TODO: Allow to replace transactions with same nonce. Note there's potential nonce
+        // deadlocks where the blob sharing sends a viable transaction at gas price P, the network
+        // base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
+        // that case the sender account is stuck because it can't send a profitable re-price
+        // transaction. In that case it should send a self transfer to unlock the nonce.
+
+        match self.pending_transactions.entry(tx.nonce) {
+            Entry::Vacant(e) => {
+                e.insert(tx);
+                Ok(())
+            }
+            Entry::Occupied(_) => bail!("transaction already registered for nonce {}", tx.nonce),
+        }
     }
 
     /// Register a new head block with sync. The new head's parent can be unknown. This function
@@ -144,7 +171,7 @@ impl BlockSync {
             let new_block = provider
                 .get_block_by_hash(&new_chain_parent_hash)
                 .await?
-                .ok_or_else(|| eyre::eyre!("parent block should be known"))?;
+                .ok_or_else(|| eyre!("parent block {} should be known", new_chain_parent_hash))?;
             new_blocks.push(new_block);
         }
 
@@ -165,14 +192,10 @@ impl BlockSync {
         if self.is_known_block(block.hash) {
             // Block already known
             Ok(SyncBlockOutcome::BlockKnown)
-        } else if let Some(common_ancestor_index) = self
-            .unfinalized_head_chain
-            .iter()
-            .position(|b| b.hash == block.parent_hash)
-        {
-            if common_ancestor_index < self.unfinalized_head_chain.len() - 1 {
+        } else if let Some(new_head_index) = self.block_position_plus_one(block.parent_hash) {
+            if new_head_index < self.unfinalized_head_chain.len() {
                 // Next unknown block is not descendant of head: re-org
-                self.drop_reorged_blocks(common_ancestor_index);
+                self.drop_reorged_blocks(new_head_index);
             }
             // Next unknown block is descendant of head
             let blob_txs = self.sync_block(block);
@@ -189,38 +212,43 @@ impl BlockSync {
 
     /// Returns true if block_hash is known in the current head chain
     fn is_known_block(&self, block_hash: H256) -> bool {
+        self.block_position_plus_one(block_hash).is_some()
+    }
+
+    /// Returns the position of the block after `block_hash` if `block_hash` is known
+    fn block_position_plus_one(&self, block_hash: H256) -> Option<usize> {
+        if self.anchor_block.hash == block_hash {
+            return Some(0);
+        }
         self.unfinalized_head_chain
             .iter()
-            .any(|b| block_hash == b.hash)
+            .position(|b| b.hash == block_hash)
+            .map(|i| i + 1)
     }
 
     /// Returns the block number of the anchor block. There should never exist a re-org deeper than
     /// this block number.
     fn anchor_block_number(&self) -> u64 {
-        self.unfinalized_head_chain
-            .first()
-            .expect("always has at least 1 block")
-            .number
+        self.anchor_block.number
     }
 
-    fn drop_reorged_blocks(&mut self, common_ancestor_position: usize) {
+    fn drop_reorged_blocks(&mut self, new_head_index: usize) {
         // do accounting on the balances cache
         let reorged_blocks = self
             .unfinalized_head_chain
             .iter()
-            .skip(common_ancestor_position)
+            .skip(new_head_index)
             .cloned()
             .collect::<Vec<_>>();
 
         for reorged_block in reorged_blocks {
             for tx in reorged_block.blob_txs {
-                self.pending_transactions.insert((tx.from, tx.nonce), tx);
+                self.pending_transactions.insert(tx.nonce, tx);
             }
         }
 
         // All blocks in current chain after the pivot must be dropped
-        self.unfinalized_head_chain
-            .truncate(common_ancestor_position + 1);
+        self.unfinalized_head_chain.truncate(new_head_index);
     }
 
     fn sync_block(&mut self, block: BlockSummary) -> Vec<H256> {
@@ -232,7 +260,7 @@ impl BlockSync {
 
         // Drop pending transactions
         for tx in &block.blob_txs {
-            self.pending_transactions.remove(&(tx.from, tx.nonce));
+            self.pending_transactions.remove(&tx.nonce);
             info!(
                 "pending blob tx included from {} nonce {} tx_hash {}",
                 tx.from, tx.nonce, tx.tx_hash
@@ -242,6 +270,13 @@ impl BlockSync {
 
         blob_txs
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct AnchorBlock {
+    pub hash: H256,
+    pub number: u64,
+    pub target_address_nonce: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -281,8 +316,12 @@ impl BlockSummary {
             }
 
             // TODO: Handle invalid blob tx errors more gracefully
-            if let Some(blob_tx) = BlobTxSummary::from_tx(&tx, target_address)? {
-                blob_txs.push(blob_tx)
+            if tx.from == target_address {
+                if let Some(blob_tx) = BlobTxSummary::from_tx(&tx)? {
+                    blob_txs.push(blob_tx)
+                }
+                // TODO: Handle target address sending non-blob transactions for correct nonce
+                // accounting
             }
         }
 
@@ -412,7 +451,7 @@ mod tests {
         let block_2 = generate_block(hash_1, hash_2, 2);
         let block_3 = generate_block(hash_2, hash_3, 3);
 
-        let sync = RwLock::new(BlockSync::new(ADDRESS_SENDER, hash_0, 0));
+        let sync = new_block_sync(hash_0, 0);
         let provider = MockEthereumProvider::default();
 
         sync_next_block(&sync, &provider, block_1).await;
@@ -435,7 +474,7 @@ mod tests {
         let block_2b = generate_block(hash_1, hash_2b, 2);
         let block_3b = generate_block(hash_2b, hash_3b, 3);
 
-        let sync = RwLock::new(BlockSync::new(ADDRESS_SENDER, hash_0, 0));
+        let sync = new_block_sync(hash_0, 0);
         let provider = MockEthereumProvider::with_blocks(&[block_2b]);
 
         let user = get_addr(1);
@@ -452,7 +491,8 @@ mod tests {
         // Register pending tx for user
         sync.write()
             .await
-            .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user));
+            .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
+            .unwrap();
         assert_eq!(
             sync.read().await.unfinalized_balance_delta(user),
             TOP_UP - TXCOST
@@ -497,7 +537,7 @@ mod tests {
         let block_1b = generate_block(hash_0b, hash_1b, 1);
         let block_2b = generate_block(hash_1b, hash_2b, 2);
 
-        let sync = RwLock::new(BlockSync::new(ADDRESS_SENDER, hash_0a, 0));
+        let sync = new_block_sync(hash_0a, 0);
         let provider = MockEthereumProvider::with_blocks(&[block_0b, block_1b]);
 
         sync_next_block(&sync, &provider, block_1a).await;
@@ -600,13 +640,15 @@ mod tests {
     }
 
     async fn assert_chain(sync: &RwLock<BlockSync>, expected_hash_chain: &[H256]) {
-        let hash_chain = sync
-            .read()
-            .await
-            .unfinalized_head_chain
-            .iter()
-            .map(|b| b.hash)
-            .collect::<Vec<_>>();
+        let sync = sync.read().await;
+        let mut hash_chain = vec![sync.anchor_block.hash];
+        hash_chain.extend_from_slice(
+            &sync
+                .unfinalized_head_chain
+                .iter()
+                .map(|b| b.hash)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(hash_chain, expected_hash_chain);
     }
 
@@ -622,5 +664,16 @@ mod tests {
 
     async fn pending_tx_len(sync: &RwLock<BlockSync>) -> usize {
         sync.read().await.pending_transactions.len()
+    }
+
+    fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
+        RwLock::new(BlockSync::new(
+            ADDRESS_SENDER,
+            super::AnchorBlock {
+                hash,
+                number,
+                target_address_nonce: 0,
+            },
+        ))
     }
 }
