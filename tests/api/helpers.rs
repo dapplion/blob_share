@@ -4,7 +4,7 @@ use ethers::{
     types::{Address, Transaction, TransactionRequest, H256},
     utils::parse_ether,
 };
-use eyre::{bail, Result};
+use eyre::{bail, Context, Result};
 use log::LevelFilter;
 use once_cell::sync::Lazy;
 use std::{
@@ -19,6 +19,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use blob_share::{
     client::{DataIntentId, DataIntentStatus, SenderDetails},
+    consumer::BlobConsumer,
     increase_by_min_percent, App, Args, BlockGasSummary, Client, DataIntent,
 };
 
@@ -131,7 +132,7 @@ impl TestHarness {
         let eth_provider = Provider::<Http>::try_from(geth_instance.http_url()).unwrap();
         let eth_provider = eth_provider.interval(Duration::from_millis(50));
 
-        let client = Client::new(&base_url);
+        let client = Client::new(&base_url).unwrap();
 
         Self {
             client,
@@ -181,6 +182,21 @@ impl TestHarness {
                 return result;
             }
         }
+    }
+
+    pub fn get_blob_consumer(&self, participant_address: Address) -> BlobConsumer {
+        let beacon_api_base_url = match &self.lodestar_instance {
+            Some(lodestar_instance) => lodestar_instance.http_url(),
+            None => panic!("no beacon node is configured"),
+        };
+
+        BlobConsumer::new(
+            beacon_api_base_url,
+            self.geth_instance.http_url(),
+            self.sender_address,
+            participant_address,
+        )
+        .unwrap()
     }
 
     // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
@@ -319,20 +335,19 @@ impl TestHarness {
         id: &DataIntentId,
         timeout: Duration,
     ) -> Result<H256> {
-        let start_time = Instant::now();
-
-        loop {
-            match self.client.get_status_by_id(&id.to_string()).await? {
-                DataIntentStatus::Unknown | DataIntentStatus::Pending => {} // fall through
-                DataIntentStatus::InPendingTx { tx_hash } => return Ok(tx_hash),
-                DataIntentStatus::InConfirmedTx { tx_hash, .. } => return Ok(tx_hash),
-            }
-
-            if start_time.elapsed() > timeout {
-                bail!("Timeout {timeout:?}: waiting for intent {id} inclusion in tx")
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
+        retry_with_timeout(
+            || async {
+                match self.client.get_status_by_id(&id.to_string()).await? {
+                    DataIntentStatus::Unknown | DataIntentStatus::Pending => bail!("pending"),
+                    DataIntentStatus::InPendingTx { tx_hash } => return Ok(tx_hash),
+                    DataIntentStatus::InConfirmedTx { tx_hash, .. } => return Ok(tx_hash),
+                }
+            },
+            timeout,
+            Duration::from_millis(10),
+        )
+        .await
+        .wrap_err(format!("waiting for intent {id} inclusion in tx"))
     }
 
     pub async fn wait_for_known_intent(&self, id: &DataIntentId, timeout: Duration) -> Result<()> {
@@ -359,6 +374,16 @@ impl TestHarness {
             }
             sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    pub async fn wait_for_app_health(&self, timeout: Duration) -> Result<()> {
+        retry_with_timeout(
+            || async { self.client.health().await },
+            timeout,
+            Duration::from_millis(10),
+        )
+        .await
+        .wrap_err("timeout waiting for health")
     }
 
     pub async fn get_all_past_sender_txs(&self) -> Result<Vec<Transaction>> {
@@ -395,5 +420,28 @@ impl TestHarness {
 
     pub fn get_wallet_genesis_funds(&self) -> WalletWithProvider {
         self.geth_instance.http_provider().unwrap()
+    }
+}
+
+pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(
+    mut f: F,
+    timeout: Duration,
+    retry_interval: Duration,
+) -> Result<T>
+where
+    Fut: Future<Output = Result<T>>,
+{
+    let start = Instant::now();
+    loop {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    return Err(e.wrap_err(format!("timeout {timeout:?}")));
+                } else {
+                    sleep(retry_interval).await;
+                }
+            }
+        }
     }
 }

@@ -56,10 +56,8 @@ impl BlobTxSummary {
         }
     }
 
-    pub fn from_tx(tx: Transaction, target_address: Address) -> Result<Option<BlobTxSummary>> {
-        if tx.from != target_address
-            || tx.transaction_type.map(|x| x.as_u64() as u8) != Some(BLOB_TX_TYPE)
-        {
+    pub fn from_tx(tx: &Transaction, target_address: Address) -> Result<Option<BlobTxSummary>> {
+        if tx.from != target_address || !is_blob_tx(tx) {
             return Ok(None);
         }
 
@@ -155,6 +153,10 @@ pub fn encode_blob_tx_data(participants: &[BlobTxParticipant]) -> Result<Vec<u8>
         participant.write(&mut w)?;
     }
     Ok(out)
+}
+
+pub fn is_blob_tx(tx: &Transaction) -> bool {
+    tx.transaction_type.map(|x| x.as_u64() as u8) == Some(BLOB_TX_TYPE)
 }
 
 #[cfg(test)]
@@ -268,7 +270,9 @@ mod tests {
         tx.max_priority_fee_per_gas = Some(2.into());
         tx.other.insert("maxFeePerBlobGas".to_string(), "3".into());
 
-        let blob_tx_summary = BlobTxSummary::from_tx(tx, target_address).unwrap().unwrap();
+        let blob_tx_summary = BlobTxSummary::from_tx(&tx, target_address)
+            .unwrap()
+            .unwrap();
         let expected_blob_tx_summary = BlobTxSummary {
             participants,
             tx_hash,

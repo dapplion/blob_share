@@ -1,3 +1,5 @@
+use eyre::{bail, Result};
+use reqwest::Response;
 use serde::{
     de::{self, Visitor},
     Deserializer, Serializer,
@@ -71,5 +73,19 @@ where
         value + T::from(1)
     } else {
         value
+    }
+}
+
+/// Post-process a reqwest response to handle non 2xx codes gracefully
+pub async fn is_ok_response(response: Response) -> Result<Response> {
+    if response.status().is_success() {
+        Ok(response)
+    } else {
+        let status = response.status().as_u16();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(e) => format!("error getting error response text body: {}", e),
+        };
+        bail!("non-success response status {} body: {}", status, body);
     }
 }

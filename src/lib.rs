@@ -20,22 +20,24 @@ use crate::{
     trusted_setup::TrustedSetup,
 };
 
+pub mod beacon_api_client;
 mod blob_sender_task;
 mod blob_tx_data;
 mod block_subscriber_task;
 pub mod client;
+pub mod consumer;
 mod data_intent;
 mod data_intent_tracker;
 mod gas;
 mod kzg;
 pub mod packing;
+mod reth_fork;
 mod routes;
 mod sync;
 mod trusted_setup;
-mod tx_eip4844;
-mod tx_sidecar;
 mod utils;
 
+pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
 pub use data_intent::DataIntent;
 pub use gas::BlockGasSummary;
