@@ -9,7 +9,7 @@ use ethers::{
 };
 use eyre::{eyre, Result};
 use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 
 use crate::{
     blob_sender_task::blob_sender_task,
@@ -111,8 +111,8 @@ struct AppConfig {
 
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
-    data_intent_tracker: DataIntentTracker,
-    sync: BlockSync,
+    data_intent_tracker: RwLock<DataIntentTracker>,
+    sync: RwLock<BlockSync>,
     gas_tracker: GasTracker,
     provider: Provider<Ws>,
     sender_wallet: LocalWallet,
@@ -191,7 +191,7 @@ impl App {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
             data_intent_tracker: <_>::default(),
-            sync,
+            sync: sync.into(),
             gas_tracker,
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,

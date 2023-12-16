@@ -43,7 +43,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     let wei_per_byte = 1; // TODO: Fetch from chain
 
     let next_blob_items = {
-        let items = app_data.data_intent_tracker.get_all_pending().await;
+        let items = app_data.data_intent_tracker.read().await.get_all_pending();
         if let Some(next_blob_items) = select_next_blob_items(&items, wei_per_byte) {
             next_blob_items
         } else {
@@ -88,8 +88,9 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     // Declare items as pending on the computed tx_hash
     app_data
         .data_intent_tracker
-        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
+        .write()
         .await
+        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
         .wrap_err("consistency error with blob_tx intents")?;
 
     // TODO: do not await here, spawn another task
@@ -126,8 +127,9 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
 
     app_data
         .sync
-        .register_pending_blob_tx(blob_tx.tx_summary)
-        .await;
+        .write()
+        .await
+        .register_pending_blob_tx(blob_tx.tx_summary);
 
     Ok(SendResult::SentBlobTx)
 }

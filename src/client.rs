@@ -1,9 +1,9 @@
 use eyre::Result;
 use url::Url;
 
-pub use crate::routes::{PostDataIntentV1, PostDataResponse, SenderDetails};
+pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
 use crate::utils::is_ok_response;
-pub use crate::{data_intent::DataIntentId, data_intent_tracker::DataIntentStatus, DataIntent};
+pub use crate::{data_intent::DataIntentId, DataIntent};
 
 pub struct Client {
     base_url: Url,
