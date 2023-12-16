@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ethers::providers::Middleware;
+use ethers::{providers::Middleware, signers::Signer};
 use eyre::{Context, Result};
 
 use crate::{
@@ -49,9 +49,15 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<()> {
 
     let gas_config = app_data.gas_tracker.estimate(&app_data.provider).await?;
 
+    // Make getting the nonce reliable + heing able to send multiple txs at once
+    let tx_count = app_data
+        .provider
+        .get_transaction_count(app_data.sender_wallet.address(), None)
+        .await?;
+
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
-        nonce: 0,
+        nonce: tx_count.as_u64(),
     };
 
     let blob_tx = construct_blob_tx(

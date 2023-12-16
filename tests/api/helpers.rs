@@ -6,7 +6,6 @@ use ethers::{
 };
 use eyre::{bail, Context, Result};
 use log::LevelFilter;
-use once_cell::sync::Lazy;
 use std::{
     future::Future,
     mem,
@@ -14,13 +13,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::time::{sleep, timeout};
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
 
 use blob_share::{
-    client::{DataIntentId, DataIntentStatus, SenderDetails},
+    client::{DataIntentId, DataIntentStatus},
     consumer::BlobConsumer,
-    increase_by_min_percent, App, Args, BlockGasSummary, Client, DataIntent,
+    App, Args, BlockGasSummary, Client, DataIntent,
 };
 
 use crate::{
@@ -33,19 +30,6 @@ pub const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const SEC_1: Duration = Duration::from_secs(1);
 pub const MS_100: Duration = Duration::from_millis(100);
-
-// Ensure that the `tracing` stack is only initialised once using `once_cell`
-static TRACING: Lazy<()> = Lazy::new(|| {
-    // a builder for `FmtSubscriber`.
-    let subscriber = FmtSubscriber::builder()
-        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-        // will be written to stdout.
-        .with_max_level(Level::INFO)
-        // completes the builder.
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-});
 
 #[allow(dead_code)]
 pub struct TestHarness {
@@ -229,60 +213,16 @@ impl TestHarness {
         DataIntentId::from_str(&res.id).unwrap()
     }
 
-    pub async fn get_sender(&self) -> SenderDetails {
-        self.client.get_sender().await.unwrap()
-    }
-
-    pub async fn get_block_first_tx(&self, block_number: u64) -> Transaction {
-        let block = self
-            .eth_provider
-            .get_block_with_txs(block_number)
-            .await
-            .unwrap()
-            .expect("block should exist");
-        block.transactions.get(0).unwrap().clone()
-    }
-
-    pub async fn get_eth_provider_version(&self) -> String {
-        self.eth_provider.client_version().await.unwrap()
-    }
-
-    pub async fn wait_for_block_with_tx_from(
+    pub async fn post_data_and_wait_for_pending(
         &self,
-        from: Address,
-        timeout: Duration,
-        interval: Option<Duration>,
-    ) -> Transaction {
-        let interval = interval.unwrap_or(Duration::from_millis(5));
-        let start_time = Instant::now();
-        let mut last_block_number = 0;
-
-        loop {
-            let block_number = self.eth_provider.get_block_number().await.unwrap().as_u64();
-            if last_block_number > block_number {
-                last_block_number = block_number;
-
-                let block = self
-                    .eth_provider
-                    .get_block_with_txs(block_number)
-                    .await
-                    .unwrap()
-                    .expect("block should be available");
-
-                for tx in block.transactions {
-                    if tx.from == from {
-                        return tx;
-                    }
-                }
-            }
-
-            if start_time.elapsed() > timeout {
-                let head = self.eth_provider.get_block_number().await.unwrap();
-                panic!("Timeout reached waiting for block {block_number}, head number {head}");
-            }
-
-            sleep(interval).await;
-        }
+        wallet: &LocalWallet,
+        data: Vec<u8>,
+    ) -> DataIntentId {
+        let intent_id = self.post_data(wallet, data).await;
+        self.wait_for_known_intent(&intent_id, Duration::from_millis(100))
+            .await
+            .unwrap();
+        intent_id
     }
 
     pub async fn wait_for_intent_inclusion_in_any_block(
@@ -291,21 +231,26 @@ impl TestHarness {
         expected_tx_hash: Option<H256>,
         timeout: Duration,
     ) -> Result<(H256, H256)> {
-        let start_time = Instant::now();
-
-        loop {
-            let status = self.client.get_status_by_id(&id.to_string()).await?;
-            match status {
-                DataIntentStatus::Unknown
-                | DataIntentStatus::Pending
-                | DataIntentStatus::InPendingTx { .. } => {} // fall through
-                DataIntentStatus::InConfirmedTx {
-                    tx_hash,
-                    block_hash,
-                } => return Ok((tx_hash, block_hash)),
-            }
-
-            if start_time.elapsed() > timeout {
+        match retry_with_timeout(
+            || async {
+                let status = self.client.get_status_by_id(&id.to_string()).await?;
+                match status {
+                    DataIntentStatus::Unknown
+                    | DataIntentStatus::Pending
+                    | DataIntentStatus::InPendingTx { .. } => bail!("still pending: {:?}", &status),
+                    DataIntentStatus::InConfirmedTx {
+                        tx_hash,
+                        block_hash,
+                    } => Ok((tx_hash, block_hash)),
+                }
+            },
+            timeout,
+            Duration::from_millis(100),
+        )
+        .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) => {
                 let sender_nonce = self
                     .eth_provider
                     .get_transaction_count(self.sender_address, None)
@@ -321,12 +266,11 @@ impl TestHarness {
                     vec![]
                 };
                 bail!(
-                    "Timeout {timeout:?}: waiting for intent {id} inclusion in block, \
+                    "Timeout {timeout:?}: waiting for intent {id} inclusion in block: {e:?}, \
                 expected tx_hash {expected_tx_hash:?} \
-                current status {status:?}, sender nonce {sender_nonce} sender txs {sender_txs:?}",
+                sender nonce {sender_nonce} sender txs {sender_txs:?}",
                 )
             }
-            sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -351,28 +295,28 @@ impl TestHarness {
     }
 
     pub async fn wait_for_known_intent(&self, id: &DataIntentId, timeout: Duration) -> Result<()> {
-        let start_time = Instant::now();
-
-        loop {
-            match self.client.get_status_by_id(&id.to_string()).await? {
-                DataIntentStatus::InConfirmedTx { .. }
-                | DataIntentStatus::InPendingTx { .. }
-                | DataIntentStatus::Pending => return Ok(()),
-                DataIntentStatus::Unknown => {
-                    // fall through
-                    if start_time.elapsed() > timeout {
-                        let data_intents = self.client.get_data().await?;
-                        let ids = data_intents.iter().map(|d| d.id()).collect::<Vec<_>>();
-                        bail!(
-                            "timeout {:?}: intent {:?} not known: intents known: {:?}",
-                            timeout,
-                            id,
-                            ids
-                        );
-                    }
+        match retry_with_timeout(
+            || async {
+                match self.client.get_status_by_id(&id.to_string()).await? {
+                    DataIntentStatus::InConfirmedTx { .. }
+                    | DataIntentStatus::InPendingTx { .. }
+                    | DataIntentStatus::Pending => Ok(()),
+                    DataIntentStatus::Unknown => bail!("still pending"),
                 }
+            },
+            timeout,
+            Duration::from_millis(10),
+        )
+        .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                let data_intents = self.client.get_data().await?;
+                let ids = data_intents.iter().map(|d| d.id()).collect::<Vec<_>>();
+                bail!(
+                    "timeout {timeout:?}: waiting for intent {id:?} not known: {e:?}\nintents known: {ids:?}",
+                );
             }
-            sleep(Duration::from_millis(10)).await;
         }
     }
 
