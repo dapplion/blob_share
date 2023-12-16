@@ -57,7 +57,6 @@ pub enum TxInclusion {
 pub enum SyncBlockOutcome {
     BlockKnown,
     Synced(Vec<H256>),
-    Reorg,
 }
 
 impl BlockSync {

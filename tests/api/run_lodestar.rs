@@ -1,5 +1,5 @@
 use std::{
-    process::{Child, Command},
+    process::Command,
     time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -16,7 +16,6 @@ const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
 const SECONDS_PER_SLOT: usize = 2;
 
 pub struct LodestarInstance {
-    pid: Child,
     container_name: String,
     rest_url: String,
 }
@@ -120,7 +119,6 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     log::info!("connected to lodestar client {client_version:?}");
 
     LodestarInstance {
-        pid: child,
         container_name,
         rest_url,
     }

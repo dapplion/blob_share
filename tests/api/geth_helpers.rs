@@ -9,15 +9,12 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::json;
 use std::{
     env,
-    future::Future,
     io::{BufRead, BufReader, Read},
-    process::ChildStdout,
-    process::{Child, Command},
+    process::Command,
     str::FromStr,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
-use tokio::time::sleep;
 
 use crate::helpers::retry_with_timeout;
 
@@ -53,7 +50,6 @@ pub fn get_wallet_genesis_funds(
 }
 
 pub struct GethInstance {
-    pid: Child,
     container_name: String,
     http_url: String,
     ws_url: String,
@@ -209,7 +205,6 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     let genesis_block = client.get_block(0).await.unwrap().unwrap();
 
     GethInstance {
-        pid: child,
         container_name,
         http_url,
         ws_url,

@@ -2,10 +2,7 @@ use std::time::Duration;
 
 use crate::helpers::{retry_with_timeout, TestHarness, TestMode};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
-use ethers::{
-    providers::Middleware,
-    signers::{LocalWallet, Signer},
-};
+use ethers::signers::{LocalWallet, Signer};
 use futures::future::join_all;
 
 #[tokio::test]

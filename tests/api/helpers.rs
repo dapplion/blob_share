@@ -5,7 +5,7 @@ use ethers::{
     utils::parse_ether,
 };
 use eyre::{bail, eyre, Context, Result};
-use futures::future::{join_all, try_join_all};
+use futures::future::try_join_all;
 use log::LevelFilter;
 use std::{
     future::Future,
@@ -16,9 +16,7 @@ use std::{
 use tokio::time::{sleep, timeout};
 
 use blob_share::{
-    client::{DataIntentId, DataIntentStatus},
-    consumer::BlobConsumer,
-    App, Args, BlockGasSummary, Client, DataIntent,
+    client::DataIntentId, consumer::BlobConsumer, App, Args, BlockGasSummary, Client, DataIntent,
 };
 
 use crate::{
@@ -27,9 +25,6 @@ use crate::{
     spawn_geth, GethInstance,
 };
 
-pub const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
-
-pub const SEC_1: Duration = Duration::from_secs(1);
 pub const ONE_HUNDRED_MS: Duration = Duration::from_millis(100);
 
 #[allow(dead_code)]
@@ -60,6 +55,7 @@ impl TestHarness {
             .spawn_app_in_background()
     }
 
+    #[allow(dead_code)]
     pub async fn spawn_with_chain() -> Self {
         TestHarness::build(TestMode::WithChain)
             .await

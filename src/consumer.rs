@@ -156,14 +156,3 @@ pub fn extract_data_participations_from_block(
 
     block_data_chunks
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::MAX_USABLE_BLOB_DATA_LEN;
-
-    #[test]
-    fn extract_data() {
-        let data_1 = vec![0xaa_u8; MAX_USABLE_BLOB_DATA_LEN / 3];
-        let data_2 = vec![0xbb_u8; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
-    }
-}

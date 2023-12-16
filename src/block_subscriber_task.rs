@@ -59,17 +59,14 @@ async fn sync_block(
         .await?
         .ok_or_else(|| eyre!("block with txs not available {}", block_hash))?;
 
-    let sync_block_outcome = BlockSync::sync_next_head(
+    BlockSync::sync_next_head(
         sync,
         provider,
         BlockWithTxs::from_ethers_block(block_with_txs)?,
     )
     .await?;
 
-    info!(
-        "synced block {:?} {:?} outcome {:?}",
-        block.number, block.hash, sync_block_outcome
-    );
+    info!("synced block {:?} {:?}", block.number, block.hash);
 
     Ok(())
 }

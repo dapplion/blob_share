@@ -1,15 +1,9 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use ethers::types::{TxHash, H256};
+use ethers::types::TxHash;
 use eyre::{bail, Result};
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
-use crate::{
-    data_intent::DataIntentId,
-    sync::{BlockSync, TxInclusion},
-    DataIntent,
-};
+use crate::{data_intent::DataIntentId, DataIntent};
 
 #[derive(Default)]
 pub struct DataIntentTracker {
