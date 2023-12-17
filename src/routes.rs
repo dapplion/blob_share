@@ -36,9 +36,13 @@ pub(crate) async fn post_data(
         .sync
         .read()
         .await
-        .unfinalized_balance_delta(data_intent.from);
+        .balance_with_pending(data_intent.from);
     if account_balance < data_intent.max_cost() as i128 {
-        return Err(e400(eyre!("Insufficient balance")));
+        return Err(e400(eyre!(
+            "Insufficient balance, current balance {} requested {}",
+            account_balance,
+            data_intent.max_cost()
+        )));
     }
 
     let id = data
@@ -104,6 +108,15 @@ pub(crate) async fn get_status_by_id(
     };
 
     Ok(HttpResponse::Ok().json(status))
+}
+
+#[get("/v1/balance/{address}")]
+pub(crate) async fn get_balance_by_address(
+    data: web::Data<Arc<AppData>>,
+    address: web::Path<Address>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let balance = data.sync.read().await.balance_with_pending(*address);
+    Ok(HttpResponse::Ok().json(balance))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

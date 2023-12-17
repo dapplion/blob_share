@@ -97,7 +97,18 @@ async fn sync_block(app_data: Arc<AppData>, block: &Block<TxHash>) -> Result<(),
     }
 
     // Finalize transactions
-    if let Some(finalized_txs) = app_data.sync.write().await.maybe_advance_anchor_block()? {
+    if let Some((finalized_txs, new_anchor_block_number)) =
+        app_data.sync.write().await.maybe_advance_anchor_block()?
+    {
+        let finalized_tx_hashes = finalized_txs
+            .iter()
+            .map(|tx| tx.tx_hash)
+            .collect::<Vec<_>>();
+        info!(
+            "Finalized transactions, new anchor block number {} {:?}",
+            new_anchor_block_number, finalized_tx_hashes
+        );
+
         let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
         for tx in finalized_txs {
             data_intent_tracker.finalize_tx(tx.tx_hash);

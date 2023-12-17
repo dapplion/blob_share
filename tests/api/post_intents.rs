@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode};
+use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode, FINALIZE_DEPTH};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
 use ethers::signers::{LocalWallet, Signer};
 use futures::future::join_all;
@@ -52,9 +52,14 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                 let wallet = test_harness.get_wallet_genesis_funds();
                 test_harness.fund_sender_account(&wallet).await;
 
-                for i in 0..10 {
-                    test_post_two_data_intents_up_to_inclusion(&test_harness, wallet.signer(), i)
-                        .await;
+                // +4 for the time it takes the fund transaction to go through
+                for i in 0..4 + 2 * FINALIZE_DEPTH {
+                    test_post_two_data_intents_up_to_inclusion(
+                        &test_harness,
+                        wallet.signer(),
+                        i as u8,
+                    )
+                    .await;
                 }
 
                 Ok(())

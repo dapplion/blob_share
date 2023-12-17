@@ -15,8 +15,6 @@ use crate::{blob_tx_data::BlobTxSummary, info, BlockGasSummary};
 
 type Nonce = u64;
 
-const FINALIZE_DEPTH: u64 = 2 * 32;
-
 /// Represents the canonical view of the target chain to publish blob transactions.
 /// Given a sequence of head blocks, it allows to query:
 ///
@@ -45,6 +43,7 @@ pub struct BlockSync {
     unfinalized_head_chain: Vec<BlockSummary>,
     pending_transactions: HashMap<Nonce, BlobTxSummary>,
     target_address: Address,
+    finalize_depth: u64,
 }
 
 #[async_trait]
@@ -59,12 +58,13 @@ pub enum TxInclusion {
 }
 
 impl BlockSync {
-    pub fn new(target_address: Address, anchor_block: AnchorBlock) -> Self {
+    pub fn new(target_address: Address, finalize_depth: u64, anchor_block: AnchorBlock) -> Self {
         Self {
             anchor_block,
             unfinalized_head_chain: <_>::default(),
             pending_transactions: <_>::default(),
             target_address,
+            finalize_depth,
         }
     }
 
@@ -106,7 +106,7 @@ impl BlockSync {
 
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
     /// blob transactions
-    pub fn unfinalized_balance_delta(&self, address: Address) -> i128 {
+    pub fn balance_with_pending(&self, address: Address) -> i128 {
         let balance_delta_block_inclusions = self
             .unfinalized_head_chain
             .iter()
@@ -119,7 +119,14 @@ impl BlockSync {
             .map(|tx| tx.cost_to_participant(address, None, None))
             .sum::<u128>();
 
-        balance_delta_block_inclusions - cost_of_pending_txs as i128
+        let finalized_balance = self
+            .anchor_block
+            .finalized_balances
+            .get(&address)
+            .copied()
+            .unwrap_or(0);
+
+        finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
     }
 
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
@@ -183,16 +190,16 @@ impl BlockSync {
     }
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
-    pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<Vec<BlobTxSummary>>> {
+    pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
         let head_number = self.get_head_number();
-        let new_anchor_index = if self.anchor_block_number() + FINALIZE_DEPTH < head_number {
+        let new_anchor_index = if self.anchor_block_number() + self.finalize_depth < head_number {
             self.unfinalized_head_chain
                 .iter()
-                .position(|b| b.number == head_number - FINALIZE_DEPTH)
+                .position(|b| b.number == head_number - self.finalize_depth)
                 .ok_or_else(|| {
                     eyre!(
                         "inconsistent unfinalized chain, block number {} missing",
-                        head_number - FINALIZE_DEPTH
+                        head_number - self.finalize_depth
                     )
                 })?
         } else {
@@ -209,12 +216,13 @@ impl BlockSync {
             self.anchor_block.apply_finalized_block(block);
         }
 
-        Ok(Some(
+        Ok(Some((
             finalized_chain
                 .into_iter()
                 .flat_map(|b| b.blob_txs.into_iter())
                 .collect(),
-        ))
+            self.anchor_block.number,
+        )))
     }
 
     /// Register a new head block with sync. The new head's parent can be unknown. This function
@@ -671,7 +679,7 @@ mod tests {
         // Register block with top-up transaction
         block_1.transactions.push(generate_topup_tx(user, TOP_UP));
         sync_next_block(&sync, &provider, block_1).await;
-        assert_eq!(sync.read().await.unfinalized_balance_delta(user), TOP_UP);
+        assert_eq!(sync.read().await.balance_with_pending(user), TOP_UP);
 
         // Register pending tx for user
         sync.write()
@@ -679,7 +687,7 @@ mod tests {
             .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
             .unwrap();
         assert_eq!(
-            sync.read().await.unfinalized_balance_delta(user),
+            sync.read().await.balance_with_pending(user),
             TOP_UP - TXCOST
         ); // TOPUP - TXCOST
         assert_eq!(pending_tx_len(&sync).await, 1);
@@ -692,7 +700,7 @@ mod tests {
         sync_next_block(&sync, &provider, block_3a).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2a, hash_3a]).await;
         assert_eq!(
-            sync.read().await.unfinalized_balance_delta(user),
+            sync.read().await.balance_with_pending(user),
             2 * TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 0);
@@ -702,7 +710,7 @@ mod tests {
         sync_next_block(&sync, &provider, block_3b).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2b, hash_3b]).await;
         assert_eq!(
-            sync.read().await.unfinalized_balance_delta(user),
+            sync.read().await.balance_with_pending(user),
             TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 2);
@@ -858,6 +866,7 @@ mod tests {
     fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
         RwLock::new(BlockSync::new(
             ADDRESS_SENDER,
+            32,
             super::AnchorBlock {
                 hash,
                 number,

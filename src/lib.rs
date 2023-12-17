@@ -15,7 +15,10 @@ use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     gas::GasTracker,
-    routes::{get_data, get_data_by_id, get_health, get_sender, get_status_by_id, post_data},
+    routes::{
+        get_balance_by_address, get_data, get_data_by_id, get_health, get_sender, get_status_by_id,
+        post_data,
+    },
     sync::{AnchorBlock, BlockSync},
     trusted_setup::TrustedSetup,
 };
@@ -93,6 +96,11 @@ pub struct Args {
     /// FOR TESTING ONLY: panic if a background task experiences an error for a single event
     #[arg(long)]
     pub panic_on_background_task_errors: bool,
+
+    /// Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than
+    /// this depth, the app will crash and expect to re-sync on restart.
+    #[arg(long, default_value_t = 64)]
+    pub finalize_depth: u64,
 }
 
 impl Args {
@@ -188,7 +196,7 @@ impl App {
             }
         };
 
-        let sync = BlockSync::new(target_address, anchor_block);
+        let sync = BlockSync::new(target_address, args.finalize_depth, anchor_block);
 
         // Initialize gas tracker with current head
         let head_number = provider.get_block_number().await?;
@@ -238,6 +246,7 @@ impl App {
                 .service(get_data)
                 .service(get_data_by_id)
                 .service(get_status_by_id)
+                .service(get_balance_by_address)
         })
         .listen(listener)?
         .run();
