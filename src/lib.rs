@@ -182,6 +182,8 @@ impl App {
                     number,
                     target_address_nonce,
                     gas: BlockGasSummary::from_block(&anchor_block)?,
+                    // At genesis all balances are zero
+                    finalized_balances: <_>::default(),
                 }
             }
         };

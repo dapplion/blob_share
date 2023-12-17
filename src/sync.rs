@@ -1,4 +1,7 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    mem,
+};
 
 use async_trait::async_trait;
 use ethers::{
@@ -11,6 +14,8 @@ use tokio::sync::RwLock;
 use crate::{blob_tx_data::BlobTxSummary, info, BlockGasSummary};
 
 type Nonce = u64;
+
+const FINALIZE_DEPTH: u64 = 2 * 32;
 
 /// Represents the canonical view of the target chain to publish blob transactions.
 /// Given a sequence of head blocks, it allows to query:
@@ -69,6 +74,14 @@ impl BlockSync {
             &head.gas
         } else {
             &self.anchor_block.gas
+        }
+    }
+
+    fn get_head_number(&self) -> u64 {
+        if let Some(head) = self.unfinalized_head_chain.last() {
+            head.number
+        } else {
+            self.anchor_block.number
         }
     }
 
@@ -167,6 +180,41 @@ impl BlockSync {
             .iter()
             .map(|k| self.pending_transactions.remove(k).expect("key must exist"))
             .collect()
+    }
+
+    /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
+    pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<Vec<BlobTxSummary>>> {
+        let head_number = self.get_head_number();
+        let new_anchor_index = if self.anchor_block_number() < head_number - FINALIZE_DEPTH {
+            self.unfinalized_head_chain
+                .iter()
+                .position(|b| b.number == head_number - FINALIZE_DEPTH)
+                .ok_or_else(|| {
+                    eyre!(
+                        "inconsistent unfinalized chain, block number {} missing",
+                        head_number - FINALIZE_DEPTH
+                    )
+                })?
+        } else {
+            return Ok(None);
+        };
+
+        // split_off retains in the original array the first N items. If N = 0, the anchor
+        // block is the first item in the unfinalized chain, so we should split_off at 1.
+        let unfinalized_head_chain = self.unfinalized_head_chain.split_off(new_anchor_index + 1);
+        let finalized_chain =
+            mem::replace(&mut self.unfinalized_head_chain, unfinalized_head_chain);
+
+        for block in &finalized_chain {
+            self.anchor_block.apply_finalized_block(block);
+        }
+
+        Ok(Some(
+            finalized_chain
+                .into_iter()
+                .flat_map(|b| b.blob_txs.into_iter())
+                .collect(),
+        ))
     }
 
     /// Register a new head block with sync. The new head's parent can be unknown. This function
@@ -352,6 +400,21 @@ pub struct AnchorBlock {
     pub number: u64,
     pub target_address_nonce: u64,
     pub gas: BlockGasSummary,
+    pub finalized_balances: HashMap<Address, i128>,
+}
+
+impl AnchorBlock {
+    fn apply_finalized_block(&mut self, block: &BlockSummary) {
+        for address in block.get_all_participants() {
+            *self.finalized_balances.entry(address).or_insert(0) += block.balance_delta(address);
+        }
+
+        self.target_address_nonce += block.blob_txs.len() as u64;
+
+        self.hash = block.hash;
+        self.number = block.number;
+        self.gas = block.gas.clone();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -427,6 +490,19 @@ impl BlockSummary {
         }
 
         balance_delta
+    }
+
+    /// Return all user addresses from topups and blob tx participations
+    fn get_all_participants(&self) -> Vec<Address> {
+        self.topup_txs
+            .iter()
+            .map(|tx| tx.from)
+            .chain(
+                self.blob_txs
+                    .iter()
+                    .flat_map(|tx| tx.participants.iter().map(|p| p.address)),
+            )
+            .collect()
     }
 }
 
@@ -754,6 +830,7 @@ mod tests {
                 number,
                 target_address_nonce: 0,
                 gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
             },
         ))
     }

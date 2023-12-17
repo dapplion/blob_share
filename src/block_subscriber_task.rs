@@ -70,18 +70,25 @@ async fn sync_block(app_data: Arc<AppData>, block: &Block<TxHash>) -> Result<()>
     // Check if any pending transactions need re-pricing
     let underpriced_txs = { app_data.sync.write().await.evict_underpriced_pending_txs() };
 
-    for tx in &underpriced_txs {
-        // TODO: should handle each individual error or abort iteration?
-        app_data
-            .data_intent_tracker
-            .write()
-            .await
-            .revert_item_to_pending(tx.tx_hash)?;
+    if !underpriced_txs.is_empty() {
+        {
+            let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
+            for tx in &underpriced_txs {
+                // TODO: should handle each individual error or abort iteration?
+                data_intent_tracker.revert_item_to_pending(tx.tx_hash)?;
+            }
+        }
+
+        // Potentially prepare new blob transactions with correct pricing
+        app_data.notify.notify_one();
     }
 
-    // Potentially prepare new blob transactions with correct pricing
-    if !underpriced_txs.is_empty() {
-        app_data.notify.notify_one();
+    // Finalize transactions
+    if let Some(finalized_txs) = app_data.sync.write().await.maybe_advance_anchor_block()? {
+        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
+        for tx in finalized_txs {
+            data_intent_tracker.finalize_tx(tx.tx_hash);
+        }
     }
 
     Ok(())
