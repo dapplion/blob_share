@@ -89,6 +89,15 @@ impl DataIntentTracker {
         Ok(())
     }
 
+    /// Drops all intents associated with transaction. Does not error if items not found
+    pub fn finalize_tx(&mut self, tx_hash: TxHash) {
+        if let Some(ids) = self.included_intents.remove(&tx_hash) {
+            for id in ids {
+                self.pending_intents.remove(&id);
+            }
+        }
+    }
+
     pub fn data_by_id(&self, id: &DataIntentId) -> Option<DataIntent> {
         self.pending_intents.get(id).map(|item| match item {
             DataIntentItem::Pending(data_intent) => data_intent.clone(),

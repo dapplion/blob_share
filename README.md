@@ -23,6 +23,8 @@ Options:
           Mnemonic for tx sender TODO: UNSAFE, handle hot keys better [default: "any any any any any any any any any any any any any any"]
       --panic-on-background-task-errors
           FOR TESTING ONLY: panic if a background task experiences an error for a single event
+      --finalize-depth <FINALIZE_DEPTH>
+          Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than this depth, the app will crash and expect to re-sync on restart [default: 64]
   -h, --help
           Print help
   -V, --version

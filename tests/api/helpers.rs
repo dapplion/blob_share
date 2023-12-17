@@ -27,6 +27,8 @@ use crate::{
     spawn_geth, GethInstance,
 };
 
+/// TODO: Shorter finalize depth to trigger functionality faster
+pub const FINALIZE_DEPTH: u64 = 8;
 pub const ONE_HUNDRED_MS: Duration = Duration::from_millis(100);
 
 #[allow(dead_code)]
@@ -105,6 +107,7 @@ impl TestHarness {
                 "work man father plunge mystery proud hollow address reunion sauce theory bonus"
                     .to_string(),
             panic_on_background_task_errors: true,
+            finalize_depth: FINALIZE_DEPTH,
         };
 
         let app = App::build(args).await.unwrap();

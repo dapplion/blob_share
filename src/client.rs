@@ -1,3 +1,4 @@
+use ethers::types::Address;
 use eyre::Result;
 use url::Url;
 
@@ -57,6 +58,15 @@ impl Client {
         let response = self
             .client
             .get(&self.url(&format!("v1/status/{}", id)))
+            .send()
+            .await?;
+        Ok(is_ok_response(response).await?.json().await?)
+    }
+
+    pub async fn get_balance_by_address(&self, address: Address) -> Result<i128> {
+        let response = self
+            .client
+            .get(&self.url(&format!("v1/balance/{}", address)))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
