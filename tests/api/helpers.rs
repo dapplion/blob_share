@@ -8,7 +8,9 @@ use eyre::{bail, eyre, Context, Result};
 use futures::future::try_join_all;
 use log::LevelFilter;
 use std::{
+    collections::HashSet,
     future::Future,
+    hash::Hash,
     mem,
     str::FromStr,
     time::{Duration, Instant},
@@ -406,4 +408,9 @@ where
             }
         }
     }
+}
+
+/// Returns unique elements of slice `v`
+pub fn unique<T: Eq + Hash>(v: &[T]) -> Vec<&T> {
+    v.iter().collect::<HashSet<&T>>().into_iter().collect()
 }

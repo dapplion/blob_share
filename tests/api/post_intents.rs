@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::helpers::{retry_with_timeout, TestHarness, TestMode};
+use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode};
 use blob_share::MAX_USABLE_BLOB_DATA_LEN;
 use ethers::signers::{LocalWallet, Signer};
 use futures::future::join_all;
@@ -179,7 +179,13 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     )
                     .await
                     .unwrap();
-                assert_eq!(intents_txhash.len() as u64, N / 2);
+                let unique_intents_txhash = unique(&intents_txhash);
+                if unique_intents_txhash.len() as u64 != N / 2 {
+                    panic!(
+                        "unique_intents_txhash should equal N/2: {:?}",
+                        unique_intents_txhash
+                    );
+                }
 
                 // Should eventually include the transactions in multiple blocks (non-determinstic)
                 let mut intents_block_hash = vec![];
@@ -196,11 +202,14 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     intents_block_hash.push(block_hash);
                 }
 
+                // Some transactions should be included in the same block. So the count of unique
+                // block hashes must be less than the unique count of tx hashes
+                let unique_intents_block_hash = unique(&intents_block_hash);
                 assert!(
-                    intents_txhash.len() < intents_block_hash.len(),
-                    "intents tx count {} < blocks count {}",
-                    intents_txhash.len(),
-                    intents_block_hash.len()
+                    unique_intents_block_hash.len() < unique_intents_txhash.len(),
+                    "blocks count {} < intents tx count {}",
+                    unique_intents_block_hash.len(),
+                    unique_intents_txhash.len(),
                 );
 
                 Ok(())
