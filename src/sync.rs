@@ -185,7 +185,7 @@ impl BlockSync {
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
     pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<Vec<BlobTxSummary>>> {
         let head_number = self.get_head_number();
-        let new_anchor_index = if self.anchor_block_number() < head_number - FINALIZE_DEPTH {
+        let new_anchor_index = if self.anchor_block_number() + FINALIZE_DEPTH < head_number {
             self.unfinalized_head_chain
                 .iter()
                 .position(|b| b.number == head_number - FINALIZE_DEPTH)
@@ -597,7 +597,7 @@ impl BlockProvider for Provider<Ws> {
 
 #[cfg(test)]
 mod tests {
-    use super::BlockSummary;
+    use super::{BlockSummary, SyncBlockError};
     use crate::{
         blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE},
         BlockGasSummary,
@@ -734,7 +734,10 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
-            "re-org deeper than first known block"
+            SyncBlockError::ReorgTooDeep {
+                anchor_block_number: 0
+            }
+            .to_string(),
         )
     }
 
