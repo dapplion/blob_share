@@ -1,3 +1,5 @@
+name: Test
+
 # Credits https://github.com/seanmonstar/reqwest/blob/master/.github/workflows/ci.yml
 
 on:
