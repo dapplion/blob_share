@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use ethers::{providers::Middleware, signers::Signer};
+use ethers::signers::Signer;
 use eyre::{Context, Result};
 
 use crate::{
     debug, error,
+    gas::GasConfig,
     kzg::{construct_blob_tx, TxParams},
     packing::{pack_items, Item},
     warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
@@ -40,11 +41,16 @@ pub(crate) enum SendResult {
 }
 
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendResult> {
-    let wei_per_byte = 1; // TODO: Fetch from chain
+    let max_fee_per_blob_gas = app_data
+        .sync
+        .read()
+        .await
+        .get_head_gas()
+        .blob_gas_price_next_block();
 
     let next_blob_items = {
         let items = app_data.data_intent_tracker.read().await.get_all_pending();
-        if let Some(next_blob_items) = select_next_blob_items(&items, wei_per_byte) {
+        if let Some(next_blob_items) = select_next_blob_items(&items, max_fee_per_blob_gas) {
             next_blob_items
         } else {
             debug!("no viable set of items for blob, out of {}", items.len());
@@ -63,7 +69,15 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         data_intent_ids
     );
 
-    let gas_config = app_data.gas_tracker.estimate(&app_data.provider).await?;
+    // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
+    let (max_fee_per_gas, max_priority_fee_per_gas) =
+        app_data.provider.estimate_eip1559_fees().await?;
+    let gas_config = GasConfig {
+        max_fee_per_gas: max_fee_per_gas.as_u128(),
+        max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
+        max_fee_per_blob_gas,
+    };
+
     let sender_address = app_data.sender_wallet.address();
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
@@ -93,7 +107,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
 
     // TODO: do not await here, spawn another task
     // TODO: monitor transaction, if gas is insufficient return data intents to the pool
-    let tx = app_data
+    let tx_hash = app_data
         .provider
         .send_raw_transaction(blob_tx.blob_tx_networking.clone())
         .await
@@ -119,11 +133,10 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         })?;
 
     // Sanity check on correct hash
-    if blob_tx.tx_hash != tx.tx_hash() {
+    if blob_tx.tx_hash != tx_hash {
         warn!(
             "internally computed transaction hash {} does not match returned hash {}",
-            blob_tx.tx_hash,
-            tx.tx_hash()
+            blob_tx.tx_hash, tx_hash
         );
     }
 

@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use ethers::{
-    providers::{Middleware, StreamExt},
-    types::{Block, TxHash},
-};
+use ethers::{providers::StreamExt, types::TxHash};
 use eyre::{eyre, Context, Result};
 
 use crate::{
@@ -21,12 +18,11 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     // Ref: https://www.quicknode.com/docs/ethereum/eth_subscribe
     let mut s = app_data.provider.subscribe_blocks().await?;
 
-    while let Some(block) = s.next().await {
-        // Register gas prices, async just to grab the lock
-        app_data.gas_tracker.new_head(&block).await?;
+    while let Some(block_hash) = s.next().await {
+        let block_hash = block_hash?;
 
         // Run sync routine, may involve long network requests if there's a re-org
-        match sync_block(app_data.clone(), &block).await {
+        match sync_block(app_data.clone(), block_hash).await {
             Err(SyncBlockError::ReorgTooDeep {
                 anchor_block_number,
             }) => {
@@ -40,10 +36,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
                 if app_data.config.panic_on_background_task_errors {
                     return Err(e);
                 } else {
-                    error!(
-                        "error syncing block {:?} {:?}: {:?}",
-                        block.number, block.hash, e
-                    );
+                    error!("error syncing block {:?}: {:?}", block_hash, e);
                 }
             }
             Ok(_) => {}
@@ -56,17 +49,14 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     Ok(())
 }
 
-async fn sync_block(app_data: Arc<AppData>, block: &Block<TxHash>) -> Result<(), SyncBlockError> {
-    let block_hash = block
-        .hash
-        .ok_or_else(|| eyre!("block has no hash {:?}", block.number))?;
-
+async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), SyncBlockError> {
     let block_with_txs = app_data
         .provider
         .get_block_with_txs(block_hash)
         .await
         .wrap_err(format!("error fetching block {}", block_hash))?
         .ok_or_else(|| eyre!("block with txs not available {}", block_hash))?;
+    let block_number = block_with_txs.number;
 
     let outcome = BlockSync::sync_next_head(
         &app_data.sync,
@@ -77,7 +67,7 @@ async fn sync_block(app_data: Arc<AppData>, block: &Block<TxHash>) -> Result<(),
 
     info!(
         "synced block {:?} {:?}, outcome: {:?}",
-        block.number, block.hash, outcome
+        block_number, block_hash, outcome
     );
 
     // Check if any pending transactions need re-pricing

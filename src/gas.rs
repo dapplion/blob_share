@@ -1,9 +1,5 @@
-use ethers::{
-    providers::{Middleware, Provider, Ws},
-    types::{Block, TxHash},
-};
+use ethers::types::{Block, TxHash};
 use eyre::{eyre, Result};
-use tokio::sync::RwLock;
 
 use crate::sync::BlockWithTxs;
 
@@ -22,46 +18,6 @@ pub struct BlockGasSummary {
     blob_gas_used: u128,
     excess_blob_gas: u128,
     pub base_fee_per_gas: u128,
-}
-
-pub struct GasTracker {
-    current_head_gas: RwLock<BlockGasSummary>,
-}
-
-impl GasTracker {
-    pub fn new(current_head: &Block<TxHash>) -> Result<Self> {
-        Ok(Self {
-            current_head_gas: BlockGasSummary::from_block(current_head)?.into(),
-        })
-    }
-}
-
-impl GasTracker {
-    pub async fn new_head(&self, block: &Block<TxHash>) -> Result<()> {
-        let gas_summary = BlockGasSummary::from_block(block)?;
-        *self.current_head_gas.write().await = gas_summary;
-        Ok(())
-    }
-
-    pub async fn estimate(&self, eth_provider: &Provider<Ws>) -> Result<GasConfig> {
-        // Note: fetches latest block to estimate gas fees
-        let (max_fee_per_gas, max_priority_fee_per_gas) =
-            eth_provider.estimate_eip1559_fees(None).await?;
-
-        let min_blob_gas_price_next_block = self
-            .current_head_gas
-            .read()
-            .await
-            .blob_gas_price_next_block();
-
-        let max_fee_per_blob_gas = (125 * min_blob_gas_price_next_block) / 100;
-
-        Ok(GasConfig {
-            max_priority_fee_per_gas: max_priority_fee_per_gas.as_u64().try_into()?,
-            max_fee_per_gas: max_fee_per_gas.as_u64().try_into()?,
-            max_fee_per_blob_gas,
-        })
-    }
 }
 
 impl BlockGasSummary {

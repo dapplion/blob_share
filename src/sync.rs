@@ -11,7 +11,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
-use crate::{blob_tx_data::BlobTxSummary, info, BlockGasSummary};
+use crate::{blob_tx_data::BlobTxSummary, eth_provider::EthProvider, info, BlockGasSummary};
 
 type Nonce = u64;
 
@@ -594,6 +594,17 @@ impl BlockProvider for Provider<Http> {
 
 #[async_trait]
 impl BlockProvider for Provider<Ws> {
+    async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
+        let block = self.get_block_with_txs(*block_hash).await?;
+        Ok(match block {
+            Some(block) => Some(BlockWithTxs::from_ethers_block(block)?),
+            None => None,
+        })
+    }
+}
+
+#[async_trait]
+impl BlockProvider for EthProvider {
     async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
         let block = self.get_block_with_txs(*block_hash).await?;
         Ok(match block {

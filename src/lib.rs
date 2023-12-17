@@ -2,19 +2,19 @@ use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
 use data_intent_tracker::DataIntentTracker;
+use eth_provider::EthProvider;
 use ethers::{
-    providers::{Middleware, Provider, Ws},
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
 use eyre::{eyre, Context, Result};
-use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
+use std::{net::TcpListener, str::FromStr, sync::Arc};
 use tokio::sync::{Notify, RwLock};
+use url::Url;
 
 use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
-    gas::GasTracker,
     routes::{
         get_balance_by_address, get_data, get_data_by_id, get_health, get_sender, get_status_by_id,
         post_data,
@@ -31,6 +31,7 @@ pub mod client;
 pub mod consumer;
 mod data_intent;
 mod data_intent_tracker;
+mod eth_provider;
 mod gas;
 mod kzg;
 pub mod packing;
@@ -89,7 +90,7 @@ pub struct Args {
     /// TODO: UNSAFE, handle hot keys better
     #[arg(
         long,
-        default_value = "any any any any any any any any any any any any any any"
+        default_value = "any any any any any any any any any any any any"
     )]
     pub mnemonic: String,
 
@@ -121,8 +122,7 @@ struct AppData {
     kzg_settings: c_kzg::KzgSettings,
     data_intent_tracker: RwLock<DataIntentTracker>,
     sync: RwLock<BlockSync>,
-    gas_tracker: GasTracker,
-    provider: Provider<Ws>,
+    provider: EthProvider,
     sender_wallet: LocalWallet,
     publish_config: PublishConfig,
     notify: Notify,
@@ -146,15 +146,16 @@ impl App {
     pub async fn build(args: Args) -> Result<Self> {
         let starting_point = StartingPoint::StartingBlock(args.starting_block);
 
-        let provider = Provider::<Ws>::connect(&args.eth_provider)
-            .await
-            .wrap_err_with(|| eyre!("unable to connect to eth provider {}", args.eth_provider))?;
-
-        // Pass interval option
-        let provider = if let Some(interval) = args.eth_provider_interval {
-            provider.interval(Duration::from_millis(interval))
-        } else {
-            provider
+        let provider = match Url::parse(&args.eth_provider)
+            .wrap_err_with(|| format!("invalid eth_provider URL {}", args.eth_provider))?
+            .scheme()
+        {
+            "ws" | "wss" => EthProvider::new_ws(&args.eth_provider)
+                .await
+                .wrap_err_with(|| {
+                    format!("unable to connect to WS eth provider {}", args.eth_provider)
+                })?,
+            _ => EthProvider::new_http(&args.eth_provider)?,
         };
 
         let chain_id = provider.get_chainid().await?.as_u64();
@@ -200,20 +201,11 @@ impl App {
 
         let sync = BlockSync::new(target_address, args.finalize_depth, anchor_block);
 
-        // Initialize gas tracker with current head
-        let head_number = provider.get_block_number().await?;
-        let current_head = provider
-            .get_block(head_number)
-            .await?
-            .ok_or_else(|| eyre!("head block not available {head_number}"))?;
-        let gas_tracker = GasTracker::new(&current_head)?;
-
         let app_data = Arc::new(AppData {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
             data_intent_tracker: <_>::default(),
             sync: sync.into(),
-            gas_tracker,
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             },
@@ -225,11 +217,9 @@ impl App {
             },
         });
 
-        let eth_client_version = app_data.provider.client_version().await?;
-        let eth_net_version = app_data.provider.client_version().await?;
         info!(
-            "connected to eth node at {} version {} chain {}",
-            &args.eth_provider, eth_client_version, eth_net_version
+            "connected to eth node at {} chain {}",
+            &args.eth_provider, chain_id
         );
 
         let address = args.address();
