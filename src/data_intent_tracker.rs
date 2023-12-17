@@ -1,13 +1,14 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use ethers::types::TxHash;
-use eyre::{bail, Result};
+use eyre::{bail, eyre, Result};
 
 use crate::{data_intent::DataIntentId, DataIntent};
 
 #[derive(Default)]
 pub struct DataIntentTracker {
     pending_intents: HashMap<DataIntentId, DataIntentItem>,
+    included_intents: HashMap<TxHash, Vec<DataIntentId>>,
 }
 
 #[derive(Clone)]
@@ -61,6 +62,29 @@ impl DataIntentTracker {
                         .insert(*id, DataIntentItem::Included(data_intent, tx_hash));
                 }
             }
+        }
+
+        // TODO: should handle double inclusion for same transaction hash
+        self.included_intents.insert(tx_hash, ids.to_vec());
+
+        Ok(())
+    }
+
+    pub fn revert_item_to_pending(&mut self, tx_hash: TxHash) -> Result<()> {
+        let ids = self
+            .included_intents
+            .remove(&tx_hash)
+            .ok_or_else(|| eyre!("items not known for tx_hash {}", tx_hash))?;
+
+        for id in ids {
+            match self.pending_intents.remove(&id) {
+                None => bail!("pending intent removed while moving into pending {:?}", id),
+                // TODO: Should check that the transaction is consistent?
+                Some(DataIntentItem::Included(data_intent, _))
+                | Some(DataIntentItem::Pending(data_intent)) => self
+                    .pending_intents
+                    .insert(id, DataIntentItem::Pending(data_intent)),
+            };
         }
         Ok(())
     }

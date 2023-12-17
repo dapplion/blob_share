@@ -181,6 +181,7 @@ impl App {
                     hash,
                     number,
                     target_address_nonce,
+                    gas: BlockGasSummary::from_block(&anchor_block)?,
                 }
             }
         };
