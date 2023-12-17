@@ -1,5 +1,3 @@
-name: CI
-
 # Credits https://github.com/seanmonstar/reqwest/blob/master/.github/workflows/ci.yml
 
 on:
@@ -138,7 +136,7 @@ jobs:
       - name: Check README
         run: ./scripts/check_synced_readme.py
  
-  docker-build-and-publish-dev:
+  docker-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
