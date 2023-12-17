@@ -101,7 +101,8 @@ jobs:
       # </setup>
       - run: cargo build --verbose
       - name: Run tests
-        run: cargo test --verbose
+        # TODO: consider including coverage for integration tests
+        run: cargo test --verbose --lib
         env:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
