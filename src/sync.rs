@@ -1,6 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
-    mem,
+    fmt, mem,
 };
 
 use async_trait::async_trait;
@@ -224,7 +224,7 @@ impl BlockSync {
         sync: &RwLock<BlockSync>,
         provider: &T,
         block: BlockWithTxs,
-    ) -> Result<SyncBlockOutcome> {
+    ) -> Result<SyncBlockOutcome, SyncBlockError> {
         let mut new_blocks = vec![block];
 
         loop {
@@ -235,8 +235,11 @@ impl BlockSync {
                 break;
             }
 
-            if new_chain_ancestor.number <= sync.read().await.anchor_block_number() {
-                bail!("re-org deeper than first known block")
+            let anchor_block_number = sync.read().await.anchor_block_number();
+            if new_chain_ancestor.number <= anchor_block_number {
+                return Err(SyncBlockError::ReorgTooDeep {
+                    anchor_block_number,
+                });
             }
 
             let new_block = provider
@@ -343,6 +346,33 @@ impl BlockSync {
             );
         }
         self.unfinalized_head_chain.push(block);
+    }
+}
+
+#[derive(Debug)]
+pub enum SyncBlockError {
+    ReorgTooDeep { anchor_block_number: u64 },
+    Other(eyre::Report),
+}
+
+impl fmt::Display for SyncBlockError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for SyncBlockError {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        match self {
+            SyncBlockError::ReorgTooDeep { .. } => None,
+            SyncBlockError::Other(e) => Some(e.as_ref()),
+        }
+    }
+}
+
+impl From<eyre::ErrReport> for SyncBlockError {
+    fn from(value: eyre::ErrReport) -> Self {
+        Self::Other(value)
     }
 }
 
