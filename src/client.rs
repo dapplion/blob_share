@@ -1,9 +1,9 @@
 use eyre::Result;
 use url::Url;
 
-pub use crate::routes::{PostDataIntentV1, PostDataResponse, SenderDetails};
+pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
 use crate::utils::is_ok_response;
-pub use crate::{data_intent::DataIntentId, data_intent_tracker::DataIntentStatus, DataIntent};
+pub use crate::{data_intent::DataIntentId, DataIntent};
 
 pub struct Client {
     base_url: Url,
@@ -53,7 +53,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_status_by_id(&self, id: &str) -> Result<DataIntentStatus> {
+    pub async fn get_status_by_id(&self, id: DataIntentId) -> Result<DataIntentStatus> {
         let response = self
             .client
             .get(&self.url(&format!("v1/status/{}", id)))

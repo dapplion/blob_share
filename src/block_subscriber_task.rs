@@ -5,6 +5,7 @@ use ethers::{
     types::{Block, TxHash},
 };
 use eyre::{eyre, Result};
+use tokio::sync::RwLock;
 
 use crate::{
     debug, error, info,
@@ -46,7 +47,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
 
 async fn sync_block(
     provider: &Provider<Ws>,
-    sync: &BlockSync,
+    sync: &RwLock<BlockSync>,
     block: &Block<TxHash>,
 ) -> Result<()> {
     let block_hash = block
@@ -58,14 +59,14 @@ async fn sync_block(
         .await?
         .ok_or_else(|| eyre!("block with txs not available {}", block_hash))?;
 
-    let sync_block_outcome = sync
-        .sync_next_block(provider, BlockWithTxs::from_ethers_block(block_with_txs)?)
-        .await?;
+    BlockSync::sync_next_head(
+        sync,
+        provider,
+        BlockWithTxs::from_ethers_block(block_with_txs)?,
+    )
+    .await?;
 
-    info!(
-        "synced block {:?} {:?} outcome {:?}",
-        block.number, block.hash, sync_block_outcome
-    );
+    info!("synced block {:?} {:?}", block.number, block.hash);
 
     Ok(())
 }

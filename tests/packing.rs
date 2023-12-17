@@ -184,6 +184,7 @@ impl ItemsType {
 
 type Item = (usize, u128);
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct SolutionSummary {
     len_used_frac: f64,

@@ -1,13 +1,14 @@
 use actix_web::{get, post, web, HttpResponse, Responder};
 use ethers::signers::Signer;
-use ethers::types::Address;
+use ethers::types::{Address, TxHash, H256};
 use eyre::eyre;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::client::DataIntentStatus;
 use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
+use crate::data_intent_tracker::DataIntentItemStatus;
+use crate::sync::TxInclusion;
 use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
 use crate::AppData;
 
@@ -31,15 +32,20 @@ pub(crate) async fn post_data(
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
     data_intent.verify_signature().map_err(e400)?;
 
-    let account_balance = data.sync.unfinalized_balance_delta(data_intent.from).await;
+    let account_balance = data
+        .sync
+        .read()
+        .await
+        .unfinalized_balance_delta(data_intent.from);
     if account_balance < data_intent.max_cost() as i128 {
         return Err(e400(eyre!("Insufficient balance")));
     }
 
     let id = data
         .data_intent_tracker
-        .add(data_intent)
+        .write()
         .await
+        .add(data_intent)
         .map_err(e500)?;
 
     data.notify.notify_one();
@@ -51,7 +57,7 @@ pub(crate) async fn post_data(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items: Vec<DataIntent> = { data.data_intent_tracker.get_all_pending().await };
+    let items: Vec<DataIntent> = { data.data_intent_tracker.read().await.get_all_pending() };
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -63,8 +69,9 @@ pub(crate) async fn get_data_by_id(
     let id = DataIntentId::from_str(&id).map_err(e400)?;
     let item: DataIntent = {
         data.data_intent_tracker
-            .data_by_id(&id)
+            .read()
             .await
+            .data_by_id(&id)
             .ok_or_else(|| e400(format!("no item found for ID {}", id)))?
     };
     Ok(HttpResponse::Ok().json(item))
@@ -76,8 +83,27 @@ pub(crate) async fn get_status_by_id(
     id: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let id = DataIntentId::from_str(&id).map_err(e400)?;
-    let item: DataIntentStatus = data.data_intent_tracker.status_by_id(&data.sync, &id).await;
-    Ok(HttpResponse::Ok().json(item))
+    let status = { data.data_intent_tracker.read().await.status_by_id(&id) };
+
+    let status = match status {
+        DataIntentItemStatus::Pending => DataIntentStatus::Pending,
+        DataIntentItemStatus::Unknown => DataIntentStatus::Unknown,
+        DataIntentItemStatus::Included(tx_hash) => {
+            match data.sync.read().await.get_tx_status(tx_hash) {
+                Some(TxInclusion::Pending) => DataIntentStatus::InPendingTx { tx_hash },
+                Some(TxInclusion::Included(block_hash)) => DataIntentStatus::InConfirmedTx {
+                    tx_hash,
+                    block_hash,
+                },
+                None => {
+                    // Should never happen, review this case
+                    DataIntentStatus::Unknown
+                }
+            }
+        }
+    };
+
+    Ok(HttpResponse::Ok().json(status))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -130,6 +156,45 @@ impl From<DataIntent> for PostDataIntentV1 {
             data: value.data,
             signature: value.signature.to_vec(),
             max_blob_gas_price: value.max_blob_gas_price,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum DataIntentStatus {
+    Unknown,
+    Pending,
+    InPendingTx { tx_hash: TxHash },
+    InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
+}
+
+impl DataIntentStatus {
+    pub fn is_known(&self) -> bool {
+        match self {
+            DataIntentStatus::InConfirmedTx { .. }
+            | DataIntentStatus::InPendingTx { .. }
+            | DataIntentStatus::Pending => true,
+            DataIntentStatus::Unknown => false,
+        }
+    }
+
+    pub fn is_in_tx(&self) -> Option<TxHash> {
+        match self {
+            DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
+            DataIntentStatus::InPendingTx { tx_hash } => Some(*tx_hash),
+            DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
+        }
+    }
+
+    pub fn is_in_block(&self) -> Option<(H256, TxHash)> {
+        match self {
+            DataIntentStatus::Unknown
+            | DataIntentStatus::Pending
+            | DataIntentStatus::InPendingTx { .. } => None,
+            DataIntentStatus::InConfirmedTx {
+                tx_hash,
+                block_hash,
+            } => Some((*tx_hash, *block_hash)),
         }
     }
 }

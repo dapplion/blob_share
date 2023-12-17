@@ -9,14 +9,14 @@ use ethers::{
 };
 use eyre::{eyre, Result};
 use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 
 use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     gas::GasTracker,
     routes::{get_data, get_data_by_id, get_health, get_sender, get_status_by_id, post_data},
-    sync::BlockSync,
+    sync::{AnchorBlock, BlockSync},
     trusted_setup::TrustedSetup,
 };
 
@@ -111,8 +111,8 @@ struct AppConfig {
 
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
-    data_intent_tracker: DataIntentTracker,
-    sync: BlockSync,
+    data_intent_tracker: RwLock<DataIntentTracker>,
+    sync: RwLock<BlockSync>,
     gas_tracker: GasTracker,
     provider: Provider<Ws>,
     sender_wallet: LocalWallet,
@@ -160,24 +160,32 @@ impl App {
         let target_address = wallet.address();
 
         // TODO: choose starting point that's not genesis
-        let (anchor_block_root, anchor_block_number) = match starting_point {
+        let anchor_block = match starting_point {
             StartingPoint::Genesis => {
                 let anchor_block = provider
                     .get_block(0)
                     .await?
                     .ok_or_else(|| eyre!("genesis block not available"))?;
-                (
-                    anchor_block
-                        .hash
-                        .ok_or_else(|| eyre!("block has no hash property"))?,
-                    anchor_block
-                        .number
-                        .ok_or_else(|| eyre!("block has no number property"))?
-                        .as_u64(),
-                )
+                let hash = anchor_block
+                    .hash
+                    .ok_or_else(|| eyre!("block has no hash property"))?;
+                let number = anchor_block
+                    .number
+                    .ok_or_else(|| eyre!("block has no number property"))?
+                    .as_u64();
+                let target_address_nonce = provider
+                    .get_transaction_count(target_address, Some(hash.into()))
+                    .await?
+                    .as_u64();
+                AnchorBlock {
+                    hash,
+                    number,
+                    target_address_nonce,
+                }
             }
         };
-        let sync = BlockSync::new(target_address, anchor_block_root, anchor_block_number);
+
+        let sync = BlockSync::new(target_address, anchor_block);
 
         // Initialize gas tracker with current head
         let head_number = provider.get_block_number().await?;
@@ -191,7 +199,7 @@ impl App {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
             data_intent_tracker: <_>::default(),
-            sync,
+            sync: sync.into(),
             gas_tracker,
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,

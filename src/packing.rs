@@ -213,7 +213,7 @@ fn pick_first_items_sorted_ascending(
     // effective_cost_per_len = max_len * cost_per_len / len < min_max_price
     if len == 0 {
         PickResult::EmptySelection
-    } else if (max_len as u128 * cost_per_len) / (len as u128) < min_max_price {
+    } else if (max_len as u128 * cost_per_len) <= len as u128 * min_max_price {
         PickResult::Some(indexes)
     } else {
         PickResult::InvalidSelection

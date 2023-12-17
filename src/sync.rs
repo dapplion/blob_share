@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap};
 
 use async_trait::async_trait;
 use ethers::{
@@ -12,9 +12,33 @@ use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice, info};
 
 type Nonce = u64;
 
+/// Represents the canonical view of the target chain to publish blob transactions.
+/// Given a sequence of head blocks, it allows to query:
+///
+/// - the balance delta of users
+/// - transaction status
+/// - (bonus) the current head's blob gas price
+///
+/// It must handle:
+/// - Re-orgs that drop transactions
+/// - New block that under-prices pending transaction
+///
+/// # TX sequence
+///
+/// 1. Send tx with current head's next blob gas price
+/// 2. Wait for next block, tx included?
+///   2.1. Tx included => Ok
+///   2.2. Tx not included, blob gas price increase?
+///     2.2.1. Increase => cancel tx
+///     2.2.2. Same or decrease => Ok
+/// 3. Wait for re-org
+///   3.1. Tx included in new head chain => Ok
+///   3.2. Tx dropped => jump to 2.2.
+///
 pub struct BlockSync {
-    unfinalized_head_chain: RwLock<Vec<BlockSummary>>,
-    pending_transactions: RwLock<HashMap<(Address, Nonce), BlobTxSummary>>,
+    anchor_block: AnchorBlock,
+    unfinalized_head_chain: Vec<BlockSummary>,
+    pending_transactions: HashMap<Nonce, BlobTxSummary>,
     target_address: Address,
 }
 
@@ -33,43 +57,48 @@ pub enum TxInclusion {
 pub enum SyncBlockOutcome {
     BlockKnown,
     Synced(Vec<H256>),
-    Reorg,
 }
 
 impl BlockSync {
-    pub fn new(target_address: Address, anchor_block_hash: H256, anchor_block_number: u64) -> Self {
-        let anchor_block = BlockSummary {
-            hash: anchor_block_hash,
-            number: anchor_block_number,
-            // parent hash of anchor block does not matter
-            parent_hash: [0u8; 32].into(),
-            blob_txs: vec![],
-            topup_txs: vec![],
-            base_fee_per_gas: 0,
-            blob_gas_price: 0,
-        };
+    pub fn new(target_address: Address, anchor_block: AnchorBlock) -> Self {
         Self {
-            unfinalized_head_chain: vec![anchor_block].into(),
+            anchor_block,
+            unfinalized_head_chain: <_>::default(),
             pending_transactions: <_>::default(),
             target_address,
         }
     }
 
+    pub fn transaction_count_at_head(&self, target_address: Address) -> u64 {
+        // TODO: Support multiple sender addresses
+        assert_eq!(target_address, self.target_address);
+
+        let unfinalized_tx_count = self
+            .unfinalized_head_chain
+            .iter()
+            .map(|b| b.blob_txs.len())
+            .sum::<usize>();
+        self.anchor_block.target_address_nonce + unfinalized_tx_count as u64
+    }
+
+    pub fn transaction_count_at_head_with_pending_tx(&self, target_address: Address) -> u64 {
+        // TODO: Support multiple sender addresses
+        assert_eq!(target_address, self.target_address);
+
+        self.transaction_count_at_head(target_address) + self.pending_transactions.len() as u64
+    }
+
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
     /// blob transactions
-    pub async fn unfinalized_balance_delta(&self, address: Address) -> i128 {
+    pub fn unfinalized_balance_delta(&self, address: Address) -> i128 {
         let balance_delta_block_inclusions = self
             .unfinalized_head_chain
-            .read()
-            .await
             .iter()
             .map(|block| block.balance_delta(address))
             .sum::<i128>();
 
         let cost_of_pending_txs = self
             .pending_transactions
-            .read()
-            .await
             .values()
             .map(|tx| tx.cost_to_participant(address, None, None))
             .sum::<u128>();
@@ -77,8 +106,8 @@ impl BlockSync {
         balance_delta_block_inclusions - cost_of_pending_txs as i128
     }
 
-    pub async fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
-        for block in self.unfinalized_head_chain.read().await.iter() {
+    pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
+        for block in self.unfinalized_head_chain.iter() {
             for tx in &block.blob_txs {
                 if tx_hash == tx.tx_hash {
                     return Some(TxInclusion::Included(block.hash));
@@ -86,7 +115,7 @@ impl BlockSync {
             }
         }
 
-        for tx in self.pending_transactions.read().await.values() {
+        for tx in self.pending_transactions.values() {
             if tx_hash == tx.tx_hash {
                 return Some(TxInclusion::Pending);
             }
@@ -95,142 +124,133 @@ impl BlockSync {
         None
     }
 
-    pub async fn register_pending_blob_tx(&self, tx: BlobTxSummary) {
-        self.pending_transactions
-            .write()
-            .await
-            .insert((tx.from, tx.nonce), tx);
-    }
+    /// Register pending transaction with sync
+    pub fn register_pending_blob_tx(&mut self, tx: BlobTxSummary) -> Result<()> {
+        // TODO: Handle multiple senders
+        assert_eq!(tx.from, self.target_address);
 
-    pub async fn sync_next_block<T: BlockProvider>(
-        &self,
-        provider: &T,
-        block: BlockWithTxs,
-    ) -> Result<SyncBlockOutcome> {
-        let block = BlockSummary::from_block(block, self.target_address)?;
+        // TODO: Allow to replace transactions with same nonce. Note there's potential nonce
+        // deadlocks where the blob sharing sends a viable transaction at gas price P, the network
+        // base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
+        // that case the sender account is stuck because it can't send a profitable re-price
+        // transaction. In that case it should send a self transfer to unlock the nonce.
 
-        // let block_number = provider.get_block_number().await?;
-        // let block = provider
-        //   .get_block_with_txs(block_number)
-        //   .await?
-        //   .ok_or_else(|| eyre::eyre!("block at current head height should be present"))?;
-
-        let last_block_hash = self
-            .unfinalized_head_chain
-            .read()
-            .await
-            .last()
-            .ok_or_else(|| eyre!("there should always be one block"))?
-            .hash;
-
-        if block.hash == last_block_hash
-            || self
-                .unfinalized_head_chain
-                .read()
-                .await
-                .iter()
-                .any(|x| block.hash == x.hash)
-        {
-            // Block already known
-            Ok(SyncBlockOutcome::BlockKnown)
-        } else if block.parent_hash == last_block_hash {
-            // Next unknown block is descendant of head
-            let blob_txs = self.sync_block(block).await;
-            Ok(SyncBlockOutcome::Synced(blob_txs))
-        } else {
-            // Next unknown block is not descendant of head: re-org
-            self.handle_reorg(provider, block).await?;
-            Ok(SyncBlockOutcome::Reorg)
+        match self.pending_transactions.entry(tx.nonce) {
+            Entry::Vacant(e) => {
+                e.insert(tx);
+                Ok(())
+            }
+            Entry::Occupied(_) => bail!("transaction already registered for nonce {}", tx.nonce),
         }
     }
 
-    async fn handle_reorg<T: BlockProvider>(
-        &self,
+    /// Register a new head block with sync. The new head's parent can be unknown. This function
+    /// will recursively fetch all ancenstors until finding a common parent. Does not guarantee
+    /// consistency where the entire chain of `block` is imported.
+    pub async fn sync_next_head<T: BlockProvider>(
+        sync: &RwLock<BlockSync>,
         provider: &T,
-        block: BlockSummary,
+        block: BlockWithTxs,
     ) -> Result<()> {
         let mut new_blocks = vec![block];
-        let first_block_number = self
-            .unfinalized_head_chain
-            .read()
-            .await
-            .first()
-            .map(|block| block.number);
+        let anchor_block_number = sync.read().await.anchor_block_number();
 
-        let common_ancestor_position = loop {
+        loop {
             let new_chain_ancestor = new_blocks.last().expect("should have at least one element");
             let new_chain_parent_hash = new_chain_ancestor.parent_hash;
 
-            if let Some(index) = self
-                .unfinalized_head_chain
-                .read()
-                .await
-                .iter()
-                .position(|x| x.hash == new_chain_parent_hash)
-            {
-                break index;
-            } else {
-                if let Some(first_block_number) = first_block_number {
-                    if new_chain_ancestor.number <= first_block_number {
-                        bail!("re-org deeper than first known block")
-                    }
-                }
-
-                let new_block = provider
-                    .get_block_by_hash(&new_chain_parent_hash)
-                    .await?
-                    .ok_or_else(|| eyre::eyre!("parent block should be known"))?;
-                new_blocks.push(BlockSummary::from_block(new_block, self.target_address)?);
+            if sync.read().await.is_known_block(new_chain_parent_hash) {
+                break;
             }
-        };
 
-        // do accounting on the balances cache
-        let reorged_blocks = self
-            .unfinalized_head_chain
-            .read()
-            .await
-            .iter()
-            .skip(common_ancestor_position)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let nonces_in_new_chain = new_blocks
-            .iter()
-            .flat_map(|b| b.blob_txs.iter().map(|tx| tx.nonce))
-            .collect::<HashSet<_>>();
-
-        for reorged_block in reorged_blocks {
-            for tx in reorged_block.blob_txs {
-                if !nonces_in_new_chain.contains(&tx.nonce) {
-                    self.pending_transactions
-                        .write()
-                        .await
-                        .insert((tx.from, tx.nonce), tx);
-                }
+            if new_chain_ancestor.number <= anchor_block_number {
+                bail!("re-org deeper than first known block")
             }
+
+            let new_block = provider
+                .get_block_by_hash(&new_chain_parent_hash)
+                .await?
+                .ok_or_else(|| eyre!("parent block {} should be known", new_chain_parent_hash))?;
+            new_blocks.push(new_block);
         }
 
-        // TODO: move re-orged transactions not in the new chain back into the pending pool
-
-        // for reorged_block in reorged_blocks {
-        //     self.drop_reorged_blocks(&reorged_block);
-        // }
-
-        // All blocks in current chain after the pivot must be dropped
-        self.unfinalized_head_chain
-            .write()
-            .await
-            .truncate(common_ancestor_position + 1);
-
-        // Apply new blocks, starting from lowest height first
+        let mut sync = sync.write().await;
         for block in new_blocks.into_iter().rev() {
-            self.sync_block(block).await;
+            sync.sync_next_head_parent_known(block)?;
         }
 
         Ok(())
     }
 
-    async fn sync_block(&self, block: BlockSummary) -> Vec<H256> {
+    /// Register a new block with sync. New blocks MUST be a descendant of a known block. To handle
+    /// re-orgs gracefully, the caller should recursively fetch all necessary blocks until finding
+    /// a known ancenstor.
+    fn sync_next_head_parent_known(&mut self, block: BlockWithTxs) -> Result<SyncBlockOutcome> {
+        let block = BlockSummary::from_block(block, self.target_address)?;
+
+        if self.is_known_block(block.hash) {
+            // Block already known
+            Ok(SyncBlockOutcome::BlockKnown)
+        } else if let Some(new_head_index) = self.block_position_plus_one(block.parent_hash) {
+            if new_head_index < self.unfinalized_head_chain.len() {
+                // Next unknown block is not descendant of head: re-org
+                self.drop_reorged_blocks(new_head_index);
+            }
+            // Next unknown block is descendant of head
+            let blob_txs = self.sync_block(block);
+            Ok(SyncBlockOutcome::Synced(blob_txs))
+        } else {
+            bail!(
+                "Unknown block parent {}, block hash {} number {}",
+                block.parent_hash,
+                block.hash,
+                block.number
+            )
+        }
+    }
+
+    /// Returns true if block_hash is known in the current head chain
+    fn is_known_block(&self, block_hash: H256) -> bool {
+        self.block_position_plus_one(block_hash).is_some()
+    }
+
+    /// Returns the position of the block after `block_hash` if `block_hash` is known
+    fn block_position_plus_one(&self, block_hash: H256) -> Option<usize> {
+        if self.anchor_block.hash == block_hash {
+            return Some(0);
+        }
+        self.unfinalized_head_chain
+            .iter()
+            .position(|b| b.hash == block_hash)
+            .map(|i| i + 1)
+    }
+
+    /// Returns the block number of the anchor block. There should never exist a re-org deeper than
+    /// this block number.
+    fn anchor_block_number(&self) -> u64 {
+        self.anchor_block.number
+    }
+
+    fn drop_reorged_blocks(&mut self, new_head_index: usize) {
+        // do accounting on the balances cache
+        let reorged_blocks = self
+            .unfinalized_head_chain
+            .iter()
+            .skip(new_head_index)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for reorged_block in reorged_blocks {
+            for tx in reorged_block.blob_txs {
+                self.pending_transactions.insert(tx.nonce, tx);
+            }
+        }
+
+        // All blocks in current chain after the pivot must be dropped
+        self.unfinalized_head_chain.truncate(new_head_index);
+    }
+
+    fn sync_block(&mut self, block: BlockSummary) -> Vec<H256> {
         let blob_txs = block
             .blob_txs
             .iter()
@@ -239,19 +259,23 @@ impl BlockSync {
 
         // Drop pending transactions
         for tx in &block.blob_txs {
-            self.pending_transactions
-                .write()
-                .await
-                .remove(&(tx.from, tx.nonce));
+            self.pending_transactions.remove(&tx.nonce);
             info!(
                 "pending blob tx included from {} nonce {} tx_hash {}",
                 tx.from, tx.nonce, tx.tx_hash
             );
         }
-        self.unfinalized_head_chain.write().await.push(block);
+        self.unfinalized_head_chain.push(block);
 
         blob_txs
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct AnchorBlock {
+    pub hash: H256,
+    pub number: u64,
+    pub target_address_nonce: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -291,8 +315,12 @@ impl BlockSummary {
             }
 
             // TODO: Handle invalid blob tx errors more gracefully
-            if let Some(blob_tx) = BlobTxSummary::from_tx(&tx, target_address)? {
-                blob_txs.push(blob_tx)
+            if tx.from == target_address {
+                if let Some(blob_tx) = BlobTxSummary::from_tx(&tx)? {
+                    blob_txs.push(blob_tx)
+                }
+                // TODO: Handle target address sending non-blob transactions for correct nonce
+                // accounting
             }
         }
 
@@ -395,9 +423,10 @@ mod tests {
     use ethers::types::{Address, Transaction, H160, H256};
     use eyre::Result;
     use std::collections::HashMap;
+    use tokio::sync::RwLock;
 
-    #[tokio::test]
-    async fn parse_topup_transactions() {
+    #[test]
+    fn parse_topup_transactions() {
         let mut block = generate_block(get_hash(0), get_hash(0), 0);
         let addr_1 = get_addr(1);
         let addr_2 = get_addr(2);
@@ -421,12 +450,12 @@ mod tests {
         let block_2 = generate_block(hash_1, hash_2, 2);
         let block_3 = generate_block(hash_2, hash_3, 3);
 
-        let sync = BlockSync::new(ADDRESS_SENDER, hash_0, 0);
+        let sync = new_block_sync(hash_0, 0);
         let provider = MockEthereumProvider::default();
 
-        sync.sync_next_block(&provider, block_1).await.unwrap();
-        sync.sync_next_block(&provider, block_2).await.unwrap();
-        sync.sync_next_block(&provider, block_3).await.unwrap();
+        sync_next_block(&sync, &provider, block_1).await;
+        sync_next_block(&sync, &provider, block_2).await;
+        sync_next_block(&sync, &provider, block_3).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2, hash_3]).await;
     }
 
@@ -444,7 +473,7 @@ mod tests {
         let block_2b = generate_block(hash_1, hash_2b, 2);
         let block_3b = generate_block(hash_2b, hash_3b, 3);
 
-        let sync = BlockSync::new(ADDRESS_SENDER, hash_0, 0);
+        let sync = new_block_sync(hash_0, 0);
         let provider = MockEthereumProvider::with_blocks(&[block_2b]);
 
         let user = get_addr(1);
@@ -455,34 +484,39 @@ mod tests {
 
         // Register block with top-up transaction
         block_1.transactions.push(generate_topup_tx(user, TOP_UP));
-        sync.sync_next_block(&provider, block_1).await.unwrap();
-        assert_eq!(sync.unfinalized_balance_delta(user).await, TOP_UP);
+        sync_next_block(&sync, &provider, block_1).await;
+        assert_eq!(sync.read().await.unfinalized_balance_delta(user), TOP_UP);
 
         // Register pending tx for user
-        sync.register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
-            .await;
-        assert_eq!(sync.unfinalized_balance_delta(user).await, TOP_UP - TXCOST); // TOPUP - TXCOST
+        sync.write()
+            .await
+            .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
+            .unwrap();
+        assert_eq!(
+            sync.read().await.unfinalized_balance_delta(user),
+            TOP_UP - TXCOST
+        ); // TOPUP - TXCOST
         assert_eq!(pending_tx_len(&sync).await, 1);
 
         // Register blocks with blob txs, should not change the user balance
         block_2a.transactions.push(generate_blob_tx(NONCE0, user));
         block_3a.transactions.push(generate_topup_tx(user, TOP_UP));
         block_3a.transactions.push(generate_blob_tx(NONCE1, user));
-        sync.sync_next_block(&provider, block_2a).await.unwrap();
-        sync.sync_next_block(&provider, block_3a).await.unwrap();
+        sync_next_block(&sync, &provider, block_2a).await;
+        sync_next_block(&sync, &provider, block_3a).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2a, hash_3a]).await;
         assert_eq!(
-            sync.unfinalized_balance_delta(user).await,
+            sync.read().await.unfinalized_balance_delta(user),
             2 * TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 0);
 
         // Trigger re-org with blocks that do not include the blob transactions, user balance
         // should not change since the transactions are re-added to the pool
-        sync.sync_next_block(&provider, block_3b).await.unwrap();
+        sync_next_block(&sync, &provider, block_3b).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2b, hash_3b]).await;
         assert_eq!(
-            sync.unfinalized_balance_delta(user).await,
+            sync.read().await.unfinalized_balance_delta(user),
             TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 2);
@@ -502,15 +536,15 @@ mod tests {
         let block_1b = generate_block(hash_0b, hash_1b, 1);
         let block_2b = generate_block(hash_1b, hash_2b, 2);
 
-        let sync = BlockSync::new(ADDRESS_SENDER, hash_0a, 0);
+        let sync = new_block_sync(hash_0a, 0);
         let provider = MockEthereumProvider::with_blocks(&[block_0b, block_1b]);
 
-        sync.sync_next_block(&provider, block_1a).await.unwrap();
-        sync.sync_next_block(&provider, block_2a).await.unwrap();
+        sync_next_block(&sync, &provider, block_1a).await;
+        sync_next_block(&sync, &provider, block_2a).await;
         assert_chain(&sync, &[hash_0a, hash_1a, hash_2a]).await;
 
         assert_eq!(
-            sync.sync_next_block(&provider, block_2b)
+            BlockSync::sync_next_head(&sync, &provider, block_2b)
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -604,18 +638,41 @@ mod tests {
         tx
     }
 
-    async fn assert_chain(sync: &BlockSync, expected_hash_chain: &[H256]) {
-        let hash_chain = sync
-            .unfinalized_head_chain
-            .read()
-            .await
-            .iter()
-            .map(|b| b.hash)
-            .collect::<Vec<_>>();
+    async fn assert_chain(sync: &RwLock<BlockSync>, expected_hash_chain: &[H256]) {
+        let sync = sync.read().await;
+        let mut hash_chain = vec![sync.anchor_block.hash];
+        hash_chain.extend_from_slice(
+            &sync
+                .unfinalized_head_chain
+                .iter()
+                .map(|b| b.hash)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(hash_chain, expected_hash_chain);
     }
 
-    async fn pending_tx_len(sync: &BlockSync) -> usize {
-        sync.pending_transactions.read().await.len()
+    async fn sync_next_block<T: BlockProvider>(
+        sync: &RwLock<BlockSync>,
+        provider: &T,
+        block: BlockWithTxs,
+    ) {
+        BlockSync::sync_next_head(sync, provider, block)
+            .await
+            .unwrap();
+    }
+
+    async fn pending_tx_len(sync: &RwLock<BlockSync>) -> usize {
+        sync.read().await.pending_transactions.len()
+    }
+
+    fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
+        RwLock::new(BlockSync::new(
+            ADDRESS_SENDER,
+            super::AnchorBlock {
+                hash,
+                number,
+                target_address_nonce: 0,
+            },
+        ))
     }
 }
