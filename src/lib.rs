@@ -7,7 +7,7 @@ use ethers::{
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
-use eyre::{eyre, Result};
+use eyre::{eyre, Context, Result};
 use std::{net::TcpListener, str::FromStr, sync::Arc, time::Duration};
 use tokio::sync::{Notify, RwLock};
 
@@ -137,16 +137,18 @@ pub struct App {
 }
 
 enum StartingPoint {
-    Genesis,
+    StartingBlock(u64),
 }
 
 impl App {
     /// Instantiates components, fetching initial data, binds http server. Does not make progress
     /// on the server future. To actually run the app, call `Self::run`.
     pub async fn build(args: Args) -> Result<Self> {
-        let starting_point = StartingPoint::Genesis;
+        let starting_point = StartingPoint::StartingBlock(args.starting_block);
 
-        let provider = Provider::<Ws>::connect(&args.eth_provider).await?;
+        let provider = Provider::<Ws>::connect(&args.eth_provider)
+            .await
+            .wrap_err_with(|| eyre!("unable to connect to eth provider {}", args.eth_provider))?;
 
         // Pass interval option
         let provider = if let Some(interval) = args.eth_provider_interval {
@@ -169,9 +171,9 @@ impl App {
 
         // TODO: choose starting point that's not genesis
         let anchor_block = match starting_point {
-            StartingPoint::Genesis => {
+            StartingPoint::StartingBlock(starting_block) => {
                 let anchor_block = provider
-                    .get_block(0)
+                    .get_block(starting_block)
                     .await?
                     .ok_or_else(|| eyre!("genesis block not available"))?;
                 let hash = anchor_block
