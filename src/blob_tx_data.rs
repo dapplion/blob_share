@@ -4,6 +4,8 @@ use c_kzg::BYTES_PER_BLOB;
 use ethers::types::{Address, Transaction, H256, U256};
 use eyre::{bail, eyre, Context, Result};
 
+use crate::BlockGasSummary;
+
 pub const BLOB_TX_TYPE: u8 = 0x03;
 const PARTICIPANT_DATA_SIZE: usize = 20 + 4;
 
@@ -20,6 +22,13 @@ pub struct BlobTxSummary {
 }
 
 impl BlobTxSummary {
+    pub fn is_underpriced(&self, gas: &BlockGasSummary) -> bool {
+        // EVM gas underpriced
+        gas.base_fee_per_gas > self.max_fee_per_gas
+        // Blob gas underpriced
+            || gas.blob_gas_price() > self.max_fee_per_blob_gas
+    }
+
     pub fn cost_to_participant(
         &self,
         address: Address,

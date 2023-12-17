@@ -8,7 +8,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
-use crate::{blob_tx_data::BlobTxSummary, gas::get_blob_gasprice, info};
+use crate::{blob_tx_data::BlobTxSummary, info, BlockGasSummary};
 
 type Nonce = u64;
 
@@ -53,12 +53,6 @@ pub enum TxInclusion {
     Included(H256),
 }
 
-#[derive(Debug)]
-pub enum SyncBlockOutcome {
-    BlockKnown,
-    Synced(Vec<H256>),
-}
-
 impl BlockSync {
     pub fn new(target_address: Address, anchor_block: AnchorBlock) -> Self {
         Self {
@@ -66,6 +60,15 @@ impl BlockSync {
             unfinalized_head_chain: <_>::default(),
             pending_transactions: <_>::default(),
             target_address,
+        }
+    }
+
+    /// Return gas summary of the current head
+    pub fn get_head_gas(&self) -> &BlockGasSummary {
+        if let Some(head) = self.unfinalized_head_chain.last() {
+            &head.gas
+        } else {
+            &self.anchor_block.gas
         }
     }
 
@@ -144,6 +147,28 @@ impl BlockSync {
         }
     }
 
+    /// Removes and returns underpriced pending transactions against current head
+    pub fn evict_underpriced_pending_txs(&mut self) -> Vec<BlobTxSummary> {
+        let head_gas = self.get_head_gas();
+
+        let keys_to_remove = self
+            .pending_transactions
+            .iter()
+            .filter_map(|(k, tx)| {
+                if tx.is_underpriced(head_gas) {
+                    Some(*k)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        keys_to_remove
+            .iter()
+            .map(|k| self.pending_transactions.remove(k).expect("key must exist"))
+            .collect()
+    }
+
     /// Register a new head block with sync. The new head's parent can be unknown. This function
     /// will recursively fetch all ancenstors until finding a common parent. Does not guarantee
     /// consistency where the entire chain of `block` is imported.
@@ -151,9 +176,8 @@ impl BlockSync {
         sync: &RwLock<BlockSync>,
         provider: &T,
         block: BlockWithTxs,
-    ) -> Result<()> {
+    ) -> Result<SyncBlockOutcome> {
         let mut new_blocks = vec![block];
-        let anchor_block_number = sync.read().await.anchor_block_number();
 
         loop {
             let new_chain_ancestor = new_blocks.last().expect("should have at least one element");
@@ -163,7 +187,7 @@ impl BlockSync {
                 break;
             }
 
-            if new_chain_ancestor.number <= anchor_block_number {
+            if new_chain_ancestor.number <= sync.read().await.anchor_block_number() {
                 bail!("re-org deeper than first known block")
             }
 
@@ -175,11 +199,14 @@ impl BlockSync {
         }
 
         let mut sync = sync.write().await;
-        for block in new_blocks.into_iter().rev() {
-            sync.sync_next_head_parent_known(block)?;
-        }
 
-        Ok(())
+        let outcomes = new_blocks
+            .into_iter()
+            .rev()
+            .map(|block| sync.sync_next_head_parent_known(block))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(SyncBlockOutcome::from_many(&outcomes))
     }
 
     /// Register a new block with sync. New blocks MUST be a descendant of a known block. To handle
@@ -192,13 +219,28 @@ impl BlockSync {
             // Block already known
             Ok(SyncBlockOutcome::BlockKnown)
         } else if let Some(new_head_index) = self.block_position_plus_one(block.parent_hash) {
-            if new_head_index < self.unfinalized_head_chain.len() {
+            let reorg = if new_head_index < self.unfinalized_head_chain.len() {
                 // Next unknown block is not descendant of head: re-org
                 self.drop_reorged_blocks(new_head_index);
-            }
-            // Next unknown block is descendant of head
-            let blob_txs = self.sync_block(block);
-            Ok(SyncBlockOutcome::Synced(blob_txs))
+                Some(Reorg {
+                    depth: self.unfinalized_head_chain.len() - new_head_index,
+                })
+            } else {
+                None
+            };
+
+            let blob_tx_hashes = block
+                .blob_txs
+                .iter()
+                .map(|tx| tx.tx_hash)
+                .collect::<Vec<_>>();
+
+            self.sync_block(block);
+
+            Ok(SyncBlockOutcome::Synced {
+                reorg,
+                blob_tx_hashes,
+            })
         } else {
             bail!(
                 "Unknown block parent {}, block hash {} number {}",
@@ -232,17 +274,10 @@ impl BlockSync {
     }
 
     fn drop_reorged_blocks(&mut self, new_head_index: usize) {
-        // do accounting on the balances cache
-        let reorged_blocks = self
-            .unfinalized_head_chain
-            .iter()
-            .skip(new_head_index)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        for reorged_block in reorged_blocks {
-            for tx in reorged_block.blob_txs {
-                self.pending_transactions.insert(tx.nonce, tx);
+        for reorged_block in self.unfinalized_head_chain.iter().skip(new_head_index) {
+            // TODO: do accounting on the balances cache
+            for tx in &reorged_block.blob_txs {
+                self.pending_transactions.insert(tx.nonce, tx.clone());
             }
         }
 
@@ -250,13 +285,7 @@ impl BlockSync {
         self.unfinalized_head_chain.truncate(new_head_index);
     }
 
-    fn sync_block(&mut self, block: BlockSummary) -> Vec<H256> {
-        let blob_txs = block
-            .blob_txs
-            .iter()
-            .map(|tx| tx.tx_hash)
-            .collect::<Vec<_>>();
-
+    fn sync_block(&mut self, block: BlockSummary) {
         // Drop pending transactions
         for tx in &block.blob_txs {
             self.pending_transactions.remove(&tx.nonce);
@@ -266,9 +295,55 @@ impl BlockSync {
             );
         }
         self.unfinalized_head_chain.push(block);
-
-        blob_txs
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum SyncBlockOutcome {
+    BlockKnown,
+    Synced {
+        reorg: Option<Reorg>,
+        blob_tx_hashes: Vec<TxHash>,
+    },
+}
+
+impl SyncBlockOutcome {
+    /// Collapse multiple outcomes into a single outcome
+    /// - Expects either 1 or 0 Reorg item
+    /// - BlockKnown are ignored if at least one Synced
+    fn from_many(outcomes: &[SyncBlockOutcome]) -> Self {
+        let mut synced_some = false;
+        let mut blob_tx_hashes_all = vec![];
+        let mut reorg_all: Option<Reorg> = None;
+
+        for outcome in outcomes {
+            if let SyncBlockOutcome::Synced {
+                reorg,
+                blob_tx_hashes,
+            } = outcome
+            {
+                synced_some = true;
+                blob_tx_hashes_all.extend_from_slice(blob_tx_hashes);
+                if let Some(reorg) = reorg {
+                    reorg_all = Some(reorg.clone());
+                }
+            }
+        }
+
+        if synced_some {
+            SyncBlockOutcome::Synced {
+                reorg: reorg_all,
+                blob_tx_hashes: blob_tx_hashes_all,
+            }
+        } else {
+            SyncBlockOutcome::BlockKnown
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Reorg {
+    pub depth: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +351,7 @@ pub struct AnchorBlock {
     pub hash: H256,
     pub number: u64,
     pub target_address_nonce: u64,
+    pub gas: BlockGasSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -285,8 +361,7 @@ struct BlockSummary {
     parent_hash: H256,
     topup_txs: Vec<TopupTx>,
     blob_txs: Vec<BlobTxSummary>,
-    base_fee_per_gas: u128,
-    blob_gas_price: u128,
+    gas: BlockGasSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -306,7 +381,7 @@ impl BlockSummary {
         let mut topup_txs = vec![];
         let mut blob_txs = vec![];
 
-        for tx in block.transactions {
+        for tx in &block.transactions {
             if tx.to == Some(target_address) {
                 topup_txs.push(TopupTx {
                     from: tx.from,
@@ -316,7 +391,7 @@ impl BlockSummary {
 
             // TODO: Handle invalid blob tx errors more gracefully
             if tx.from == target_address {
-                if let Some(blob_tx) = BlobTxSummary::from_tx(&tx)? {
+                if let Some(blob_tx) = BlobTxSummary::from_tx(tx)? {
                     blob_txs.push(blob_tx)
                 }
                 // TODO: Handle target address sending non-blob transactions for correct nonce
@@ -330,8 +405,7 @@ impl BlockSummary {
             parent_hash: block.parent_hash,
             topup_txs,
             blob_txs,
-            base_fee_per_gas: block.base_fee_per_gas,
-            blob_gas_price: get_blob_gasprice(block.excess_blob_gas),
+            gas: block.into(),
         })
     }
 
@@ -347,8 +421,8 @@ impl BlockSummary {
         for blob_tx in &self.blob_txs {
             balance_delta -= blob_tx.cost_to_participant(
                 address,
-                Some(self.base_fee_per_gas),
-                Some(self.blob_gas_price),
+                Some(self.gas.base_fee_per_gas),
+                Some(self.gas.blob_gas_price()),
             ) as i128
         }
 
@@ -362,8 +436,9 @@ pub struct BlockWithTxs {
     parent_hash: H256,
     number: u64,
     transactions: Vec<Transaction>,
-    base_fee_per_gas: u128,
-    excess_blob_gas: u128,
+    pub base_fee_per_gas: u128,
+    pub excess_blob_gas: u128,
+    pub blob_gas_used: u128,
 }
 
 impl BlockWithTxs {
@@ -379,6 +454,10 @@ impl BlockWithTxs {
             base_fee_per_gas: block
                 .base_fee_per_gas
                 .ok_or_else(|| eyre!("block should be post-London no base_fee_per_gas"))?
+                .as_u128(),
+            blob_gas_used: block
+                .blob_gas_used
+                .ok_or_else(|| eyre!("block missing prop blob_gas_used"))?
                 .as_u128(),
             excess_blob_gas: block
                 .excess_blob_gas
@@ -413,8 +492,9 @@ impl BlockProvider for Provider<Ws> {
 #[cfg(test)]
 mod tests {
     use super::BlockSummary;
-    use crate::blob_tx_data::{
-        encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE,
+    use crate::{
+        blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE},
+        BlockGasSummary,
     };
 
     use super::{BlockProvider, BlockSync, BlockWithTxs};
@@ -592,6 +672,7 @@ mod tests {
             transactions: vec![],
             base_fee_per_gas: 1,
             excess_blob_gas: 1,
+            blob_gas_used: 1,
         }
     }
 
@@ -672,6 +753,7 @@ mod tests {
                 hash,
                 number,
                 target_address_nonce: 0,
+                gas: BlockGasSummary::default(),
             },
         ))
     }

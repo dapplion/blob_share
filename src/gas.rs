@@ -5,6 +5,8 @@ use ethers::{
 use eyre::{eyre, Result};
 use tokio::sync::RwLock;
 
+use crate::sync::BlockWithTxs;
+
 const MIN_BLOB_GASPRICE: u128 = 1;
 const BLOB_GASPRICE_UPDATE_FRACTION: u128 = 3338477;
 const TARGET_BLOB_GAS_PER_BLOCK: u128 = 393216;
@@ -15,10 +17,11 @@ pub struct GasConfig {
     pub max_fee_per_blob_gas: u128,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockGasSummary {
     blob_gas_used: u128,
     excess_blob_gas: u128,
+    pub base_fee_per_gas: u128,
 }
 
 pub struct GasTracker {
@@ -64,6 +67,10 @@ impl GasTracker {
 impl BlockGasSummary {
     pub fn from_block(block: &Block<TxHash>) -> Result<Self> {
         Ok(Self {
+            base_fee_per_gas: block
+                .base_fee_per_gas
+                .ok_or_else(|| eyre!("block should be post-London no base_fee_per_gas"))?
+                .as_u128(),
             blob_gas_used: block
                 .blob_gas_used
                 .ok_or_else(|| eyre!("block missing prop blob_gas_used"))?
@@ -80,6 +87,11 @@ impl BlockGasSummary {
             self.excess_blob_gas,
             self.blob_gas_used,
         ))
+    }
+
+    pub fn blob_gas_price(&self) -> u128 {
+        // TODO: cache
+        get_blob_gasprice(self.excess_blob_gas)
     }
 }
 
@@ -113,6 +125,16 @@ fn fake_exponential(factor: u128, numerator: u128, denominator: u128) -> u128 {
     }
 
     output / denominator
+}
+
+impl From<BlockWithTxs> for BlockGasSummary {
+    fn from(value: BlockWithTxs) -> Self {
+        Self {
+            blob_gas_used: value.blob_gas_used,
+            excess_blob_gas: value.excess_blob_gas,
+            base_fee_per_gas: value.base_fee_per_gas,
+        }
+    }
 }
 
 #[cfg(test)]
