@@ -6,6 +6,9 @@ on:
       - master
       - book
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
