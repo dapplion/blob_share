@@ -1,12 +1,15 @@
 use std::fs;
+use std::str::FromStr;
+use std::time::Duration;
 
-use blob_share::client::{Client, EthProvider, GasPreference};
+use blob_share::client::{Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference};
 use clap::Parser;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer};
 use ethers::types::TransactionRequest;
 use eyre::{eyre, Context, Result};
+use tokio::time::sleep;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -37,6 +40,10 @@ pub struct Args {
     /// If under lower bound, topup to upper bound: 2e17
     #[arg(long, default_value_t = 200000000000000000)]
     pub balance_upper_bound: u128,
+
+    /// Factor of extra pricing against next block's blob gas price
+    #[arg(long, default_value_t = 1.25)]
+    pub blob_gas_price_factor: f64,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -116,10 +123,22 @@ async fn main() -> Result<()> {
     // Read data to publish
     let data = fs::read(args.data)?;
 
-    let gas = GasPreference::FetchFromProvider(EthProvider::Http(provider));
+    let gas =
+        GasPreference::RelativeToHead(EthProvider::Http(provider), args.blob_gas_price_factor);
 
     let response = client.post_data_with_wallet(&wallet, data, &gas).await?;
-    println!("{:?}", response);
+    let id = DataIntentId::from_str(&response.id)?;
+    println!("{:?}", id);
+
+    loop {
+        let status = client.get_status_by_id(id).await?;
+        println!("status {:?}", status);
+
+        if let DataIntentStatus::InConfirmedTx { .. } = status {
+            break;
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
 
     Ok(())
 }

@@ -196,7 +196,7 @@ impl TestHarness {
             .post_data_with_wallet(
                 wallet,
                 data,
-                &GasPreference::FetchFromProvider(EthProvider::Http(self.eth_provider.clone())),
+                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
             )
             .await
             .unwrap();

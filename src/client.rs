@@ -30,14 +30,12 @@ impl Client {
         data: Vec<u8>,
         gas: &GasPreference,
     ) -> Result<PostDataResponse> {
-        let blob_gas_price_next_block = gas.blob_gas_price_next_block().await?;
-
         // TODO: customize, for now set gas price equal to next block
         // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
-        let max_cost_wei = blob_gas_price_next_block;
+        let max_blob_gas_price = gas.max_blob_gas_price().await?;
 
         self.post_data(
-            &DataIntent::with_signature(wallet, data, max_cost_wei)
+            &DataIntent::with_signature(wallet, data, max_blob_gas_price)
                 .await?
                 .into(),
         )
@@ -111,20 +109,31 @@ impl Client {
 }
 
 pub enum GasPreference {
-    FetchFromProvider(EthProvider),
+    RelativeToHead(EthProvider, f64),
 }
 
+const FACTOR_RESOLUTION: u128 = 1000;
+
 impl GasPreference {
-    pub async fn blob_gas_price_next_block(&self) -> Result<u128> {
+    pub async fn max_blob_gas_price(&self) -> Result<u128> {
         match self {
-            GasPreference::FetchFromProvider(provider) => {
+            GasPreference::RelativeToHead(provider, factor_to_next_block) => {
                 // Choose data pricing correctly
                 let head_block_number = provider.get_block_number().await?;
                 let head_block = provider
                     .get_block(head_block_number)
                     .await?
                     .ok_or_else(|| eyre!("head block {head_block_number} should exist"))?;
-                Ok(BlockGasSummary::from_block(&head_block)?.blob_gas_price_next_block())
+                let blob_gas_price_next_block =
+                    BlockGasSummary::from_block(&head_block)?.blob_gas_price_next_block();
+
+                Ok(if *factor_to_next_block == 1.0 {
+                    blob_gas_price_next_block
+                } else {
+                    ((FACTOR_RESOLUTION as f64 * factor_to_next_block) as u128
+                        * blob_gas_price_next_block)
+                        / FACTOR_RESOLUTION
+                })
             }
         }
     }
