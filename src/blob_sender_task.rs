@@ -20,7 +20,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                 // Loop again to try to create another blob transaction
                 Ok(SendResult::SentBlobTx) => continue,
                 // Break out of inner loop and wait for new notification
-                Ok(SendResult::NoViableSet) => break,
+                Ok(SendResult::NoViableSet) | Ok(SendResult::NoNonceAvailable) => break,
                 Err(e) => {
                     if app_data.config.panic_on_background_task_errors {
                         return Err(e);
@@ -38,6 +38,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 pub(crate) enum SendResult {
     NoViableSet,
     SentBlobTx,
+    NoNonceAvailable,
 }
 
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendResult> {
@@ -81,14 +82,21 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     let sender_address = app_data.sender_wallet.address();
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
+    let nonce = if let Some(nonce) = app_data
+        .sync
+        .write()
+        .await
+        .reserve_next_available_nonce(&app_data.provider, sender_address)
+        .await?
+    {
+        nonce
+    } else {
+        return Ok(SendResult::NoNonceAvailable);
+    };
 
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
-        nonce: app_data
-            .sync
-            .read()
-            .await
-            .transaction_count_at_head_with_pending_tx(sender_address),
+        nonce,
     };
 
     let blob_tx = construct_blob_tx(

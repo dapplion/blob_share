@@ -18,7 +18,7 @@ use crate::{
         get_balance_by_address, get_data, get_data_by_id, get_health, get_home, get_sender,
         get_status_by_id, post_data,
     },
-    sync::{AnchorBlock, BlockSync},
+    sync::{AnchorBlock, BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
 };
 
@@ -98,6 +98,13 @@ pub struct Args {
     /// this depth, the app will crash and expect to re-sync on restart.
     #[arg(long, default_value_t = 64)]
     pub finalize_depth: u64,
+
+    /// Max count of pending transactions that will be sent before waiting for inclusion of the
+    /// previously sent transactions. A number higher than the max count of blobs per block should
+    /// not result better UX. However, a higher number risks creating transactions that can become
+    /// underpriced in volatile network conditions.
+    #[arg(long, default_value_t = 6)]
+    pub max_pending_transactions: u64,
 }
 
 impl Args {
@@ -181,14 +188,9 @@ impl App {
                     .number
                     .ok_or_else(|| eyre!("block has no number property"))?
                     .as_u64();
-                let target_address_nonce = provider
-                    .get_transaction_count(target_address, Some(hash.into()))
-                    .await?
-                    .as_u64();
                 AnchorBlock {
                     hash,
                     number,
-                    target_address_nonce,
                     gas: BlockGasSummary::from_block(&anchor_block)?,
                     // At genesis all balances are zero
                     finalized_balances: <_>::default(),
@@ -196,7 +198,14 @@ impl App {
             }
         };
 
-        let sync = BlockSync::new(target_address, args.finalize_depth, anchor_block);
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address,
+                finalize_depth: args.finalize_depth,
+                max_pending_transactions: args.max_pending_transactions,
+            },
+            anchor_block,
+        );
 
         let app_data = Arc::new(AppData {
             kzg_settings: load_kzg_settings()?,
