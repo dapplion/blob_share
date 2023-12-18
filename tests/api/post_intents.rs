@@ -140,6 +140,17 @@ async fn test_post_two_data_intents_up_to_inclusion(
         .await
         .unwrap();
 
+    // Check balance has decreased again for intent2 and after inclusion
+    let balance_after_inclusion_2 = test_harness
+        .client
+        .get_balance_by_address(wallet.address())
+        .await
+        .unwrap();
+    assert!(
+        balance_after_inclusion_2 < balance_after_intent_1,
+        "balance should decrease {balance_after_inclusion_2} < {balance_after_intent_1}"
+    );
+
     let blob_consumer = test_harness.get_blob_consumer(wallet.address());
     // Allow some time for the consensus client to persist the blobs and serve them
     let mut published_data = retry_with_timeout(
