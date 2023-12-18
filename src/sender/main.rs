@@ -46,6 +46,10 @@ pub struct Args {
     /// Factor of extra pricing against next block's blob gas price
     #[arg(long, default_value_t = 1.25)]
     pub blob_gas_price_factor: f64,
+
+    /// Do not wait for intent to be included
+    #[arg(long)]
+    pub skip_wait: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -135,14 +139,16 @@ async fn main() -> Result<()> {
     let id = DataIntentId::from_str(&response.id)?;
     println!("{:?}", id);
 
-    loop {
-        let status = client.get_status_by_id(id).await?;
-        println!("status {:?}", status);
+    if !args.skip_wait {
+        loop {
+            let status = client.get_status_by_id(id).await?;
+            println!("status {:?}", status);
 
-        if let DataIntentStatus::InConfirmedTx { .. } = status {
-            break;
+            if let DataIntentStatus::InConfirmedTx { .. } = status {
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
         }
-        sleep(Duration::from_secs(1)).await;
     }
 
     Ok(())
