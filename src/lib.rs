@@ -16,7 +16,7 @@ use crate::{
     block_subscriber_task::block_subscriber_task,
     routes::{
         get_balance_by_address, get_data, get_data_by_id, get_health, get_home, get_sender,
-        get_status_by_id, post_data,
+        get_status_by_id, get_sync, post_data,
     },
     sync::{AnchorBlock, BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
@@ -241,6 +241,7 @@ impl App {
                 .service(get_home)
                 .service(get_health)
                 .service(get_sender)
+                .service(get_sync)
                 .service(post_data)
                 .service(get_data)
                 .service(get_data_by_id)
