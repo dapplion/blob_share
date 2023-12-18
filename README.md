@@ -25,6 +25,8 @@ Options:
           FOR TESTING ONLY: panic if a background task experiences an error for a single event
       --finalize-depth <FINALIZE_DEPTH>
           Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than this depth, the app will crash and expect to re-sync on restart [default: 64]
+      --max-pending-transactions <MAX_PENDING_TRANSACTIONS>
+          Max count of pending transactions that will be sent before waiting for inclusion of the previously sent transactions. A number higher than the max count of blobs per block should not result better UX. However, a higher number risks creating transactions that can become underpriced in volatile network conditions [default: 6]
   -h, --help
           Print help
   -V, --version

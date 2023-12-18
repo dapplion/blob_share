@@ -111,6 +111,7 @@ impl TestHarness {
             ),
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
+            max_pending_transactions: 6,
         };
 
         let app = App::build(args).await.unwrap();

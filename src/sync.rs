@@ -1,13 +1,10 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     fmt, mem,
 };
 
 use async_trait::async_trait;
-use ethers::{
-    providers::{Http, Middleware, Provider, Ws},
-    types::{Address, Block, Transaction, TxHash, H256},
-};
+use ethers::types::{Address, Block, Transaction, TxHash, H256};
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
@@ -41,15 +38,22 @@ type Nonce = u64;
 pub struct BlockSync {
     anchor_block: AnchorBlock,
     unfinalized_head_chain: Vec<BlockSummary>,
+    reserved_nonces: HashSet<Nonce>,
     pending_transactions: HashMap<Nonce, BlobTxSummary>,
-    target_address: Address,
-    finalize_depth: u64,
+    config: BlockSyncConfig,
+}
+
+pub struct BlockSyncConfig {
+    pub target_address: Address,
+    pub finalize_depth: u64,
+    pub max_pending_transactions: u64,
 }
 
 #[async_trait]
 pub trait BlockProvider {
     // async fn get_block_number(&self) -> Result<u64>;
     async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>>;
+    async fn get_transaction_count(&self, from: Address, block_hash: H256) -> Result<u64>;
 }
 
 pub enum TxInclusion {
@@ -58,13 +62,13 @@ pub enum TxInclusion {
 }
 
 impl BlockSync {
-    pub fn new(target_address: Address, finalize_depth: u64, anchor_block: AnchorBlock) -> Self {
+    pub fn new(config: BlockSyncConfig, anchor_block: AnchorBlock) -> Self {
         Self {
             anchor_block,
             unfinalized_head_chain: <_>::default(),
+            reserved_nonces: <_>::default(),
             pending_transactions: <_>::default(),
-            target_address,
-            finalize_depth,
+            config,
         }
     }
 
@@ -85,23 +89,44 @@ impl BlockSync {
         }
     }
 
-    pub fn transaction_count_at_head(&self, target_address: Address) -> u64 {
-        // TODO: Support multiple sender addresses
-        assert_eq!(target_address, self.target_address);
-
-        let unfinalized_tx_count = self
-            .unfinalized_head_chain
-            .iter()
-            .map(|b| b.blob_txs.len())
-            .sum::<usize>();
-        self.anchor_block.target_address_nonce + unfinalized_tx_count as u64
+    pub fn get_head_hash(&self) -> H256 {
+        if let Some(head) = self.unfinalized_head_chain.last() {
+            head.hash
+        } else {
+            self.anchor_block.hash
+        }
     }
 
-    pub fn transaction_count_at_head_with_pending_tx(&self, target_address: Address) -> u64 {
+    /// Return the next available nonce on current head, and reserve it.
+    ///
+    /// WARNING: requires a write lock while performing a network request. This is necessary to
+    /// guarantee consistency that the fetched transaction count is consistent with the local view
+    /// of the chain inside BlockSync.
+    pub async fn reserve_next_available_nonce<T: BlockProvider>(
+        &mut self,
+        provider: &T,
+        address: Address,
+    ) -> Result<Option<u64>> {
         // TODO: Support multiple sender addresses
-        assert_eq!(target_address, self.target_address);
+        assert_eq!(address, self.config.target_address);
 
-        self.transaction_count_at_head(target_address) + self.pending_transactions.len() as u64
+        let transaction_count_at_head = provider
+            .get_transaction_count(address, self.get_head_hash())
+            .await?;
+
+        for next_nonce in transaction_count_at_head
+            ..transaction_count_at_head + self.config.max_pending_transactions
+        {
+            if !self.pending_transactions.contains_key(&next_nonce)
+                // .insert returns true if the value was inserted (!contains)
+                && self.reserved_nonces.insert(next_nonce)
+            {
+                return Ok(Some(next_nonce));
+            }
+        }
+
+        // All nonces are taken
+        Ok(None)
     }
 
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
@@ -150,13 +175,16 @@ impl BlockSync {
     /// Register pending transaction with sync
     pub fn register_pending_blob_tx(&mut self, tx: BlobTxSummary) -> Result<()> {
         // TODO: Handle multiple senders
-        assert_eq!(tx.from, self.target_address);
+        assert_eq!(tx.from, self.config.target_address);
 
         // TODO: Allow to replace transactions with same nonce. Note there's potential nonce
         // deadlocks where the blob sharing sends a viable transaction at gas price P, the network
         // base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
         // that case the sender account is stuck because it can't send a profitable re-price
         // transaction. In that case it should send a self transfer to unlock the nonce.
+
+        // Prune reserved nonce
+        self.reserved_nonces.remove(&tx.nonce);
 
         match self.pending_transactions.entry(tx.nonce) {
             Entry::Vacant(e) => {
@@ -192,19 +220,20 @@ impl BlockSync {
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
     pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
         let head_number = self.get_head_number();
-        let new_anchor_index = if self.anchor_block_number() + self.finalize_depth < head_number {
-            self.unfinalized_head_chain
-                .iter()
-                .position(|b| b.number == head_number - self.finalize_depth)
-                .ok_or_else(|| {
-                    eyre!(
-                        "inconsistent unfinalized chain, block number {} missing",
-                        head_number - self.finalize_depth
-                    )
-                })?
-        } else {
-            return Ok(None);
-        };
+        let new_anchor_index =
+            if self.anchor_block_number() + self.config.finalize_depth < head_number {
+                self.unfinalized_head_chain
+                    .iter()
+                    .position(|b| b.number == head_number - self.config.finalize_depth)
+                    .ok_or_else(|| {
+                        eyre!(
+                            "inconsistent unfinalized chain, block number {} missing",
+                            head_number - self.config.finalize_depth
+                        )
+                    })?
+            } else {
+                return Ok(None);
+            };
 
         // split_off retains in the original array the first N items. If N = 0, the anchor
         // block is the first item in the unfinalized chain, so we should split_off at 1.
@@ -272,7 +301,7 @@ impl BlockSync {
     /// re-orgs gracefully, the caller should recursively fetch all necessary blocks until finding
     /// a known ancenstor.
     fn sync_next_head_parent_known(&mut self, block: BlockWithTxs) -> Result<SyncBlockOutcome> {
-        let block = BlockSummary::from_block(block, self.target_address)?;
+        let block = BlockSummary::from_block(block, self.config.target_address)?;
 
         if self.is_known_block(block.hash) {
             // Block already known
@@ -436,7 +465,6 @@ pub struct Reorg {
 pub struct AnchorBlock {
     pub hash: H256,
     pub number: u64,
-    pub target_address_nonce: u64,
     pub gas: BlockGasSummary,
     pub finalized_balances: HashMap<Address, i128>,
 }
@@ -446,8 +474,6 @@ impl AnchorBlock {
         for address in block.get_all_participants() {
             *self.finalized_balances.entry(address).or_insert(0) += block.balance_delta(address);
         }
-
-        self.target_address_nonce += block.blob_txs.len() as u64;
 
         self.hash = block.hash;
         self.number = block.number;
@@ -582,28 +608,6 @@ impl BlockWithTxs {
 }
 
 #[async_trait]
-impl BlockProvider for Provider<Http> {
-    async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
-        let block = self.get_block_with_txs(*block_hash).await?;
-        Ok(match block {
-            Some(block) => Some(BlockWithTxs::from_ethers_block(block)?),
-            None => None,
-        })
-    }
-}
-
-#[async_trait]
-impl BlockProvider for Provider<Ws> {
-    async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
-        let block = self.get_block_with_txs(*block_hash).await?;
-        Ok(match block {
-            Some(block) => Some(BlockWithTxs::from_ethers_block(block)?),
-            None => None,
-        })
-    }
-}
-
-#[async_trait]
 impl BlockProvider for EthProvider {
     async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
         let block = self.get_block_with_txs(*block_hash).await?;
@@ -612,11 +616,18 @@ impl BlockProvider for EthProvider {
             None => None,
         })
     }
+
+    async fn get_transaction_count(&self, from: Address, block_hash: H256) -> Result<u64> {
+        Ok(self
+            .get_transaction_count(from, Some(block_hash.into()))
+            .await?
+            .as_u64())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockSummary, SyncBlockError};
+    use super::*;
     use crate::{
         blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE},
         BlockGasSummary,
@@ -780,6 +791,9 @@ mod tests {
         async fn get_block_by_hash(&self, block_hash: &H256) -> Result<Option<BlockWithTxs>> {
             Ok(self.blocks.get(&block_hash).cloned())
         }
+        async fn get_transaction_count(&self, _from: Address, _block_hash: H256) -> Result<u64> {
+            Ok(0)
+        }
     }
 
     const ADDRESS_SENDER: Address = H160([0xab; 20]);
@@ -876,12 +890,14 @@ mod tests {
 
     fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
         RwLock::new(BlockSync::new(
-            ADDRESS_SENDER,
-            32,
-            super::AnchorBlock {
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
                 hash,
                 number,
-                target_address_nonce: 0,
                 gas: BlockGasSummary::default(),
                 finalized_balances: <_>::default(),
             },
