@@ -99,7 +99,7 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
         let items = data_intent_tracker.get_all_pending();
         for item in items {
-            if blob_gas_price_next_block > item.max_blob_gas_price {
+            if item.max_blob_gas_price() < blob_gas_price_next_block {
                 // Underpriced transaction, evict
                 data_intent_tracker.evict_underpriced_intent(&item.id())?;
             }

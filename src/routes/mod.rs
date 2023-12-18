@@ -1,18 +1,20 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{get, web, HttpResponse, Responder};
 use ethers::signers::Signer;
 use ethers::types::{Address, TxHash, H256};
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
-use serde_utils::hex_vec;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
+pub mod post_data;
+
+use crate::data_intent::{DataIntent, DataIntentId, DataIntentSummary};
 use crate::data_intent_tracker::DataIntentItemStatus;
 use crate::eth_provider::EthProvider;
 use crate::sync::TxInclusion;
 use crate::utils::{e400, e500};
 use crate::AppData;
+pub use post_data::{PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse};
 
 #[get("/")]
 pub(crate) async fn get_home() -> impl Responder {
@@ -44,34 +46,9 @@ pub(crate) async fn get_sync(
     }))
 }
 
-#[post("/v1/data")]
-pub(crate) async fn post_data(
-    body: web::Json<PostDataIntentV1>,
-    data: web::Data<Arc<AppData>>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
-    data_intent.verify_signature().map_err(e400)?;
-
-    let balance = data.balance(data_intent.from).await;
-    if balance < data_intent.max_cost() as i128 {
-        return Err(e400(eyre!(
-            "Insufficient balance, current balance {} requested {}",
-            balance,
-            data_intent.max_cost()
-        )));
-    }
-
-    let id = data_intent.id();
-    data.data_intent_tracker
-        .write()
-        .await
-        .add(data_intent)
-        .map_err(e500)?;
-
-    data.notify.notify_one();
-
-    Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
-}
+// #[post("/v1/data")}
+// post_data
+// > MOVED to routes/post_data.rs
 
 #[get("/v1/data")]
 pub(crate) async fn get_data(
@@ -135,8 +112,17 @@ pub(crate) async fn get_balance_by_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let balance: i128 = data.balance(*address).await;
+    let balance: i128 = data.balance_of_user(&address).await;
     Ok(HttpResponse::Ok().json(balance))
+}
+
+#[get("/v1/nonce/{address}")]
+pub(crate) async fn get_nonce_by_address(
+    data: web::Data<Arc<AppData>>,
+    address: web::Path<Address>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let nonce: u64 = data.nonce_of_user(&address).await;
+    Ok(HttpResponse::Ok().json(nonce))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -155,71 +141,6 @@ pub struct SyncStatus {
     pub anchor_block: SyncStatusBlock,
     pub synced_head: SyncStatusBlock,
     pub node_head: SyncStatusBlock,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DataIntentSummary {
-    pub id: String,
-    pub from: Address,
-    #[serde(with = "hex_vec")]
-    pub data_hash: Vec<u8>,
-    pub data_len: usize,
-    pub max_blob_gas_price: u128,
-}
-
-impl From<&DataIntent> for DataIntentSummary {
-    fn from(value: &DataIntent) -> Self {
-        Self {
-            id: value.id().to_string(),
-            from: value.from,
-            data_hash: value.data_hash.to_vec(),
-            data_len: value.data.len(),
-            max_blob_gas_price: value.max_blob_gas_price,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataResponse {
-    pub id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataIntentV1 {
-    /// Address sending the data
-    pub from: Address,
-    /// Data to be posted
-    #[serde(with = "hex_vec")]
-    pub data: Vec<u8>,
-    #[serde(with = "hex_vec")]
-    pub signature: Vec<u8>,
-    /// Max price user is willing to pay in wei
-    pub max_blob_gas_price: u128,
-}
-
-impl TryInto<DataIntent> for PostDataIntentV1 {
-    type Error = eyre::Report;
-    fn try_into(self) -> Result<DataIntent, Self::Error> {
-        let data_hash = DataHash::from_data(&self.data);
-        Ok(DataIntent {
-            from: self.from,
-            data: self.data,
-            data_hash,
-            signature: deserialize_signature(&self.signature)?,
-            max_blob_gas_price: self.max_blob_gas_price,
-        })
-    }
-}
-
-impl From<DataIntent> for PostDataIntentV1 {
-    fn from(value: DataIntent) -> Self {
-        Self {
-            from: value.from,
-            data: value.data,
-            signature: value.signature.to_vec(),
-            max_blob_gas_price: value.max_blob_gas_price,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -282,7 +203,7 @@ async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
 }
 
 impl AppData {
-    async fn balance(&self, from: Address) -> i128 {
+    async fn balance_of_user(&self, from: &Address) -> i128 {
         self.sync.read().await.balance_with_pending(from)
             - self
                 .data_intent_tracker
@@ -290,28 +211,16 @@ impl AppData {
                 .await
                 .pending_intents_total_cost(from) as i128
     }
-}
 
-#[cfg(test)]
-mod tests {
+    async fn nonce_of_user(&self, from: &Address) -> u64 {
+        let mut next_nonce = self.sync.read().await.participant_count_of_user(from);
+        let nonces_pending = self.data_intent_tracker.read().await.pending_nonces(from);
 
-    use ethers::types::Address;
-    use eyre::Result;
-    use std::str::FromStr;
-
-    use crate::routes::PostDataIntentV1;
-
-    #[test]
-    fn route_post_data_intent_v1_serde() -> Result<()> {
-        let data_intent = PostDataIntentV1 {
-            from: Address::from_str("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")?,
-            data: vec![0xaa; 50],
-            signature: vec![0xbb; 65],
-            max_blob_gas_price: 1000000000,
-        };
-
-        assert_eq!(&serde_json::to_string(&data_intent)?, "{\"from\":\"0xd8da6bf26964af9d7eed9e03e53415d37aa96045\",\"data\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signature\":\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"max_blob_gas_price\":1000000000}");
-
-        Ok(())
+        loop {
+            if !nonces_pending.contains(&next_nonce) {
+                return next_nonce;
+            }
+            next_nonce += 1;
+        }
     }
 }

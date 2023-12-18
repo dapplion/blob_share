@@ -21,12 +21,13 @@ pub enum DataIntentItem {
 
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
-    pub fn pending_intents_total_cost(&self, from: Address) -> u128 {
+    /// Returns the total sum of pending itents cost from `from`.
+    pub fn pending_intents_total_cost(&self, from: &Address) -> u128 {
         self.pending_intents
             .values()
             .map(|item| match item {
                 DataIntentItem::Pending(data_intent) => {
-                    if data_intent.from == from {
+                    if data_intent.from() == from {
                         data_intent.max_cost()
                     } else {
                         0
@@ -35,6 +36,23 @@ impl DataIntentTracker {
                 DataIntentItem::Evicted | DataIntentItem::Included(_, _) => 0,
             })
             .sum()
+    }
+
+    /// Returns the max nonce out of all pending intents
+    pub fn pending_nonces(&self, from: &Address) -> Vec<u64> {
+        self.pending_intents
+            .values()
+            .filter_map(|item| match item {
+                DataIntentItem::Pending(data_intent) => {
+                    if data_intent.from() == from {
+                        Some(data_intent.nonce())
+                    } else {
+                        None
+                    }
+                }
+                DataIntentItem::Evicted | DataIntentItem::Included(_, _) => None,
+            })
+            .collect()
     }
 
     pub fn get_all_pending(&self) -> Vec<DataIntent> {

@@ -1,4 +1,4 @@
-use ethers::types::Address;
+use ethers::types::{Address, Signature};
 use eyre::{bail, Result};
 use reqwest::Response;
 use std::cmp::PartialEq;
@@ -54,4 +54,9 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
 /// Return 0x prefixed hex representation of address (not checksum)
 pub fn address_to_hex(addr: Address) -> String {
     format!("0x{}", hex::encode(addr.to_fixed_bytes()))
+}
+
+/// Deserialize ethers' Signature
+pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
+    Ok(signature.try_into()?)
 }

@@ -18,7 +18,7 @@ use std::{
 use tokio::time::{sleep, timeout};
 
 use blob_share::{
-    client::{DataIntentId, EthProvider, GasPreference},
+    client::{DataIntentId, EthProvider, GasPreference, NoncePreference},
     consumer::BlobConsumer,
     App, Args, Client,
 };
@@ -190,13 +190,19 @@ impl TestHarness {
     }
 
     // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
-    pub async fn post_data(&self, wallet: &LocalWallet, data: Vec<u8>) -> DataIntentId {
+    pub async fn post_data(
+        &self,
+        wallet: &LocalWallet,
+        data: Vec<u8>,
+        nonce: Option<NoncePreference>,
+    ) -> DataIntentId {
         let res = self
             .client
             .post_data_with_wallet(
                 wallet,
                 data,
                 &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
+                &nonce.unwrap_or(NoncePreference::FetchFromApi),
             )
             .await
             .unwrap();
@@ -209,7 +215,7 @@ impl TestHarness {
         wallet: &LocalWallet,
         data: Vec<u8>,
     ) -> DataIntentId {
-        let intent_id = self.post_data(wallet, data).await;
+        let intent_id = self.post_data(wallet, data, None).await;
         self.wait_for_known_intents(&[intent_id], ONE_HUNDRED_MS)
             .await
             .unwrap();

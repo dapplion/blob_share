@@ -1,12 +1,15 @@
-use ethers::{signers::LocalWallet, types::Address};
+use ethers::{
+    signers::{LocalWallet, Signer},
+    types::Address,
+};
 use eyre::{eyre, Result};
 use url::Url;
 
 pub use crate::eth_provider::EthProvider;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
-use crate::routes::{DataIntentSummary, SyncStatus};
-use crate::utils::address_to_hex;
 pub use crate::{data_intent::DataIntentId, DataIntent};
+use crate::{data_intent::DataIntentSummary, routes::SyncStatus};
+use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex};
 use crate::{utils::is_ok_response, BlockGasSummary};
 
 pub struct Client {
@@ -29,17 +32,31 @@ impl Client {
         wallet: &LocalWallet,
         data: Vec<u8>,
         gas: &GasPreference,
+        nonce: &NoncePreference,
     ) -> Result<PostDataResponse> {
         // TODO: customize, for now set gas price equal to next block
         // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
         let max_blob_gas_price = gas.max_blob_gas_price().await?;
 
-        self.post_data(
-            &DataIntent::with_signature(wallet, data, max_blob_gas_price)
-                .await?
-                .into(),
+        // TODO: Consider exposing different nonce options.
+        // TODO: Is it safe to query to nonce from the server?
+        let nonce = match nonce {
+            NoncePreference::FetchFromApi => self.get_nonce_by_address(wallet.address()).await?,
+            NoncePreference::Value(nonce) => *nonce,
+        };
+
+        let intent_signed = PostDataIntentV1Signed::with_signature(
+            wallet,
+            PostDataIntentV1 {
+                from: wallet.address(),
+                data,
+                nonce,
+                max_blob_gas_price,
+            },
         )
-        .await
+        .await?;
+
+        self.post_data(&intent_signed).await
     }
 
     // Exposed API routes
@@ -60,7 +77,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn post_data(&self, data: &PostDataIntentV1) -> Result<PostDataResponse> {
+    pub async fn post_data(&self, data: &PostDataIntentV1Signed) -> Result<PostDataResponse> {
         let response = self
             .client
             .post(&self.url("v1/data"))
@@ -102,6 +119,15 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
+    pub async fn get_nonce_by_address(&self, address: Address) -> Result<u64> {
+        let response = self
+            .client
+            .get(&self.url(&format!("v1/nonce/{}", address_to_hex(address))))
+            .send()
+            .await?;
+        Ok(is_ok_response(response).await?.json().await?)
+    }
+
     /// `path` must not start with /
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
@@ -137,4 +163,9 @@ impl GasPreference {
             }
         }
     }
+}
+
+pub enum NoncePreference {
+    FetchFromApi,
+    Value(u64),
 }

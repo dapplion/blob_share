@@ -10,55 +10,127 @@ use ethers::{
 };
 use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_utils::hex_vec;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct DataIntent {
+pub enum DataIntent {
+    NoSignature(DataIntentNoSignature),
+    WithSignature(DataIntentWithSignature),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DataIntentNoSignature {
     pub from: Address,
     pub data: Vec<u8>,
     pub data_hash: DataHash,
-    pub signature: Signature,
+    pub nonce: u64,
     pub max_blob_gas_price: u128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DataIntentWithSignature {
+    pub from: Address,
+    pub data: Vec<u8>,
+    pub data_hash: DataHash,
+    pub nonce: u64,
+    pub max_blob_gas_price: u128,
+    pub signature: Signature,
 }
 
 impl DataIntent {
     pub fn max_cost(&self) -> u128 {
-        self.data.len() as u128 * self.max_blob_gas_price
+        self.data().len() as u128 * self.max_blob_gas_price()
     }
 
-    pub fn verify_signature(&self) -> Result<()> {
-        Ok(self.signature.verify(self.message_to_sign(), self.from)?)
-    }
-
-    pub fn message_to_sign(&self) -> &[u8] {
-        // TODO: must sign over max_cost_wei too
-        // Use RLP to serialize multiple fields together
-        &self.data_hash.0
+    pub fn max_blob_gas_price(&self) -> u128 {
+        match self {
+            DataIntent::NoSignature(d) => d.max_blob_gas_price,
+            DataIntent::WithSignature(d) => d.max_blob_gas_price,
+        }
     }
 
     pub fn id(&self) -> DataIntentId {
-        DataIntentId::new(self.from, self.data_hash)
+        match self {
+            DataIntent::NoSignature(d) => DataIntentId::new(d.from, d.data_hash),
+            DataIntent::WithSignature(d) => DataIntentId::new(d.from, d.data_hash),
+        }
+    }
+
+    pub fn from(&self) -> &Address {
+        match self {
+            DataIntent::NoSignature(d) => &d.from,
+            DataIntent::WithSignature(d) => &d.from,
+        }
+    }
+
+    pub fn data_len(&self) -> usize {
+        self.data().len()
+    }
+
+    pub fn data(&self) -> &[u8] {
+        match self {
+            DataIntent::NoSignature(d) => &d.data,
+            DataIntent::WithSignature(d) => &d.data,
+        }
+    }
+
+    pub fn nonce(&self) -> u64 {
+        match self {
+            DataIntent::NoSignature(d) => d.nonce,
+            DataIntent::WithSignature(d) => d.nonce,
+        }
     }
 
     pub async fn with_signature(
         wallet: &LocalWallet,
         data: Vec<u8>,
+        nonce: u64,
         max_blob_gas_price: u128,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
         let signature: Signature = wallet.sign_message(data_hash.0).await?;
 
-        Ok(DataIntent {
+        Ok(Self::WithSignature(DataIntentWithSignature {
             from: wallet.address(),
             data,
             data_hash,
+            nonce,
             signature,
             max_blob_gas_price,
-        })
+        }))
     }
 }
 
-pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
-    Ok(signature.try_into()?)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DataIntentSummary {
+    pub id: String,
+    pub from: Address,
+    #[serde(with = "hex_vec")]
+    pub data_hash: Vec<u8>,
+    pub data_len: usize,
+    pub max_blob_gas_price: u128,
+}
+
+impl From<&DataIntent> for DataIntentSummary {
+    fn from(value: &DataIntent) -> Self {
+        let id = value.id().to_string();
+        match value {
+            DataIntent::WithSignature(d) => Self {
+                id,
+                from: d.from,
+                data_hash: d.data_hash.to_vec(),
+                data_len: d.data.len(),
+                max_blob_gas_price: d.max_blob_gas_price,
+            },
+            DataIntent::NoSignature(d) => Self {
+                id,
+                from: d.from,
+                data_hash: d.data_hash.to_vec(),
+                data_len: d.data.len(),
+                max_blob_gas_price: d.max_blob_gas_price,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq, Debug)]
@@ -144,13 +216,9 @@ impl DataHash {
 mod tests {
     use std::str::FromStr;
 
-    use ethers::{
-        signers::{LocalWallet, Signer},
-        types::{Address, H160},
-    };
-    use eyre::Result;
+    use ethers::types::H160;
 
-    use super::{DataIntent, DataIntentId};
+    use super::*;
 
     #[test]
     fn data_intent_id_str_serde() {
@@ -158,26 +226,5 @@ mod tests {
         let id_str = id.to_string();
         assert_eq!(id_str, "v1-abababababababababababababababababababab-fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe");
         assert_eq!(DataIntentId::from_str(&id_str).unwrap(), id);
-    }
-
-    #[tokio::test]
-    async fn data_intent_signature() -> Result<()> {
-        let data = vec![0xaa; 50];
-        let max_cost_wei = 100000;
-        let wallet = get_wallet()?;
-
-        let data_intent = DataIntent::with_signature(&wallet, data, max_cost_wei).await?;
-
-        data_intent.verify_signature()?;
-        Ok(())
-    }
-
-    const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
-    const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
-
-    pub fn get_wallet() -> Result<LocalWallet> {
-        let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
-        assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
-        Ok(wallet)
     }
 }

@@ -139,7 +139,7 @@ impl BlockSync {
 
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
     /// blob transactions
-    pub fn balance_with_pending(&self, address: Address) -> i128 {
+    pub fn balance_with_pending(&self, address: &Address) -> i128 {
         let balance_delta_block_inclusions = self
             .unfinalized_head_chain
             .iter()
@@ -155,11 +155,38 @@ impl BlockSync {
         let finalized_balance = self
             .anchor_block
             .finalized_balances
-            .get(&address)
+            .get(address)
             .copied()
             .unwrap_or(0);
 
         finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
+    }
+
+    /// Return the total count of user participations on the current head chain + pending
+    /// transactions.
+    pub fn participant_count_of_user(&self, from: &Address) -> u64 {
+        let participation_count_block_inclusions = self
+            .unfinalized_head_chain
+            .iter()
+            .map(|block| block.participation_count_of_user(from))
+            .sum::<usize>();
+
+        let participation_count_tx_inclusions = self
+            .pending_transactions
+            .values()
+            .map(|tx| tx.participation_count_from(from))
+            .sum::<usize>();
+
+        let finalized_participation_count = self
+            .anchor_block
+            .finalized_user_participation_count
+            .get(from)
+            .copied()
+            .unwrap_or(0);
+
+        participation_count_block_inclusions as u64
+            + participation_count_tx_inclusions as u64
+            + finalized_participation_count
     }
 
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
@@ -475,12 +502,17 @@ pub struct AnchorBlock {
     pub number: u64,
     pub gas: BlockGasSummary,
     pub finalized_balances: HashMap<Address, i128>,
+    pub finalized_user_participation_count: HashMap<Address, u64>,
 }
 
 impl AnchorBlock {
     fn apply_finalized_block(&mut self, block: &BlockSummary) {
-        for address in block.get_all_participants() {
-            *self.finalized_balances.entry(address).or_insert(0) += block.balance_delta(address);
+        for from in block.get_all_participants() {
+            *self.finalized_balances.entry(from).or_insert(0) += block.balance_delta(&from);
+            *self
+                .finalized_user_participation_count
+                .entry(from)
+                .or_insert(0) += block.participation_count_of_user(&from) as u64
         }
 
         self.hash = block.hash;
@@ -506,8 +538,8 @@ struct TopupTx {
 }
 
 impl TopupTx {
-    fn is_from(&self, address: Address) -> bool {
-        self.from == address
+    fn is_from(&self, address: &Address) -> bool {
+        &self.from == address
     }
 }
 
@@ -544,7 +576,7 @@ impl BlockSummary {
         })
     }
 
-    fn balance_delta(&self, address: Address) -> i128 {
+    fn balance_delta(&self, address: &Address) -> i128 {
         let mut balance_delta = 0;
 
         for tx in &self.topup_txs {
@@ -562,6 +594,13 @@ impl BlockSummary {
         }
 
         balance_delta
+    }
+
+    fn participation_count_of_user(&self, from: &Address) -> usize {
+        self.blob_txs
+            .iter()
+            .map(|tx| tx.participation_count_from(from))
+            .sum()
     }
 
     /// Return all user addresses from topups and blob tx participations
@@ -660,8 +699,8 @@ mod tests {
         block.transactions.push(generate_topup_tx(addr_2, 2));
 
         let summary = BlockSummary::from_block(block, ADDRESS_SENDER).unwrap();
-        assert_eq!(summary.balance_delta(addr_1), 1);
-        assert_eq!(summary.balance_delta(addr_2), 2 * 2);
+        assert_eq!(summary.balance_delta(&addr_1), 1);
+        assert_eq!(summary.balance_delta(&addr_2), 2 * 2);
     }
 
     #[tokio::test]
@@ -709,7 +748,7 @@ mod tests {
         // Register block with top-up transaction
         block_1.transactions.push(generate_topup_tx(user, TOP_UP));
         sync_next_block(&sync, &provider, block_1).await;
-        assert_eq!(sync.read().await.balance_with_pending(user), TOP_UP);
+        assert_eq!(sync.read().await.balance_with_pending(&user), TOP_UP);
 
         // Register pending tx for user
         sync.write()
@@ -717,7 +756,7 @@ mod tests {
             .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
             .unwrap();
         assert_eq!(
-            sync.read().await.balance_with_pending(user),
+            sync.read().await.balance_with_pending(&user),
             TOP_UP - TXCOST
         ); // TOPUP - TXCOST
         assert_eq!(pending_tx_len(&sync).await, 1);
@@ -730,7 +769,7 @@ mod tests {
         sync_next_block(&sync, &provider, block_3a).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2a, hash_3a]).await;
         assert_eq!(
-            sync.read().await.balance_with_pending(user),
+            sync.read().await.balance_with_pending(&user),
             2 * TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 0);
@@ -740,7 +779,7 @@ mod tests {
         sync_next_block(&sync, &provider, block_3b).await;
         assert_chain(&sync, &[hash_0, hash_1, hash_2b, hash_3b]).await;
         assert_eq!(
-            sync.read().await.balance_with_pending(user),
+            sync.read().await.balance_with_pending(&user),
             TOP_UP - 2 * TXCOST
         );
         assert_eq!(pending_tx_len(&sync).await, 2);
@@ -908,6 +947,7 @@ mod tests {
                 number,
                 gas: BlockGasSummary::default(),
                 finalized_balances: <_>::default(),
+                finalized_user_participation_count: <_>::default(),
             },
         ))
     }
