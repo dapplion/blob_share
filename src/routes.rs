@@ -3,6 +3,7 @@ use ethers::signers::Signer;
 use ethers::types::{Address, TxHash, H256};
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
+use serde_utils::hex_vec;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntent
 use crate::data_intent_tracker::DataIntentItemStatus;
 use crate::eth_provider::EthProvider;
 use crate::sync::TxInclusion;
-use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
+use crate::utils::{e400, e500};
 use crate::AppData;
 
 #[get("/")]
@@ -51,15 +52,11 @@ pub(crate) async fn post_data(
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
     data_intent.verify_signature().map_err(e400)?;
 
-    let account_balance = data
-        .sync
-        .read()
-        .await
-        .balance_with_pending(data_intent.from);
-    if account_balance < data_intent.max_cost() as i128 {
+    let balance = data.balance(data_intent.from).await;
+    if balance < data_intent.max_cost() as i128 {
         return Err(e400(eyre!(
             "Insufficient balance, current balance {} requested {}",
-            account_balance,
+            balance,
             data_intent.max_cost()
         )));
     }
@@ -80,7 +77,10 @@ pub(crate) async fn post_data(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items: Vec<DataIntent> = { data.data_intent_tracker.read().await.get_all_pending() };
+    let items: Vec<DataIntentSummary> = { data.data_intent_tracker.read().await.get_all_pending() }
+        .iter()
+        .map(|item| item.into())
+        .collect();
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -134,7 +134,7 @@ pub(crate) async fn get_balance_by_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let balance = data.sync.read().await.balance_with_pending(*address);
+    let balance: i128 = data.balance(*address).await;
     Ok(HttpResponse::Ok().json(balance))
 }
 
@@ -157,6 +157,28 @@ pub struct SyncStatus {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DataIntentSummary {
+    pub id: String,
+    pub from: Address,
+    #[serde(with = "hex_vec")]
+    pub data_hash: Vec<u8>,
+    pub data_len: usize,
+    pub max_blob_gas_price: u128,
+}
+
+impl From<&DataIntent> for DataIntentSummary {
+    fn from(value: &DataIntent) -> Self {
+        Self {
+            id: value.id().to_string(),
+            from: value.from,
+            data_hash: value.data_hash.to_vec(),
+            data_len: value.data.len(),
+            max_blob_gas_price: value.max_blob_gas_price,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataResponse {
     pub id: String,
 }
@@ -165,16 +187,10 @@ pub struct PostDataResponse {
 pub struct PostDataIntentV1 {
     /// Address sending the data
     pub from: Address,
-    #[serde(
-        serialize_with = "serialize_as_hex",
-        deserialize_with = "deserialize_from_hex"
-    )]
     /// Data to be posted
+    #[serde(with = "hex_vec")]
     pub data: Vec<u8>,
-    #[serde(
-        serialize_with = "serialize_as_hex",
-        deserialize_with = "deserialize_from_hex"
-    )]
+    #[serde(with = "hex_vec")]
     pub signature: Vec<u8>,
     /// Max price user is willing to pay in wei
     pub max_blob_gas_price: u128,
@@ -257,6 +273,17 @@ async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
             .hash
             .ok_or_else(|| eyre!("block number {} has not hash", node_head_number))?,
     })
+}
+
+impl AppData {
+    async fn balance(&self, from: Address) -> i128 {
+        self.sync.read().await.balance_with_pending(from)
+            - self
+                .data_intent_tracker
+                .read()
+                .await
+                .pending_intents_total_cost(from) as i128
+    }
 }
 
 #[cfg(test)]

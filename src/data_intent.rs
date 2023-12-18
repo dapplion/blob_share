@@ -134,6 +134,10 @@ impl DataHash {
     pub fn from_data(data: &[u8]) -> DataHash {
         keccak256(data).into()
     }
+
+    pub fn to_vec(self) -> Vec<u8> {
+        self.0.to_vec()
+    }
 }
 
 #[cfg(test)]

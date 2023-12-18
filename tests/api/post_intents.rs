@@ -78,12 +78,45 @@ async fn test_post_two_data_intents_up_to_inclusion(
     let data_1 = vec![0xa0_u8 + i; MAX_USABLE_BLOB_DATA_LEN / 3];
     let data_2 = vec![0xb0_u8 + i; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
 
+    // Ensure node is synced up to 1 block of difference
+    let sync = test_harness.client.get_sync().await.unwrap();
+    assert!(
+        sync.node_head.number - sync.synced_head.number < 1,
+        "node not synced, head: {:?} node: {:?}",
+        sync.node_head,
+        sync.synced_head
+    );
+
+    let balance_before_intent_1 = test_harness
+        .client
+        .get_balance_by_address(wallet.address())
+        .await
+        .unwrap();
+
     let intent_1_id = test_harness
         .post_data_and_wait_for_pending(wallet, data_1.clone())
         .await;
 
     // Check data intent is stored
     assert_eq!(test_harness.client.get_data().await.unwrap().len(), 1);
+    // Check by_id API
+    let intent_1 = test_harness
+        .client
+        .get_data_by_id(&intent_1_id)
+        .await
+        .unwrap();
+    assert_eq!(intent_1.data, data_1);
+
+    // Check balance has decreased
+    let balance_after_intent_1 = test_harness
+        .client
+        .get_balance_by_address(wallet.address())
+        .await
+        .unwrap();
+    assert!(
+        balance_after_intent_1 < balance_before_intent_1,
+        "balance should decrease {balance_after_intent_1} < {balance_before_intent_1}"
+    );
 
     let intent_2_id = test_harness
         .post_data_and_wait_for_pending(wallet, data_2.clone())
@@ -106,6 +139,17 @@ async fn test_post_two_data_intents_up_to_inclusion(
         )
         .await
         .unwrap();
+
+    // Check balance has decreased again for intent2 and after inclusion
+    let balance_after_inclusion_2 = test_harness
+        .client
+        .get_balance_by_address(wallet.address())
+        .await
+        .unwrap();
+    assert!(
+        balance_after_inclusion_2 < balance_after_intent_1,
+        "balance should decrease {balance_after_inclusion_2} < {balance_after_intent_1}"
+    );
 
     let blob_consumer = test_harness.get_blob_consumer(wallet.address());
     // Allow some time for the consensus client to persist the blobs and serve them
