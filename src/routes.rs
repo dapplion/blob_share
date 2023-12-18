@@ -64,8 +64,8 @@ pub(crate) async fn post_data(
         )));
     }
 
-    let id = data
-        .data_intent_tracker
+    let id = data_intent.id();
+    data.data_intent_tracker
         .write()
         .await
         .add(data_intent)
@@ -109,8 +109,9 @@ pub(crate) async fn get_status_by_id(
     let status = { data.data_intent_tracker.read().await.status_by_id(&id) };
 
     let status = match status {
-        DataIntentItemStatus::Pending => DataIntentStatus::Pending,
         DataIntentItemStatus::Unknown => DataIntentStatus::Unknown,
+        DataIntentItemStatus::Evicted => DataIntentStatus::Evicted,
+        DataIntentItemStatus::Pending => DataIntentStatus::Pending,
         DataIntentItemStatus::Included(tx_hash) => {
             match data.sync.read().await.get_tx_status(tx_hash) {
                 Some(TxInclusion::Pending) => DataIntentStatus::InPendingTx { tx_hash },
@@ -208,6 +209,7 @@ impl From<DataIntent> for PostDataIntentV1 {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum DataIntentStatus {
     Unknown,
+    Evicted,
     Pending,
     InPendingTx { tx_hash: TxHash },
     InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
@@ -218,14 +220,17 @@ impl DataIntentStatus {
         match self {
             DataIntentStatus::InConfirmedTx { .. }
             | DataIntentStatus::InPendingTx { .. }
-            | DataIntentStatus::Pending => true,
+            | DataIntentStatus::Pending
+            | DataIntentStatus::Evicted => true,
             DataIntentStatus::Unknown => false,
         }
     }
 
     pub fn is_in_tx(&self) -> Option<TxHash> {
         match self {
-            DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
+            DataIntentStatus::Unknown | DataIntentStatus::Evicted | DataIntentStatus::Pending => {
+                None
+            }
             DataIntentStatus::InPendingTx { tx_hash } => Some(*tx_hash),
             DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
         }
@@ -234,6 +239,7 @@ impl DataIntentStatus {
     pub fn is_in_block(&self) -> Option<(H256, TxHash)> {
         match self {
             DataIntentStatus::Unknown
+            | DataIntentStatus::Evicted
             | DataIntentStatus::Pending
             | DataIntentStatus::InPendingTx { .. } => None,
             DataIntentStatus::InConfirmedTx {
