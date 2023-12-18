@@ -103,9 +103,10 @@ impl TestHarness {
             // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
             eth_provider_interval: Some(1),
             starting_block: 0,
-            mnemonic:
+            mnemonic: Some(
                 "work man father plunge mystery proud hollow address reunion sauce theory bonus"
                     .to_string(),
+            ),
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
         };
