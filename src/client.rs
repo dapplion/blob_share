@@ -75,7 +75,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_data_by_id(&self, id: &str) -> Result<DataIntent> {
+    pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntent> {
         let response = self
             .client
             .get(&self.url(&format!("v1/data/{}", id)))

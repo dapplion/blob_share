@@ -323,7 +323,10 @@ impl TestHarness {
             Ok(result) => Ok(result),
             Err(e) => {
                 let data_intents = self.client.get_data().await?;
-                let known_ids = data_intents.iter().map(|d| d.id()).collect::<Vec<_>>();
+                let known_ids = data_intents
+                    .iter()
+                    .map(|d| d.id.clone())
+                    .collect::<Vec<_>>();
                 bail!(
                     "timeout {timeout:?}: waiting for intents {ids:?} not known: {e:?}\nintents known: {known_ids:?}",
                 );
