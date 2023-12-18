@@ -32,6 +32,7 @@ impl Client {
         wallet: &LocalWallet,
         data: Vec<u8>,
         gas: &GasPreference,
+        nonce: &NoncePreference,
     ) -> Result<PostDataResponse> {
         // TODO: customize, for now set gas price equal to next block
         // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
@@ -39,7 +40,10 @@ impl Client {
 
         // TODO: Consider exposing different nonce options.
         // TODO: Is it safe to query to nonce from the server?
-        let nonce = self.get_nonce_by_address(wallet.address()).await?;
+        let nonce = match nonce {
+            NoncePreference::FetchFromApi => self.get_nonce_by_address(wallet.address()).await?,
+            NoncePreference::Value(nonce) => *nonce,
+        };
 
         let intent_signed = PostDataIntentV1Signed::with_signature(
             wallet,
@@ -159,4 +163,9 @@ impl GasPreference {
             }
         }
     }
+}
+
+pub enum NoncePreference {
+    FetchFromApi,
+    Value(u64),
 }

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode, FINALIZE_DEPTH};
-use blob_share::MAX_USABLE_BLOB_DATA_LEN;
+use blob_share::{client::NoncePreference, MAX_USABLE_BLOB_DATA_LEN};
 use ethers::signers::{LocalWallet, Signer};
 use futures::future::join_all;
 
@@ -204,14 +204,20 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     .map(|i| vec![0xa0_u8 + i; MAX_USABLE_BLOB_DATA_LEN / 2])
                     .collect::<Vec<_>>();
 
-                // Post all datas at once
-                let intent_ids = join_all(
-                    datas
-                        .iter()
-                        .map(|data| test_harness.post_data(&wallet.signer(), data.to_vec()))
-                        .collect::<Vec<_>>(),
-                )
-                .await;
+                // Post all datas in quick succession before asserting for inclusion. Post in
+                // sequence so the server can check the nonce is sequential.
+                let mut intent_ids = vec![];
+                for (i, data) in datas.iter().enumerate() {
+                    intent_ids.push(
+                        test_harness
+                            .post_data(
+                                &wallet.signer(),
+                                data.to_vec(),
+                                Some(NoncePreference::Value(i as u64)),
+                            )
+                            .await,
+                    )
+                }
 
                 // All intents should be known immediatelly
                 test_harness

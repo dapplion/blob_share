@@ -78,7 +78,7 @@ pub struct PostDataIntentV1 {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataIntentV1Signed {
     pub intent: PostDataIntentV1,
-    /// Signature over [data,nonce,max_blob_gas_price]
+    /// Signature over := data | nonce | max_blob_gas_price
     #[serde(with = "hex_vec")]
     pub signature: Vec<u8>,
 }

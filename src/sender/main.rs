@@ -2,7 +2,9 @@ use std::fs;
 use std::str::FromStr;
 use std::time::Duration;
 
-use blob_share::client::{Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference};
+use blob_share::client::{
+    Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference, NoncePreference,
+};
 use clap::Parser;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
@@ -125,8 +127,11 @@ async fn main() -> Result<()> {
 
     let gas =
         GasPreference::RelativeToHead(EthProvider::Http(provider), args.blob_gas_price_factor);
+    let nonce = NoncePreference::FetchFromApi;
 
-    let response = client.post_data_with_wallet(&wallet, data, &gas).await?;
+    let response = client
+        .post_data_with_wallet(&wallet, data, &gas, &nonce)
+        .await?;
     let id = DataIntentId::from_str(&response.id)?;
     println!("{:?}", id);
 
