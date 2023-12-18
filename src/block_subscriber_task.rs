@@ -40,7 +40,9 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
                     error!("error syncing block {:?}: {:?}", block_hash, e);
                 }
             }
-            Ok(_) => {}
+            Ok(_) => {
+                debug!("completed sync_block task for {block_hash}");
+            }
         }
 
         // Maybe compute new blob transactions
@@ -108,7 +110,7 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
     }
 
     // Finalize transactions
-    if let Some((finalized_txs, new_anchor_block_number)) =
+    let new_anchor_block_number = if let Some((finalized_txs, new_anchor_block_number)) =
         app_data.sync.write().await.maybe_advance_anchor_block()?
     {
         let finalized_tx_hashes = finalized_txs
@@ -125,8 +127,14 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
             data_intent_tracker.finalize_tx(tx.tx_hash);
         }
 
-        // Persist anchor block
-        // TODO: Throttle to not persist every block, not necessary
+        Some(new_anchor_block_number)
+    } else {
+        None
+    };
+
+    // Persist anchor block
+    // TODO: Throttle to not persist every block, not necessary
+    if new_anchor_block_number.is_some() {
         let anchor_block_str = {
             serde_json::to_string(app_data.sync.read().await.get_anchor())
                 .wrap_err("serializing AnchorBlock")?
@@ -134,6 +142,10 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         fs::write(&app_data.config.anchor_block_filepath, anchor_block_str)
             .await
             .wrap_err("persisting anchor block")?;
+        debug!(
+            "persisted anchor_block file at {}",
+            app_data.config.anchor_block_filepath.to_string_lossy()
+        );
     }
 
     Ok(())

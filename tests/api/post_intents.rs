@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode, FINALIZE_DEPTH};
 use blob_share::{client::NoncePreference, MAX_USABLE_BLOB_DATA_LEN};
 use ethers::signers::{LocalWallet, Signer};
+use log::info;
 
 #[tokio::test]
 async fn health_check_works() {
@@ -46,6 +47,7 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                 test_harness.fund_sender_account(&wallet).await;
 
                 // +4 for the time it takes the fund transaction to go through
+                let n = 4 + 2 * FINALIZE_DEPTH;
                 for i in 0..4 + 2 * FINALIZE_DEPTH {
                     test_post_two_data_intents_up_to_inclusion(
                         &test_harness,
@@ -53,6 +55,7 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                         i as u8,
                     )
                     .await;
+                    info!("test-progress: completed step {i}/{n}");
                 }
 
                 Ok(())
@@ -123,6 +126,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
         intents_txhash[0], intents_txhash[1],
         "two intents should be in the same tx"
     );
+    info!("test-progress: intents included in txs {intents_txhash:?}",);
 
     let (_intent_1_txhash_block, intent_1_block) = test_harness
         .wait_for_intent_inclusion_in_any_block(
@@ -132,6 +136,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
         )
         .await
         .unwrap();
+    info!("test-progress: intents included in block {intent_1_block}");
 
     // Check balance has decreased again for intent2 and after inclusion
     let balance_after_inclusion_2 = test_harness
