@@ -32,7 +32,7 @@ impl DataIntentTracker {
                         0
                     }
                 }
-                DataIntentItem::Included(_, _) => 0,
+                DataIntentItem::Evicted | DataIntentItem::Included(_, _) => 0,
             })
             .sum()
     }
