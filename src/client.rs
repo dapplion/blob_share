@@ -3,8 +3,8 @@ use eyre::{eyre, Result};
 use url::Url;
 
 pub use crate::eth_provider::EthProvider;
-use crate::routes::SyncStatus;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
+use crate::routes::{DataIntentSummary, SyncStatus};
 use crate::utils::address_to_hex;
 pub use crate::{data_intent::DataIntentId, DataIntent};
 use crate::{utils::is_ok_response, BlockGasSummary};
@@ -70,7 +70,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_data(&self) -> Result<Vec<DataIntent>> {
+    pub async fn get_data(&self) -> Result<Vec<DataIntentSummary>> {
         let response = self.client.get(&self.url("v1/data")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
