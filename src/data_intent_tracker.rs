@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 use ethers::types::TxHash;
 use eyre::{bail, eyre, Result};
@@ -9,6 +9,8 @@ use crate::{data_intent::DataIntentId, DataIntent};
 pub struct DataIntentTracker {
     pending_intents: HashMap<DataIntentId, DataIntentItem>,
     included_intents: HashMap<TxHash, Vec<DataIntentId>>,
+    // TODO: move to DB persistance, this set is not bounded
+    evicted_underpriced_intents: HashSet<DataIntentId>,
 }
 
 #[derive(Clone)]
@@ -46,12 +48,25 @@ impl DataIntentTracker {
         Ok(id)
     }
 
+    pub fn evict_underpriced_intent(&mut self, id: &DataIntentId) -> Result<()> {
+        match self.pending_intents.remove(id) {
+            None => bail!("unknown intent {:?}", id),
+            Some(DataIntentItem::Included(data_intent, prev_tx_hash)) => {
+                self.pending_intents
+                    .insert(*id, DataIntentItem::Included(data_intent, prev_tx_hash));
+                bail!("attempting to evict intent included in transaction {prev_tx_hash:?} {id:?}")
+            }
+            Some(DataIntentItem::Pending(_)) => {
+                self.evicted_underpriced_intents.insert(*id);
+                Ok(())
+            }
+        }
+    }
+
     pub fn mark_items_as_pending(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
         for id in ids {
             match self.pending_intents.remove(id) {
-                None => {
-                    bail!("pending intent removed while moving into pending {:?}", id)
-                }
+                None => bail!("pending intent removed while moving into pending {:?}", id),
                 Some(DataIntentItem::Included(data_intent, prev_tx_hash)) => {
                     self.pending_intents
                         .insert(*id, DataIntentItem::Included(data_intent, prev_tx_hash));
