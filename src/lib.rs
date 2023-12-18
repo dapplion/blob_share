@@ -16,8 +16,8 @@ use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     routes::{
-        get_balance_by_address, get_data, get_data_by_id, get_health, get_sender, get_status_by_id,
-        post_data,
+        get_balance_by_address, get_data, get_data_by_id, get_health, get_home, get_sender,
+        get_status_by_id, post_data,
     },
     sync::{AnchorBlock, BlockSync},
     trusted_setup::TrustedSetup,
@@ -232,6 +232,7 @@ impl App {
             actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
+                .service(get_home)
                 .service(get_health)
                 .service(get_sender)
                 .service(post_data)

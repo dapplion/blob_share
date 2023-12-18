@@ -12,6 +12,13 @@ use crate::sync::TxInclusion;
 use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
 use crate::AppData;
 
+#[get("/")]
+pub(crate) async fn get_home() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body("<html><body><h1>Blob share API</h1></body></html>")
+}
+
 #[get("/v1/health")]
 pub(crate) async fn get_health() -> impl Responder {
     HttpResponse::Ok().finish()
