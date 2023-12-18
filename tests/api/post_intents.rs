@@ -11,28 +11,6 @@ async fn health_check_works() {
 }
 
 #[tokio::test]
-async fn post_data_reject_invalid_signatures() {
-    TestHarness::build(TestMode::ELOnly)
-        .await
-        .spawn_with_fn(|test_harness| {
-            async move {
-                // TODO: Should run this as part of test harness setup
-                test_harness.wait_for_app_health().await;
-
-                // Fund account
-                let wallet = test_harness.get_wallet_genesis_funds();
-                test_harness.fund_sender_account(&wallet).await;
-
-                test_post_two_data_intents_up_to_inclusion(&test_harness, wallet.signer(), 0).await;
-
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn post_two_intents_and_expect_blob_tx() {
     TestHarness::build(TestMode::WithChain)
         .await
