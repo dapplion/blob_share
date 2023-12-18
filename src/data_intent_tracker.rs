@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
 
 use ethers::types::{Address, TxHash};
 use eyre::{bail, eyre, Result};
@@ -13,6 +13,8 @@ pub struct DataIntentTracker {
 
 #[derive(Clone)]
 pub enum DataIntentItem {
+    // TODO: Evicted items are never pruned
+    Evicted,
     Pending(DataIntent),
     Included(DataIntent, TxHash),
 }
@@ -30,7 +32,7 @@ impl DataIntentTracker {
                         0
                     }
                 }
-                DataIntentItem::Included(_, _) => 0,
+                DataIntentItem::Evicted | DataIntentItem::Included(_, _) => 0,
             })
             .sum()
     }
@@ -40,38 +42,53 @@ impl DataIntentTracker {
             .values()
             // TODO: Do not clone here, the sum of all DataIntents can be big
             .filter_map(|item| match item {
+                DataIntentItem::Evicted => None,
                 DataIntentItem::Pending(data_intent) => Some(data_intent.clone()),
                 DataIntentItem::Included(_, _) => None,
             })
             .collect()
     }
 
-    pub fn add(&mut self, data_intent: DataIntent) -> Result<DataIntentId> {
+    pub fn add(&mut self, data_intent: DataIntent) -> Result<()> {
         let id = data_intent.id();
 
-        match self.pending_intents.entry(id) {
-            Entry::Vacant(entry) => entry.insert(DataIntentItem::Pending(data_intent)),
-            Entry::Occupied(_) => {
-                // TODO: Handle bumping the registered max price
-                bail!(
-                    "data intent with data hash {} already known",
-                    data_intent.data_hash
-                );
+        match self.pending_intents.get(&id) {
+            None => {}                          // Ok insert
+            Some(DataIntentItem::Evicted) => {} // Allow to re-insert evicted intents
+            // TODO: Handle bumping the registered max price
+            Some(DataIntentItem::Pending(_)) | Some(DataIntentItem::Included(_, _)) => {
+                bail!("data intent {id} already known")
             }
         };
-        Ok(id)
+
+        self.pending_intents
+            .insert(id, DataIntentItem::Pending(data_intent));
+        Ok(())
+    }
+
+    pub fn evict_underpriced_intent(&mut self, id: &DataIntentId) -> Result<()> {
+        match self.pending_intents.get(id) {
+            None => bail!("unknown intent {}", id),
+            Some(DataIntentItem::Evicted) => bail!("intent already evicted {}", id),
+            Some(DataIntentItem::Included(_, prev_tx_hash)) => {
+                bail!("attempting to evict intent included in transaction {prev_tx_hash:?} {id}")
+            }
+            Some(DataIntentItem::Pending(_)) => {
+                self.pending_intents.insert(*id, DataIntentItem::Evicted);
+                Ok(())
+            }
+        }
     }
 
     pub fn mark_items_as_pending(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
         for id in ids {
             match self.pending_intents.remove(id) {
-                None => {
-                    bail!("pending intent removed while moving into pending {:?}", id)
-                }
+                None => bail!("pending intent removed while moving into pending {}", id),
+                Some(DataIntentItem::Evicted) => bail!("intent has been evicted {}", id),
                 Some(DataIntentItem::Included(data_intent, prev_tx_hash)) => {
                     self.pending_intents
                         .insert(*id, DataIntentItem::Included(data_intent, prev_tx_hash));
-                    bail!("pending item already included in transaction {:?} while moving into pending {:?}", prev_tx_hash, id)
+                    bail!("pending item already included in transaction {:?} while moving into pending {}", prev_tx_hash, id)
                 }
                 Some(DataIntentItem::Pending(data_intent)) => {
                     self.pending_intents
@@ -94,7 +111,8 @@ impl DataIntentTracker {
 
         for id in ids {
             match self.pending_intents.remove(&id) {
-                None => bail!("pending intent removed while moving into pending {:?}", id),
+                None => bail!("pending intent removed while moving into pending {}", id),
+                Some(DataIntentItem::Evicted) => bail!("item evicted {}", id),
                 // TODO: Should check that the transaction is consistent?
                 Some(DataIntentItem::Included(data_intent, _))
                 | Some(DataIntentItem::Pending(data_intent)) => self
@@ -115,17 +133,20 @@ impl DataIntentTracker {
     }
 
     pub fn data_by_id(&self, id: &DataIntentId) -> Option<DataIntent> {
-        self.pending_intents.get(id).map(|item| match item {
-            DataIntentItem::Pending(data_intent) => data_intent.clone(),
-            DataIntentItem::Included(data_intent, _) => data_intent.clone(),
-        })
+        match self.pending_intents.get(id) {
+            None => None,
+            Some(DataIntentItem::Evicted) => None,
+            Some(DataIntentItem::Pending(data_intent)) => Some(data_intent.clone()),
+            Some(DataIntentItem::Included(data_intent, _)) => Some(data_intent.clone()),
+        }
     }
 
     pub fn status_by_id(&self, id: &DataIntentId) -> DataIntentItemStatus {
         match self.pending_intents.get(id) {
+            None => DataIntentItemStatus::Unknown,
+            Some(DataIntentItem::Evicted) => DataIntentItemStatus::Evicted,
             Some(DataIntentItem::Pending(_)) => DataIntentItemStatus::Pending,
             Some(DataIntentItem::Included(_, tx_hash)) => DataIntentItemStatus::Included(*tx_hash),
-            None => DataIntentItemStatus::Unknown,
         }
     }
 }
@@ -133,5 +154,6 @@ impl DataIntentTracker {
 pub enum DataIntentItemStatus {
     Pending,
     Included(TxHash),
+    Evicted,
     Unknown,
 }
