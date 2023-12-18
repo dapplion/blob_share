@@ -19,6 +19,8 @@ Options:
           JSON RPC polling interval in miliseconds, used for testing
       --starting-block <STARTING_BLOCK>
           First block for service to start accounting [default: 0]
+      --data-dir <DATA_DIR>
+          Directory to persist anchor block finalized data [default: ./data]
       --mnemonic <MNEMONIC>
           Mnemonic for tx sender. If not set a random account will be generated. TODO: UNSAFE, handle hot keys better
       --panic-on-background-task-errors

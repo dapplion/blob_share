@@ -3,12 +3,33 @@ use std::time::Duration;
 use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode, FINALIZE_DEPTH};
 use blob_share::{client::NoncePreference, MAX_USABLE_BLOB_DATA_LEN};
 use ethers::signers::{LocalWallet, Signer};
-use futures::future::join_all;
 
 #[tokio::test]
 async fn health_check_works() {
     let testing_harness = TestHarness::spawn_with_el_only().await;
     testing_harness.client.health().await.unwrap();
+}
+
+#[tokio::test]
+async fn post_data_reject_invalid_signatures() {
+    TestHarness::build(TestMode::ELOnly)
+        .await
+        .spawn_with_fn(|test_harness| {
+            async move {
+                // TODO: Should run this as part of test harness setup
+                test_harness.wait_for_app_health().await;
+
+                // Fund account
+                let wallet = test_harness.get_wallet_genesis_funds();
+                test_harness.fund_sender_account(&wallet).await;
+
+                test_post_two_data_intents_up_to_inclusion(&test_harness, wallet.signer(), 0).await;
+
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -18,10 +39,7 @@ async fn post_two_intents_and_expect_blob_tx() {
         .spawn_with_fn(|test_harness| {
             async move {
                 // TODO: Should run this as part of test harness setup
-                test_harness
-                    .wait_for_app_health(Duration::from_secs(1))
-                    .await
-                    .unwrap();
+                test_harness.wait_for_app_health().await;
 
                 // Fund account
                 let wallet = test_harness.get_wallet_genesis_funds();
@@ -43,10 +61,7 @@ async fn post_many_intents_series_and_expect_blob_tx() {
         .spawn_with_fn(|test_harness| {
             async move {
                 // TODO: Should run this as part of test harness setup
-                test_harness
-                    .wait_for_app_health(Duration::from_secs(1))
-                    .await
-                    .unwrap();
+                test_harness.wait_for_app_health().await;
 
                 // Fund account
                 let wallet = test_harness.get_wallet_genesis_funds();
@@ -189,9 +204,7 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
         .spawn_with_fn(|test_harness| {
             async move {
                 // TODO: Should run this as part of test harness setup
-                test_harness
-                    .wait_for_app_health(Duration::from_secs(1))
-                    .await?;
+                test_harness.wait_for_app_health().await;
 
                 // Fund account
                 let wallet = test_harness.get_wallet_genesis_funds();

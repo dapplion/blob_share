@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use ethers::types::{Address, Block, Transaction, TxHash, H256};
 use eyre::{bail, eyre, Result};
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -98,11 +99,8 @@ impl BlockSync {
         }
     }
 
-    pub fn get_anchor(&self) -> SyncStatusBlock {
-        SyncStatusBlock {
-            number: self.anchor_block.number,
-            hash: self.anchor_block.hash,
-        }
+    pub fn get_anchor(&self) -> &AnchorBlock {
+        &self.anchor_block
     }
 
     /// Return the next available nonce on current head, and reserve it.
@@ -496,7 +494,7 @@ pub struct Reorg {
     pub depth: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnchorBlock {
     pub hash: H256,
     pub number: u64,

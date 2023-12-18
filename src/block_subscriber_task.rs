@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use ethers::{providers::StreamExt, types::TxHash};
 use eyre::{eyre, Context, Result};
+use tokio::fs;
 
 use crate::{
     debug, error, info,
@@ -123,6 +124,16 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         for tx in finalized_txs {
             data_intent_tracker.finalize_tx(tx.tx_hash);
         }
+
+        // Persist anchor block
+        // TODO: Throttle to not persist every block, not necessary
+        let anchor_block_str = {
+            serde_json::to_string(app_data.sync.read().await.get_anchor())
+                .wrap_err("serializing AnchorBlock")?
+        };
+        fs::write(&app_data.config.anchor_block_filepath, anchor_block_str)
+            .await
+            .wrap_err("persisting anchor block")?;
     }
 
     Ok(())

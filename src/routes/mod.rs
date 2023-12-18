@@ -11,7 +11,7 @@ pub mod post_data;
 use crate::data_intent::{DataIntent, DataIntentId, DataIntentSummary};
 use crate::data_intent_tracker::DataIntentItemStatus;
 use crate::eth_provider::EthProvider;
-use crate::sync::TxInclusion;
+use crate::sync::{AnchorBlock, TxInclusion};
 use crate::utils::{e400, e500};
 use crate::AppData;
 pub use post_data::{PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse};
@@ -40,7 +40,7 @@ pub(crate) async fn get_sync(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     Ok(HttpResponse::Ok().json(SyncStatus {
-        anchor_block: data.sync.read().await.get_anchor(),
+        anchor_block: data.sync.read().await.get_anchor().into(),
         synced_head: data.sync.read().await.get_head(),
         node_head: get_node_head(&data.provider).await.map_err(e500)?,
     }))
@@ -134,6 +134,15 @@ pub struct SenderDetails {
 pub struct SyncStatusBlock {
     pub hash: H256,
     pub number: u64,
+}
+
+impl From<&AnchorBlock> for SyncStatusBlock {
+    fn from(val: &AnchorBlock) -> Self {
+        Self {
+            number: val.number,
+            hash: val.hash,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
