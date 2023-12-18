@@ -52,15 +52,11 @@ pub(crate) async fn post_data(
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
     data_intent.verify_signature().map_err(e400)?;
 
-    let account_balance = data
-        .sync
-        .read()
-        .await
-        .balance_with_pending(data_intent.from);
-    if account_balance < data_intent.max_cost() as i128 {
+    let balance = data.balance(data_intent.from).await;
+    if balance < data_intent.max_cost() as i128 {
         return Err(e400(eyre!(
             "Insufficient balance, current balance {} requested {}",
-            account_balance,
+            balance,
             data_intent.max_cost()
         )));
     }
@@ -138,7 +134,7 @@ pub(crate) async fn get_balance_by_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let balance = data.sync.read().await.balance_with_pending(*address);
+    let balance: i128 = data.balance(*address).await;
     Ok(HttpResponse::Ok().json(balance))
 }
 
@@ -277,6 +273,17 @@ async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
             .hash
             .ok_or_else(|| eyre!("block number {} has not hash", node_head_number))?,
     })
+}
+
+impl AppData {
+    async fn balance(&self, from: Address) -> i128 {
+        self.sync.read().await.balance_with_pending(from)
+            - self
+                .data_intent_tracker
+                .read()
+                .await
+                .pending_intents_total_cost(from) as i128
+    }
 }
 
 #[cfg(test)]

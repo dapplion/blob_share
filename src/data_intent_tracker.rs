@@ -1,6 +1,6 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use ethers::types::TxHash;
+use ethers::types::{Address, TxHash};
 use eyre::{bail, eyre, Result};
 
 use crate::{data_intent::DataIntentId, DataIntent};
@@ -19,6 +19,22 @@ pub enum DataIntentItem {
 
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
+    pub fn pending_intents_total_cost(&self, from: Address) -> u128 {
+        self.pending_intents
+            .values()
+            .map(|item| match item {
+                DataIntentItem::Pending(data_intent) => {
+                    if data_intent.from == from {
+                        data_intent.max_cost()
+                    } else {
+                        0
+                    }
+                }
+                DataIntentItem::Included(_, _) => 0,
+            })
+            .sum()
+    }
+
     pub fn get_all_pending(&self) -> Vec<DataIntent> {
         self.pending_intents
             .values()
