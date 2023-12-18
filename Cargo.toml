@@ -13,6 +13,11 @@ path = "src/main.rs"
 name = "blobshare"
 
 
+[[bin]]
+path = "src/sender/main.rs"
+name = "blobsender"
+
+
 [[bench]]
 name = "packing"
 harness = false

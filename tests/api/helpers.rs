@@ -18,7 +18,9 @@ use std::{
 use tokio::time::{sleep, timeout};
 
 use blob_share::{
-    client::DataIntentId, consumer::BlobConsumer, App, Args, BlockGasSummary, Client, DataIntent,
+    client::{DataIntentId, EthProvider, GasPreference},
+    consumer::BlobConsumer,
+    App, Args, Client,
 };
 
 use crate::{
@@ -188,32 +190,16 @@ impl TestHarness {
 
     // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
     pub async fn post_data(&self, wallet: &LocalWallet, data: Vec<u8>) -> DataIntentId {
-        // Choose data pricing correctly
-        let head_block_number = self.eth_provider.get_block_number().await.unwrap();
-        let head_block = self
-            .eth_provider
-            .get_block(head_block_number)
-            .await
-            .unwrap()
-            .expect("head block should exist");
-        let blob_gas_price_next_block = BlockGasSummary::from_block(&head_block)
-            .unwrap()
-            .blob_gas_price_next_block();
-
-        // TODO: customize, for now set gas price equal to next block
-        // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
-        let max_cost_wei = blob_gas_price_next_block;
-
         let res = self
             .client
-            .post_data(
-                &DataIntent::with_signature(wallet, data, max_cost_wei)
-                    .await
-                    .unwrap()
-                    .into(),
+            .post_data_with_wallet(
+                wallet,
+                data,
+                &GasPreference::FetchFromProvider(EthProvider::Http(self.eth_provider.clone())),
             )
             .await
             .unwrap();
+
         DataIntentId::from_str(&res.id).unwrap()
     }
 

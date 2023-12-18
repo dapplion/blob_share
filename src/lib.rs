@@ -7,10 +7,9 @@ use ethers::{
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
-use eyre::{eyre, Context, Result};
+use eyre::{eyre, Result};
 use std::{env, net::TcpListener, str::FromStr, sync::Arc};
 use tokio::sync::{Notify, RwLock};
-use url::Url;
 
 use crate::{
     blob_sender_task::blob_sender_task,
@@ -143,18 +142,7 @@ impl App {
     pub async fn build(args: Args) -> Result<Self> {
         let starting_point = StartingPoint::StartingBlock(args.starting_block);
 
-        let provider = match Url::parse(&args.eth_provider)
-            .wrap_err_with(|| format!("invalid eth_provider URL {}", args.eth_provider))?
-            .scheme()
-        {
-            "ws" | "wss" => EthProvider::new_ws(&args.eth_provider)
-                .await
-                .wrap_err_with(|| {
-                    format!("unable to connect to WS eth provider {}", args.eth_provider)
-                })?,
-            _ => EthProvider::new_http(&args.eth_provider)?,
-        };
-
+        let provider = EthProvider::new(&args.eth_provider).await?;
         let chain_id = provider.get_chainid().await?.as_u64();
 
         // TODO: read as param

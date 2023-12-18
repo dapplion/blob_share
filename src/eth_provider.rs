@@ -1,10 +1,11 @@
 use ethers::{
     providers::{Http, Middleware, Provider, ProviderError, StreamExt, Ws},
-    types::{Block, BlockId, Bytes, NameOrAddress, Transaction, TxHash, H256, U256},
+    types::{Block, BlockId, Bytes, NameOrAddress, Transaction, TxHash, H256, U256, U64},
 };
-use eyre::Result;
+use eyre::{Context, Result};
 use futures::stream::Stream;
 use std::pin::Pin;
+use url::Url;
 
 pub enum EthProvider {
     Http(Provider<Http>),
@@ -12,6 +13,22 @@ pub enum EthProvider {
 }
 
 impl EthProvider {
+    pub async fn new(http_or_ws_url: &str) -> Result<Self> {
+        Ok(
+            match Url::parse(http_or_ws_url)
+                .wrap_err_with(|| format!("invalid eth provider URL {}", http_or_ws_url))?
+                .scheme()
+            {
+                "ws" | "wss" => EthProvider::new_ws(http_or_ws_url)
+                    .await
+                    .wrap_err_with(|| {
+                        format!("unable to connect to WS eth provider {}", http_or_ws_url)
+                    })?,
+                _ => EthProvider::new_http(http_or_ws_url)?,
+            },
+        )
+    }
+
     pub fn new_http(http_url: &str) -> Result<Self> {
         Ok(Self::Http(Provider::<Http>::try_from(http_url)?))
     }
@@ -24,6 +41,13 @@ impl EthProvider {
         match self {
             EthProvider::Http(provider) => provider.get_chainid().await,
             EthProvider::Ws(provider) => provider.get_chainid().await,
+        }
+    }
+
+    pub async fn get_block_number(&self) -> Result<U64, ProviderError> {
+        match self {
+            EthProvider::Http(provider) => provider.get_block_number().await,
+            EthProvider::Ws(provider) => provider.get_block_number().await,
         }
     }
 
