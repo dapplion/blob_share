@@ -20,7 +20,7 @@ Options:
       --starting-block <STARTING_BLOCK>
           First block for service to start accounting [default: 0]
       --mnemonic <MNEMONIC>
-          Mnemonic for tx sender TODO: UNSAFE, handle hot keys better [default: "any any any any any any any any any any any any any any"]
+          Mnemonic for tx sender. If not set a random account will be generated. TODO: UNSAFE, handle hot keys better
       --panic-on-background-task-errors
           FOR TESTING ONLY: panic if a background task experiences an error for a single event
       --finalize-depth <FINALIZE_DEPTH>

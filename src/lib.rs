@@ -8,7 +8,7 @@ use ethers::{
     types::Address,
 };
 use eyre::{eyre, Context, Result};
-use std::{net::TcpListener, str::FromStr, sync::Arc};
+use std::{env, net::TcpListener, str::FromStr, sync::Arc};
 use tokio::sync::{Notify, RwLock};
 use url::Url;
 
@@ -86,13 +86,10 @@ pub struct Args {
     #[arg(long, default_value_t = 0)]
     pub starting_block: u64,
 
-    /// Mnemonic for tx sender
+    /// Mnemonic for tx sender. If not set a random account will be generated.
     /// TODO: UNSAFE, handle hot keys better
-    #[arg(
-        long,
-        default_value = "any any any any any any any any any any any any"
-    )]
-    pub mnemonic: String,
+    #[arg(long)]
+    pub mnemonic: Option<String>,
 
     /// FOR TESTING ONLY: panic if a background task experiences an error for a single event
     #[arg(long)]
@@ -162,11 +159,23 @@ impl App {
 
         // TODO: read as param
         // Child key at derivation path: m/44'/60'/0'/0/{index}
-        let wallet = MnemonicBuilder::<English>::default()
-            .phrase(args.mnemonic.as_str())
-            .index(0u32)?
-            .build()?
-            .with_chain_id(chain_id);
+        let wallet = match args.mnemonic {
+            Some(ref mnemonic) => MnemonicBuilder::<English>::default()
+                .phrase(mnemonic.as_str())
+                .build()?,
+            None => {
+                let mut rng = rand::thread_rng();
+                let dir = env::current_dir()?;
+                warn!(
+                    "USING RANDONMLY GENERATED MNEMONIC, persisted in {}",
+                    dir.to_string_lossy()
+                );
+                MnemonicBuilder::<English>::default()
+                    .write_to(dir)
+                    .build_random(&mut rng)?
+            }
+        }
+        .with_chain_id(chain_id);
         // Address to send funds to increase an account's balance
         let target_address = wallet.address();
 
