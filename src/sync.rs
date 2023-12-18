@@ -8,7 +8,10 @@ use ethers::types::{Address, Block, Transaction, TxHash, H256};
 use eyre::{bail, eyre, Result};
 use tokio::sync::RwLock;
 
-use crate::{blob_tx_data::BlobTxSummary, eth_provider::EthProvider, info, BlockGasSummary};
+use crate::{
+    blob_tx_data::BlobTxSummary, eth_provider::EthProvider, info, routes::SyncStatusBlock,
+    BlockGasSummary,
+};
 
 type Nonce = u64;
 
@@ -81,19 +84,24 @@ impl BlockSync {
         }
     }
 
-    fn get_head_number(&self) -> u64 {
+    pub fn get_head(&self) -> SyncStatusBlock {
         if let Some(head) = self.unfinalized_head_chain.last() {
-            head.number
+            SyncStatusBlock {
+                number: head.number,
+                hash: head.hash,
+            }
         } else {
-            self.anchor_block.number
+            SyncStatusBlock {
+                number: self.anchor_block.number,
+                hash: self.anchor_block.hash,
+            }
         }
     }
 
-    pub fn get_head_hash(&self) -> H256 {
-        if let Some(head) = self.unfinalized_head_chain.last() {
-            head.hash
-        } else {
-            self.anchor_block.hash
+    pub fn get_anchor(&self) -> SyncStatusBlock {
+        SyncStatusBlock {
+            number: self.anchor_block.number,
+            hash: self.anchor_block.hash,
         }
     }
 
@@ -111,7 +119,7 @@ impl BlockSync {
         assert_eq!(address, self.config.target_address);
 
         let transaction_count_at_head = provider
-            .get_transaction_count(address, self.get_head_hash())
+            .get_transaction_count(address, self.get_head().hash)
             .await?;
 
         for next_nonce in transaction_count_at_head
@@ -219,7 +227,7 @@ impl BlockSync {
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
     pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
-        let head_number = self.get_head_number();
+        let head_number = self.get_head().number;
         let new_anchor_index =
             if self.anchor_block_number() + self.config.finalize_depth < head_number {
                 self.unfinalized_head_chain

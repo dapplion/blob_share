@@ -1,3 +1,4 @@
+use ethers::types::Address;
 use eyre::{bail, Result};
 use reqwest::Response;
 use serde::{
@@ -88,4 +89,9 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
         };
         bail!("non-success response status {} body: {}", status, body);
     }
+}
+
+/// Return 0x prefixed hex representation of address (not checksum)
+pub fn address_to_hex(addr: Address) -> String {
+    format!("0x{}", hex::encode(addr.to_fixed_bytes()))
 }

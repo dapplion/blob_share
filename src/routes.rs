@@ -1,13 +1,14 @@
 use actix_web::{get, post, web, HttpResponse, Responder};
 use ethers::signers::Signer;
 use ethers::types::{Address, TxHash, H256};
-use eyre::eyre;
+use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::data_intent::{deserialize_signature, DataHash, DataIntent, DataIntentId};
 use crate::data_intent_tracker::DataIntentItemStatus;
+use crate::eth_provider::EthProvider;
 use crate::sync::TxInclusion;
 use crate::utils::{deserialize_from_hex, e400, e500, serialize_as_hex};
 use crate::AppData;
@@ -29,6 +30,17 @@ pub(crate) async fn get_sender(data: web::Data<Arc<AppData>>) -> impl Responder 
     HttpResponse::Ok().json(SenderDetails {
         address: data.sender_wallet.address(),
     })
+}
+
+#[get("/v1/sync")]
+pub(crate) async fn get_sync(
+    data: web::Data<Arc<AppData>>,
+) -> Result<HttpResponse, actix_web::Error> {
+    Ok(HttpResponse::Ok().json(SyncStatus {
+        anchor_block: data.sync.read().await.get_anchor(),
+        synced_head: data.sync.read().await.get_head(),
+        node_head: get_node_head(&data.provider).await.map_err(e500)?,
+    }))
 }
 
 #[post("/v1/data")]
@@ -132,6 +144,19 @@ pub struct SenderDetails {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncStatusBlock {
+    pub hash: H256,
+    pub number: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncStatus {
+    pub anchor_block: SyncStatusBlock,
+    pub synced_head: SyncStatusBlock,
+    pub node_head: SyncStatusBlock,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataResponse {
     pub id: String,
 }
@@ -217,6 +242,21 @@ impl DataIntentStatus {
             } => Some((*tx_hash, *block_hash)),
         }
     }
+}
+
+/// Fetch execution node head block number and hash
+async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
+    let node_head_number = provider.get_block_number().await?.as_u64();
+    let node_head_block = provider
+        .get_block(node_head_number)
+        .await?
+        .ok_or_else(|| eyre!("no block for number {}", node_head_number))?;
+    Ok(SyncStatusBlock {
+        number: node_head_number,
+        hash: node_head_block
+            .hash
+            .ok_or_else(|| eyre!("block number {} has not hash", node_head_number))?,
+    })
 }
 
 #[cfg(test)]
