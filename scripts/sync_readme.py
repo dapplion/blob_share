@@ -6,7 +6,7 @@ tag_start = "<!-- HELP_START -->"
 tag_end = "<!-- HELP_END -->"
 readme_file = "README.md"
 
-help_text = subprocess.check_output(['cargo', 'run', '--', '--help']).decode('utf-8')
+help_text = subprocess.check_output(['cargo', 'run', '--bin', 'blobshare', '--', '--help']).decode('utf-8')
 
 with open(readme_file, 'r') as file:
     data = file.read()
