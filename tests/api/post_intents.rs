@@ -105,7 +105,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
         .get_data_by_id(&intent_1_id)
         .await
         .unwrap();
-    assert_eq!(intent_1.data, data_1);
+    assert_eq!(intent_1.data(), data_1);
 
     // Check balance has decreased
     let balance_after_intent_1 = test_harness

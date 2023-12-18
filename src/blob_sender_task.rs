@@ -178,7 +178,7 @@ fn select_next_blob_items(
 ) -> Option<Vec<DataIntent>> {
     let items: Vec<Item> = data_intents
         .iter()
-        .map(|e| (e.data.len(), e.max_blob_gas_price))
+        .map(|e| (e.data().len(), e.max_blob_gas_price()))
         .collect::<Vec<_>>();
 
     pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {
@@ -192,9 +192,9 @@ fn select_next_blob_items(
 
 #[cfg(test)]
 mod tests {
-    use ethers::types::{Signature, H160};
+    use ethers::types::H160;
 
-    use crate::{DataIntent, MAX_USABLE_BLOB_DATA_LEN};
+    use crate::{data_intent::DataIntentNoSignature, DataIntent, MAX_USABLE_BLOB_DATA_LEN};
 
     use super::select_next_blob_items;
 
@@ -256,10 +256,9 @@ mod tests {
         items.map(|mut items| {
             // Sort for stable comparision
             items.sort_by(|a, b| {
-                a.data
-                    .len()
-                    .cmp(&b.data.len())
-                    .then_with(|| b.max_blob_gas_price.cmp(&a.max_blob_gas_price))
+                a.data_len()
+                    .cmp(&b.data_len())
+                    .then_with(|| b.max_blob_gas_price().cmp(&a.max_blob_gas_price()))
             });
 
             items
@@ -267,8 +266,8 @@ mod tests {
                 .map(|d| {
                     format!(
                         "(MAX / {}, {})",
-                        MAX_USABLE_BLOB_DATA_LEN / d.data.len(),
-                        d.max_blob_gas_price
+                        MAX_USABLE_BLOB_DATA_LEN / d.data_len(),
+                        d.max_blob_gas_price()
                     )
                 })
                 .collect()
@@ -283,16 +282,12 @@ mod tests {
     }
 
     fn generate_data_intent(data_len: usize, max_blob_gas_price: u128) -> DataIntent {
-        DataIntent {
+        DataIntent::NoSignature(DataIntentNoSignature {
             from: H160([0xff; 20]),
             data: vec![0xbb; data_len],
             data_hash: [0xaa; 32].into(),
-            signature: Signature {
-                r: 0.into(),
-                s: 0.into(),
-                v: 0,
-            },
+            nonce: 0,
             max_blob_gas_price,
-        }
+        })
     }
 }

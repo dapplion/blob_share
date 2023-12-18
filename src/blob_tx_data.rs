@@ -31,14 +31,14 @@ impl BlobTxSummary {
 
     pub fn cost_to_participant(
         &self,
-        address: Address,
+        address: &Address,
         block_base_fee_per_gas: Option<u128>,
         blob_gas_price: Option<u128>,
     ) -> u128 {
         let mut cost: u128 = 0;
 
         for participant in &self.participants {
-            if participant.address == address {
+            if &participant.address == address {
                 let unused_bytes = BYTES_PER_BLOB.saturating_sub(self.used_bytes);
                 // Max product here is half blob unsued, half used by a single participant. Max
                 // blob size is 2**17, so the max intermediary value is 2**16 * 2**16 = 2**32
@@ -63,6 +63,13 @@ impl BlobTxSummary {
         } else {
             self.max_fee_per_gas
         }
+    }
+
+    pub fn participation_count_from(&self, from: &Address) -> usize {
+        self.participants
+            .iter()
+            .filter(|participant| &participant.address == from)
+            .count()
     }
 
     pub fn from_tx(tx: &Transaction) -> Result<Option<BlobTxSummary>> {
@@ -199,7 +206,7 @@ mod tests {
     fn test_cost_to_participant(address: u8, participants: &[(u8, usize)], expected_cost: usize) {
         assert_eq!(
             generate_blob_tx_summary(&participants).cost_to_participant(
-                gen_addr(address),
+                &gen_addr(address),
                 None,
                 None
             ),
