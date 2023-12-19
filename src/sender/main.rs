@@ -6,6 +6,7 @@ use blob_share::client::{
     Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference, NoncePreference,
 };
 use clap::Parser;
+use dotenv::dotenv;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer};
@@ -50,6 +51,7 @@ pub struct Args {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    dotenv().ok();
     let args = Args::parse();
     let client = Client::new(&args.url)?;
 
