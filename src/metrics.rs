@@ -93,6 +93,8 @@ pub(crate) async fn get_metrics(
     req: HttpRequest,
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
+    debug!("{:?}", req.headers());
+
     // > Authorization: Bearer 12345678:AABBAABABABA==
     if let Some(expected_bearer_token) = &data.config.metrics_server_bearer_token {
         let bearer_token = extract_bearer_token(&req).map_err(e400)?;
