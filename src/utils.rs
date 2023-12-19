@@ -4,6 +4,7 @@ use reqwest::Response;
 use std::cmp::PartialEq;
 use std::fmt::{Debug, Display};
 use std::ops::{Add, Div, Mul};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Return an opaque 500 while preserving the error root's cause for logging.
 #[allow(dead_code)]
@@ -59,4 +60,12 @@ pub fn address_to_hex(addr: Address) -> String {
 /// Deserialize ethers' Signature
 pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
     Ok(signature.try_into()?)
+}
+
+/// Return unix timestamp in milliseconds
+pub fn unix_timestamps_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis()
 }

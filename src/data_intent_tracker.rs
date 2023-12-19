@@ -38,23 +38,6 @@ impl DataIntentTracker {
             .sum()
     }
 
-    /// Returns the max nonce out of all pending intents
-    pub fn pending_nonces(&self, from: &Address) -> Vec<u64> {
-        self.pending_intents
-            .values()
-            .filter_map(|item| match item {
-                DataIntentItem::Pending(data_intent) => {
-                    if data_intent.from() == from {
-                        Some(data_intent.nonce())
-                    } else {
-                        None
-                    }
-                }
-                DataIntentItem::Evicted | DataIntentItem::Included(_, _) => None,
-            })
-            .collect()
-    }
-
     pub fn get_all_pending(&self) -> Vec<DataIntent> {
         self.pending_intents
             .values()
@@ -98,7 +81,7 @@ impl DataIntentTracker {
         }
     }
 
-    pub fn mark_items_as_pending(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
+    pub fn include_in_blob_tx(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
         for id in ids {
             match self.pending_intents.remove(id) {
                 None => bail!("pending intent removed while moving into pending {}", id),

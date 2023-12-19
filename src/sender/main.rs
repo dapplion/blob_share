@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
 
     let gas =
         GasPreference::RelativeToHead(EthProvider::Http(provider), args.blob_gas_price_factor);
-    let nonce = NoncePreference::FetchFromApi;
+    let nonce = NoncePreference::Timebased;
 
     let response = client
         .post_data_with_wallet(&wallet, data, &gas, &nonce)

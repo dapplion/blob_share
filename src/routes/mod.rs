@@ -116,12 +116,12 @@ pub(crate) async fn get_balance_by_address(
     Ok(HttpResponse::Ok().json(balance))
 }
 
-#[get("/v1/nonce/{address}")]
-pub(crate) async fn get_nonce_by_address(
+#[get("/v1/last_seen_nonce/{address}")]
+pub(crate) async fn get_last_seen_nonce_by_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let nonce: u64 = data.nonce_of_user(&address).await;
+    let nonce: Option<u128> = data.sign_nonce_tracker.read().await.get(&address).copied();
     Ok(HttpResponse::Ok().json(nonce))
 }
 
@@ -219,17 +219,5 @@ impl AppData {
                 .read()
                 .await
                 .pending_intents_total_cost(from) as i128
-    }
-
-    async fn nonce_of_user(&self, from: &Address) -> u64 {
-        let mut next_nonce = self.sync.read().await.participant_count_of_user(from);
-        let nonces_pending = self.data_intent_tracker.read().await.pending_nonces(from);
-
-        loop {
-            if !nonces_pending.contains(&next_nonce) {
-                return next_nonce;
-            }
-            next_nonce += 1;
-        }
     }
 }

@@ -8,7 +8,9 @@ use ethers::{
     types::Address,
 };
 use eyre::{bail, eyre, Context, Result};
-use std::{env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap, env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
+};
 use tokio::{
     fs,
     sync::{Notify, RwLock},
@@ -19,7 +21,8 @@ use crate::{
     block_subscriber_task::block_subscriber_task,
     routes::{
         get_balance_by_address, get_data, get_data_by_id, get_health, get_home,
-        get_nonce_by_address, get_sender, get_status_by_id, get_sync, post_data::post_data,
+        get_last_seen_nonce_by_address, get_sender, get_status_by_id, get_sync,
+        post_data::post_data,
     },
     sync::{AnchorBlock, BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
@@ -132,6 +135,8 @@ struct AppConfig {
 struct AppData {
     kzg_settings: c_kzg::KzgSettings,
     data_intent_tracker: RwLock<DataIntentTracker>,
+    // TODO: Store in remote DB persisting
+    sign_nonce_tracker: RwLock<HashMap<Address, u128>>,
     sync: RwLock<BlockSync>,
     provider: EthProvider,
     sender_wallet: LocalWallet,
@@ -224,6 +229,7 @@ impl App {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
             data_intent_tracker: <_>::default(),
+            sign_nonce_tracker: <_>::default(),
             sync: sync.into(),
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
@@ -261,7 +267,7 @@ impl App {
                 .service(get_data_by_id)
                 .service(get_status_by_id)
                 .service(get_balance_by_address)
-                .service(get_nonce_by_address)
+                .service(get_last_seen_nonce_by_address)
         })
         .listen(listener)?
         .run();
@@ -326,6 +332,5 @@ async fn anchor_block_from_starting_block(
         gas: BlockGasSummary::from_block(&anchor_block)?,
         // At genesis all balances are zero
         finalized_balances: <_>::default(),
-        finalized_user_participation_count: <_>::default(),
     })
 }

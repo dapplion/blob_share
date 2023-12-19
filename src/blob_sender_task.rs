@@ -6,7 +6,7 @@ use eyre::{Context, Result};
 use crate::{
     debug, error,
     gas::GasConfig,
-    kzg::{construct_blob_tx, TxParams},
+    kzg::{construct_blob_tx, BlobTx, TxParams},
     packing::{pack_items, Item},
     warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
 };
@@ -17,10 +17,15 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 
         loop {
             match maybe_send_blob_tx(app_data.clone()).await {
-                // Loop again to try to create another blob transaction
-                Ok(SendResult::SentBlobTx) => continue,
-                // Break out of inner loop and wait for new notification
-                Ok(SendResult::NoViableSet) | Ok(SendResult::NoNonceAvailable) => break,
+                Ok(outcome) => {
+                    debug!("send blob task outcome {outcome:?}");
+                    match outcome {
+                        // Loop again to try to create another blob transaction
+                        SendResult::SentBlobTx => continue,
+                        // Break out of inner loop and wait for new notification
+                        SendResult::NoViableSet | SendResult::NoNonceAvailable => break,
+                    }
+                }
                 Err(e) => {
                     if app_data.config.panic_on_background_task_errors {
                         return Err(e);
@@ -35,6 +40,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum SendResult {
     NoViableSet,
     SentBlobTx,
@@ -51,10 +57,15 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
 
     let next_blob_items = {
         let items = app_data.data_intent_tracker.read().await.get_all_pending();
+        debug!(
+            "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
+            max_fee_per_blob_gas,
+            items.len()
+        );
+
         if let Some(next_blob_items) = select_next_blob_items(&items, max_fee_per_blob_gas) {
             next_blob_items
         } else {
-            debug!("no viable set of items for blob, out of {}", items.len());
             return Ok(SendResult::NoViableSet);
         }
     };
@@ -94,6 +105,48 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         return Ok(SendResult::NoNonceAvailable);
     };
 
+    let blob_tx =
+        match construct_and_send_tx(app_data.clone(), nonce, &gas_config, next_blob_items).await {
+            Ok(blob_tx) => blob_tx,
+            Err(e) => {
+                app_data
+                    .sync
+                    .write()
+                    .await
+                    .unreserve_nonce(sender_address, nonce);
+                return Err(e);
+            }
+        };
+
+    // TODO: Assumes this function is never called concurrently. Therefore it can afford to
+    // register the transaction when it has been accepted by the execution node. If this function
+    // can be called concurrently it should mark the items as 'Pending' before sending the
+    // transaction to the execution client, and remove them if there's an error.
+    //
+    // Declare items as pending on the computed tx_hash
+    {
+        // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
+        // is consistent in both structs
+        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
+        let mut sync = app_data.sync.write().await;
+        data_intent_tracker
+            .include_in_blob_tx(&data_intent_ids, blob_tx.tx_hash)
+            .wrap_err("consistency error with blob_tx intents")?;
+        sync.register_pending_blob_tx(blob_tx.tx_summary)
+            .wrap_err("consistency error with blob_tx")?;
+    }
+
+    Ok(SendResult::SentBlobTx)
+}
+
+async fn construct_and_send_tx(
+    app_data: Arc<AppData>,
+    nonce: u64,
+    gas_config: &GasConfig,
+    next_blob_items: Vec<DataIntent>,
+) -> Result<BlobTx> {
+    let intent_ids = next_blob_items.iter().map(|i| i.id()).collect::<Vec<_>>();
+
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
         nonce,
@@ -102,15 +155,15 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     let blob_tx = construct_blob_tx(
         &app_data.kzg_settings,
         &app_data.publish_config,
-        &gas_config,
+        gas_config,
         &tx_params,
         &app_data.sender_wallet,
         next_blob_items,
     )?;
 
     debug!(
-        "sending blob transaction {}: {:?}",
-        blob_tx.tx_hash, blob_tx.tx_summary
+        "sending blob transaction {} with intents {:?}: {:?}",
+        blob_tx.tx_hash, intent_ids, blob_tx.tx_summary
     );
 
     // TODO: do not await here, spawn another task
@@ -125,7 +178,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
                     "invalid_tx_blob_networking_{}.rlp",
                     hex::encode(blob_tx.tx_hash)
                 ),
-                blob_tx.blob_tx_networking,
+                blob_tx.blob_tx_networking.clone(),
             ) {
                 warn!(
                     "error persisting invalid tx {} {e:?}",
@@ -148,26 +201,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         );
     }
 
-    // TODO: Assumes this function is never called concurrently. Therefore it can afford to
-    // register the transaction when it has been accepted by the execution node. If this function
-    // can be called concurrently it should mark the items as 'Pending' before sending the
-    // transaction to the execution client, and remove them if there's an error.
-    //
-    // Declare items as pending on the computed tx_hash
-    app_data
-        .data_intent_tracker
-        .write()
-        .await
-        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
-        .wrap_err("consistency error with blob_tx intents")?;
-    app_data
-        .sync
-        .write()
-        .await
-        .register_pending_blob_tx(blob_tx.tx_summary)
-        .wrap_err("consistency error with blob_tx")?;
-
-    Ok(SendResult::SentBlobTx)
+    Ok(blob_tx)
 }
 
 // TODO: write optimizer algo to find a better distribution
@@ -286,7 +320,6 @@ mod tests {
             from: H160([0xff; 20]),
             data: vec![0xbb; data_len],
             data_hash: [0xaa; 32].into(),
-            nonce: 0,
             max_blob_gas_price,
         })
     }
