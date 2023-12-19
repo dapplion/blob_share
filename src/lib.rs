@@ -10,15 +10,18 @@ use ethers::{
 use eyre::{bail, eyre, Context, Result};
 use std::{
     collections::HashMap, env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
+    time::Duration,
 };
 use tokio::{
     fs,
     sync::{Notify, RwLock},
 };
+use url::Url;
 
 use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
+    metrics::{get_metrics, push_metrics_task},
     routes::{
         get_balance_by_address, get_data, get_data_by_id, get_health, get_home,
         get_last_seen_nonce_by_address, get_sender, get_status_by_id, get_sync,
@@ -26,6 +29,7 @@ use crate::{
     },
     sync::{AnchorBlock, BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
+    utils::parse_basic_auth,
 };
 
 pub mod beacon_api_client;
@@ -39,6 +43,7 @@ mod data_intent_tracker;
 mod eth_provider;
 mod gas;
 mod kzg;
+mod metrics;
 pub mod packing;
 mod reth_fork;
 mod routes;
@@ -50,6 +55,7 @@ pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
 pub use data_intent::DataIntent;
 pub use gas::BlockGasSummary;
+pub use metrics::{PushMetricsConfig, PushMetricsFormat};
 pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
@@ -115,6 +121,29 @@ pub struct Args {
     /// underpriced in volatile network conditions.
     #[arg(long, default_value_t = 6)]
     pub max_pending_transactions: u64,
+
+    /// Enable serving metrics
+    #[arg(long)]
+    pub metrics: bool,
+    /// Metrics server port. If it's the same as the main server it will be served there
+    #[arg(long, default_value_t = 9000)]
+    pub metrics_port: u16,
+    /// Require callers to the /metrics endpoint to add Bearer token auth
+    #[arg(long)]
+    pub metrics_bearer_token: Option<String>,
+
+    /// Enable prometheus push gateway to the specified URL
+    #[arg(long)]
+    pub metrics_push_url: Option<String>,
+    /// Customize push gateway frequency
+    #[arg(long, default_value_t = 15)]
+    pub metrics_push_interval_sec: u64,
+    /// Provide Basic Auth for push gateway requests
+    #[arg(long)]
+    pub metrics_push_basic_auth: Option<String>,
+    /// Format to send push gateway metrics
+    #[arg(long, value_enum, default_value_t = PushMetricsFormat::Protobuf)]
+    pub metrics_push_format: PushMetricsFormat,
 }
 
 impl Args {
@@ -130,6 +159,8 @@ struct PublishConfig {
 struct AppConfig {
     panic_on_background_task_errors: bool,
     anchor_block_filepath: PathBuf,
+    metrics_server_bearer_token: Option<String>,
+    metrics_push: Option<PushMetricsConfig>,
 }
 
 struct AppData {
@@ -240,6 +271,25 @@ impl App {
             config: AppConfig {
                 panic_on_background_task_errors: args.panic_on_background_task_errors,
                 anchor_block_filepath,
+                metrics_server_bearer_token: args.metrics_push_basic_auth.clone(),
+                metrics_push: if let Some(url) = &args.metrics_push_url {
+                    Some(PushMetricsConfig {
+                        url: Url::parse(url)
+                            .wrap_err_with(|| format!("invalid push gateway URL {url}"))?,
+                        basic_auth: if let Some(auth) = &args.metrics_push_basic_auth {
+                            Some(
+                                parse_basic_auth(auth)
+                                    .wrap_err_with(|| "invalid push gateway auth")?,
+                            )
+                        } else {
+                            None
+                        },
+                        interval: Duration::from_secs(args.metrics_push_interval_sec),
+                        format: args.metrics_push_format,
+                    })
+                } else {
+                    None
+                },
             },
         });
 
@@ -255,7 +305,7 @@ impl App {
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
-            actix_web::App::new()
+            let app = actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
                 .service(get_home)
@@ -267,10 +317,26 @@ impl App {
                 .service(get_data_by_id)
                 .service(get_status_by_id)
                 .service(get_balance_by_address)
-                .service(get_last_seen_nonce_by_address)
+                .service(get_last_seen_nonce_by_address);
+
+            // Conditionally register the metrics route
+            if args.metrics && args.metrics_port == args.port {
+                info!("enabling metrics on server port");
+                if args.metrics_bearer_token.is_none() {
+                    warn!("UNSAFE: metrics exposed on the server port without auth");
+                }
+                app.service(get_metrics)
+            } else {
+                app
+            }
         })
         .listen(listener)?
         .run();
+
+        // TODO: serve metrics on different port
+        if args.metrics && args.metrics_port != args.port {
+            todo!("serve metrics on different port");
+        }
 
         Ok(App {
             port: listener_port,
@@ -285,6 +351,7 @@ impl App {
             run_server(self.server),
             blob_sender_task(self.data.clone()),
             block_subscriber_task(self.data.clone()),
+            push_metrics_task(self.data.config.metrics_push.clone()),
         )?;
         Ok(())
     }

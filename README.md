@@ -29,6 +29,20 @@ Options:
           Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than this depth, the app will crash and expect to re-sync on restart [default: 64]
       --max-pending-transactions <MAX_PENDING_TRANSACTIONS>
           Max count of pending transactions that will be sent before waiting for inclusion of the previously sent transactions. A number higher than the max count of blobs per block should not result better UX. However, a higher number risks creating transactions that can become underpriced in volatile network conditions [default: 6]
+      --metrics
+          Enable serving metrics
+      --metrics-port <METRICS_PORT>
+          Metrics server port. If it's the same as the main server it will be served there [default: 9000]
+      --metrics-bearer-token <METRICS_BEARER_TOKEN>
+          Require callers to the /metrics endpoint to add Bearer token auth
+      --metrics-push-url <METRICS_PUSH_URL>
+          Enable prometheus push gateway to the specified URL
+      --metrics-push-interval-sec <METRICS_PUSH_INTERVAL_SEC>
+          Customize push gateway frequency [default: 15]
+      --metrics-push-basic-auth <METRICS_PUSH_BASIC_AUTH>
+          Provide Basic Auth for push gateway requests
+      --metrics-push-format <METRICS_PUSH_FORMAT>
+          Format to send push gateway metrics [default: protobuf] [possible values: protobuf, plain-text]
   -h, --help
           Print help
   -V, --version

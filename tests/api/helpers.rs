@@ -21,7 +21,7 @@ use tokio::time::{sleep, timeout};
 use blob_share::{
     client::{DataIntentId, EthProvider, GasPreference, NoncePreference},
     consumer::BlobConsumer,
-    App, Args, Client,
+    App, Args, Client, PushMetricsFormat,
 };
 
 use crate::{
@@ -117,6 +117,13 @@ impl TestHarness {
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
             max_pending_transactions: 6,
+            metrics: false,
+            metrics_port: 0,
+            metrics_bearer_token: None,
+            metrics_push_url: None,
+            metrics_push_interval_sec: 15,
+            metrics_push_basic_auth: None,
+            metrics_push_format: PushMetricsFormat::PlainText,
         };
 
         let app = App::build(args).await.unwrap();
