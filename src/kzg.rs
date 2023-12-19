@@ -225,7 +225,7 @@ mod tests {
         for i in 0..2 {
             let wallet = LocalWallet::from_bytes(&[i + 1; 32])?;
             data_intents.push(
-                DataIntent::with_signature(&wallet, vec![i + 0x10; 1000 * i as usize], 0, 1)
+                DataIntent::with_signature(&wallet, vec![i + 0x10; 1000 * i as usize], 1)
                     .await
                     .unwrap(),
             );

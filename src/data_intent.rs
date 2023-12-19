@@ -23,7 +23,6 @@ pub struct DataIntentNoSignature {
     pub from: Address,
     pub data: Vec<u8>,
     pub data_hash: DataHash,
-    pub nonce: u64,
     pub max_blob_gas_price: u128,
 }
 
@@ -32,7 +31,6 @@ pub struct DataIntentWithSignature {
     pub from: Address,
     pub data: Vec<u8>,
     pub data_hash: DataHash,
-    pub nonce: u64,
     pub max_blob_gas_price: u128,
     pub signature: Signature,
 }
@@ -74,17 +72,9 @@ impl DataIntent {
         }
     }
 
-    pub fn nonce(&self) -> u64 {
-        match self {
-            DataIntent::NoSignature(d) => d.nonce,
-            DataIntent::WithSignature(d) => d.nonce,
-        }
-    }
-
     pub async fn with_signature(
         wallet: &LocalWallet,
         data: Vec<u8>,
-        nonce: u64,
         max_blob_gas_price: u128,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
@@ -94,7 +84,6 @@ impl DataIntent {
             from: wallet.address(),
             data,
             data_hash,
-            nonce,
             signature,
             max_blob_gas_price,
         }))
@@ -133,12 +122,18 @@ impl From<&DataIntent> for DataIntentSummary {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct DataIntentId(Address, DataHash);
 
 impl DataIntentId {
     fn new(from: Address, data_hash: DataHash) -> Self {
         Self(from, data_hash)
+    }
+}
+
+impl std::fmt::Debug for DataIntentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "v1-{}-{}", hex::encode(self.0), hex::encode(self.1 .0))
     }
 }
 

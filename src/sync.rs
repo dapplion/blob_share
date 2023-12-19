@@ -168,33 +168,6 @@ impl BlockSync {
         finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
     }
 
-    /// Return the total count of user participations on the current head chain + pending
-    /// transactions.
-    pub fn participant_count_of_user(&self, from: &Address) -> u64 {
-        let participation_count_block_inclusions = self
-            .unfinalized_head_chain
-            .iter()
-            .map(|block| block.participation_count_of_user(from))
-            .sum::<usize>();
-
-        let participation_count_tx_inclusions = self
-            .pending_transactions
-            .values()
-            .map(|tx| tx.participation_count_from(from))
-            .sum::<usize>();
-
-        let finalized_participation_count = self
-            .anchor_block
-            .finalized_user_participation_count
-            .get(from)
-            .copied()
-            .unwrap_or(0);
-
-        participation_count_block_inclusions as u64
-            + participation_count_tx_inclusions as u64
-            + finalized_participation_count
-    }
-
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
         for block in self.unfinalized_head_chain.iter() {
             for tx in &block.blob_txs {
@@ -508,17 +481,12 @@ pub struct AnchorBlock {
     pub number: u64,
     pub gas: BlockGasSummary,
     pub finalized_balances: HashMap<Address, i128>,
-    pub finalized_user_participation_count: HashMap<Address, u64>,
 }
 
 impl AnchorBlock {
     fn apply_finalized_block(&mut self, block: &BlockSummary) {
         for from in block.get_all_participants() {
             *self.finalized_balances.entry(from).or_insert(0) += block.balance_delta(&from);
-            *self
-                .finalized_user_participation_count
-                .entry(from)
-                .or_insert(0) += block.participation_count_of_user(&from) as u64
         }
 
         self.hash = block.hash;
@@ -600,13 +568,6 @@ impl BlockSummary {
         }
 
         balance_delta
-    }
-
-    fn participation_count_of_user(&self, from: &Address) -> usize {
-        self.blob_txs
-            .iter()
-            .map(|tx| tx.participation_count_from(from))
-            .sum()
     }
 
     /// Return all user addresses from topups and blob tx participations
@@ -953,7 +914,6 @@ mod tests {
                 number,
                 gas: BlockGasSummary::default(),
                 finalized_balances: <_>::default(),
-                finalized_user_participation_count: <_>::default(),
             },
         ))
     }

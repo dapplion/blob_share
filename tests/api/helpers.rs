@@ -208,7 +208,7 @@ impl TestHarness {
                 wallet,
                 data,
                 &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
-                &nonce.unwrap_or(NoncePreference::FetchFromApi),
+                &nonce.unwrap_or(NoncePreference::Timebased),
             )
             .await
             .unwrap();

@@ -320,7 +320,6 @@ mod tests {
             from: H160([0xff; 20]),
             data: vec![0xbb; data_len],
             data_hash: [0xaa; 32].into(),
-            nonce: 0,
             max_blob_gas_price,
         })
     }

@@ -8,7 +8,7 @@ use url::Url;
 pub use crate::eth_provider::EthProvider;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
 pub use crate::{data_intent::DataIntentId, DataIntent};
-use crate::{data_intent::DataIntentSummary, routes::SyncStatus};
+use crate::{data_intent::DataIntentSummary, routes::SyncStatus, utils::unix_timestamps_millis};
 use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex};
 use crate::{utils::is_ok_response, BlockGasSummary};
 
@@ -38,10 +38,8 @@ impl Client {
         // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
         let max_blob_gas_price = gas.max_blob_gas_price().await?;
 
-        // TODO: Consider exposing different nonce options.
-        // TODO: Is it safe to query to nonce from the server?
         let nonce = match nonce {
-            NoncePreference::FetchFromApi => self.get_nonce_by_address(wallet.address()).await?,
+            NoncePreference::Timebased => unix_timestamps_millis(),
             NoncePreference::Value(nonce) => *nonce,
         };
 
@@ -50,9 +48,9 @@ impl Client {
             PostDataIntentV1 {
                 from: wallet.address(),
                 data,
-                nonce,
                 max_blob_gas_price,
             },
+            Some(nonce),
         )
         .await?;
 
@@ -119,10 +117,10 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_nonce_by_address(&self, address: Address) -> Result<u64> {
+    pub async fn get_last_seen_nonce_by_address(&self, address: Address) -> Result<Option<u128>> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/nonce/{}", address_to_hex(address))))
+            .get(&self.url(&format!("v1/last_seen_nonce/{}", address_to_hex(address))))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -166,6 +164,6 @@ impl GasPreference {
 }
 
 pub enum NoncePreference {
-    FetchFromApi,
-    Value(u64),
+    Timebased,
+    Value(u128),
 }

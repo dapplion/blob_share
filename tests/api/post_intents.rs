@@ -210,7 +210,7 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                             .post_data(
                                 &wallet.signer(),
                                 data.to_vec(),
-                                Some(NoncePreference::Value(i as u64)),
+                                Some(NoncePreference::Value(i as u128)),
                             )
                             .await,
                     )

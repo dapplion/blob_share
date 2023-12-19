@@ -38,23 +38,6 @@ impl DataIntentTracker {
             .sum()
     }
 
-    /// Returns the max nonce out of all pending intents
-    pub fn pending_nonces(&self, from: &Address) -> Vec<u64> {
-        self.pending_intents
-            .values()
-            .filter_map(|item| match item {
-                DataIntentItem::Pending(data_intent) => {
-                    if data_intent.from() == from {
-                        Some(data_intent.nonce())
-                    } else {
-                        None
-                    }
-                }
-                DataIntentItem::Evicted | DataIntentItem::Included(_, _) => None,
-            })
-            .collect()
-    }
-
     pub fn get_all_pending(&self) -> Vec<DataIntent> {
         self.pending_intents
             .values()
