@@ -40,10 +40,11 @@ pub(crate) async fn post_data(
     }
 
     debug!(
-        "accepted data intent from {} nonce {} data_len {}",
+        "accepted data intent from {} nonce {} data_len {} id {}",
         data_intent.from(),
         data_intent.nonce(),
         data_intent.data_len(),
+        data_intent.id(),
     );
 
     // data_intent_tracker ensures no duplicates at this point, everything before this statement
