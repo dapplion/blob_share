@@ -15,7 +15,7 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::Method;
 use url::Url;
 
-use crate::utils::{e400, e500, extract_bearer_token, is_ok_response, BasicAuthentication};
+use crate::utils::{e500, extract_bearer_token, is_ok_response, BasicAuthentication};
 use crate::AppData;
 
 lazy_static! {
@@ -93,11 +93,12 @@ pub(crate) async fn get_metrics(
     req: HttpRequest,
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    debug!("{:?}", req.headers());
+    debug!("{:?} {:?}", req.uri(), req.headers());
 
     // > Authorization: Bearer 12345678:AABBAABABABA==
     if let Some(expected_bearer_token) = &data.config.metrics_server_bearer_token {
-        let bearer_token = extract_bearer_token(&req).map_err(e400)?;
+        let bearer_token =
+            extract_bearer_token(&req).map_err(actix_web::error::ErrorUnauthorized)?;
         if &bearer_token != expected_bearer_token {
             return Ok(HttpResponse::Unauthorized().finish());
         }
