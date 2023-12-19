@@ -23,9 +23,9 @@ lazy_static! {
     // Block subscriber task
     //
     pub(crate) static ref BLOCK_SUBSCRIBER_TASK_TIMES: Histogram =
-        register_histogram!("blobshare_block_subscriber_task_duration_seconds", "-").unwrap();
+        register_histogram!("blobshare_block_subscriber_task_duration_seconds", "block subscriber task duration").unwrap();
     pub(crate) static ref BLOCK_SUBSCRIBER_TASK_ERRORS: Counter =
-        register_counter!("blobshare_block_subscriber_task_errors", "-").unwrap();
+        register_counter!("blobshare_block_subscriber_task_errors", "block subscriber task errors").unwrap();
     pub(crate) static ref SYNC_BLOCK_KNOWN: Counter = register_counter!(
         "blobshare_sync_block_known",
         "Total count of attempts to import a known block"
@@ -48,32 +48,32 @@ lazy_static! {
     )
     .unwrap();
     pub(crate) static ref SYNC_BLOB_TXS_SYNCED: Counter =
-        register_counter!("blobshare_sync_blob_txs_synced_total", "-").unwrap();
+        register_counter!("blobshare_sync_blob_txs_synced_total", "sync blob txs synced total").unwrap();
     pub(crate) static ref SYNC_HEAD_NUMBER: Gauge =
-        register_gauge!("blobshare_sync_head_number", "-").unwrap();
+        register_gauge!("blobshare_sync_head_number", "sync head number").unwrap();
     pub(crate) static ref SYNC_ANCHOR_NUMBER: Gauge =
-        register_gauge!("blobshare_sync_anchor_number", "-").unwrap();
+        register_gauge!("blobshare_sync_anchor_number", "sync anchor number").unwrap();
     pub(crate) static ref UNDERPRICED_TXS_EVICTED: Counter =
-        register_counter!("blobshare_underpriced_txs_evicted_total", "-").unwrap();
+        register_counter!("blobshare_underpriced_txs_evicted_total", "underpriced txs evicted total").unwrap();
     pub(crate) static ref UNDERPRICED_INTENTS_EVICTED: Counter =
-        register_counter!("blobshare_underpriced_intents_evicted_total", "-").unwrap();
+        register_counter!("blobshare_underpriced_intents_evicted_total", "underpriced intents evicted total").unwrap();
     pub(crate) static ref FINALIZED_TXS: Counter =
-        register_counter!("blobshare_finalized_txs_total", "-").unwrap();
+        register_counter!("blobshare_finalized_txs_total", "finalized txs total").unwrap();
     //
     // Blob sender task
     //
     pub(crate) static ref BLOB_SENDER_TASK_TIMES: Histogram =
-        register_histogram!("blobshare_blob_sender_task_duration_seconds", "-").unwrap();
+        register_histogram!("blobshare_blob_sender_task_duration_seconds", "blob sender task duration seconds").unwrap();
     pub(crate) static ref BLOB_SENDER_TASK_ERRORS: Counter =
-        register_counter!("blobshare_blob_sender_task_errors", "-").unwrap();
+        register_counter!("blobshare_blob_sender_task_errors", "blob sender task errors").unwrap();
     pub(crate) static ref PACKING_TIMES: Histogram =
-        register_histogram!("blobshare_packing_seconds", "-").unwrap();
+        register_histogram!("blobshare_packing_seconds", "packing seconds").unwrap();
     pub(crate) static ref PACKED_BLOB_ITEMS: Histogram = register_histogram!(
-        "blob_share_packed_blob_items", "-",
+        "blob_share_packed_blob_items", "packed blob items",
         vec![1.,2.,3.,4.,6.,8.,12.,16.,24.,32.]
     ).unwrap();
     pub(crate) static ref PACKED_BLOB_USED_LEN: Histogram = register_histogram!(
-        "blob_share_packed_blob_used_len", "-",
+        "blob_share_packed_blob_used_len", "packed blob used len",
         //   1/8     1/4     1/2     0.6     0.7     0.8      0.9      1
         vec![16384., 32768., 65536., 78643., 91750., 104857., 117964., 131072.]
     ).unwrap();

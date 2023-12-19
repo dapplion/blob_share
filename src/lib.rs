@@ -271,7 +271,7 @@ impl App {
             config: AppConfig {
                 panic_on_background_task_errors: args.panic_on_background_task_errors,
                 anchor_block_filepath,
-                metrics_server_bearer_token: args.metrics_push_basic_auth.clone(),
+                metrics_server_bearer_token: args.metrics_bearer_token.clone(),
                 metrics_push: if let Some(url) = &args.metrics_push_url {
                     Some(PushMetricsConfig {
                         url: Url::parse(url)
