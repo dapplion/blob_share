@@ -78,71 +78,71 @@ pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Name of the person to greet
-    #[arg(short, long, default_value_t = 5000)]
+    #[arg(env, short, long, default_value_t = 5000)]
     pub port: u16,
 
     /// Number of times to greet
-    #[arg(short, long, default_value = "127.0.0.1")]
+    #[arg(env, short, long, default_value = "127.0.0.1")]
     pub bind_address: String,
 
     /// JSON RPC endpoint for an ethereum execution node
-    #[arg(long, default_value = "ws://127.0.0.1:8546")]
+    #[arg(env, long, default_value = "ws://127.0.0.1:8546")]
     pub eth_provider: String,
 
     /// JSON RPC polling interval in miliseconds, used for testing
-    #[arg(long)]
+    #[arg(env, long)]
     pub eth_provider_interval: Option<u64>,
 
     /// First block for service to start accounting
-    #[arg(long, default_value_t = 0)]
+    #[arg(env, long, default_value_t = 0)]
     pub starting_block: u64,
 
     /// Directory to persist anchor block finalized data
-    #[arg(long, default_value = "./data")]
+    #[arg(env, long, default_value = "./data")]
     pub data_dir: String,
 
     /// Mnemonic for tx sender. If not set a random account will be generated.
     /// TODO: UNSAFE, handle hot keys better
-    #[arg(long)]
+    #[arg(env, long)]
     pub mnemonic: Option<String>,
 
     /// FOR TESTING ONLY: panic if a background task experiences an error for a single event
-    #[arg(long)]
+    #[arg(env, long)]
     pub panic_on_background_task_errors: bool,
 
     /// Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than
     /// this depth, the app will crash and expect to re-sync on restart.
-    #[arg(long, default_value_t = 64)]
+    #[arg(env, long, default_value_t = 64)]
     pub finalize_depth: u64,
 
     /// Max count of pending transactions that will be sent before waiting for inclusion of the
     /// previously sent transactions. A number higher than the max count of blobs per block should
     /// not result better UX. However, a higher number risks creating transactions that can become
     /// underpriced in volatile network conditions.
-    #[arg(long, default_value_t = 6)]
+    #[arg(env, long, default_value_t = 6)]
     pub max_pending_transactions: u64,
 
     /// Enable serving metrics
-    #[arg(long)]
+    #[arg(env, long)]
     pub metrics: bool,
     /// Metrics server port. If it's the same as the main server it will be served there
-    #[arg(long, default_value_t = 9000)]
+    #[arg(env, long, default_value_t = 9000)]
     pub metrics_port: u16,
     /// Require callers to the /metrics endpoint to add Bearer token auth
-    #[arg(long)]
+    #[arg(env, long)]
     pub metrics_bearer_token: Option<String>,
 
     /// Enable prometheus push gateway to the specified URL
-    #[arg(long)]
+    #[arg(env, long)]
     pub metrics_push_url: Option<String>,
     /// Customize push gateway frequency
-    #[arg(long, default_value_t = 15)]
+    #[arg(env, long, default_value_t = 15)]
     pub metrics_push_interval_sec: u64,
     /// Provide Basic Auth for push gateway requests
-    #[arg(long)]
+    #[arg(env, long)]
     pub metrics_push_basic_auth: Option<String>,
     /// Format to send push gateway metrics
-    #[arg(long, value_enum, default_value_t = PushMetricsFormat::Protobuf)]
+    #[arg(env, long, value_enum, default_value_t = PushMetricsFormat::Protobuf)]
     pub metrics_push_format: PushMetricsFormat,
 }
 

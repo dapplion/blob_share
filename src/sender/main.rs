@@ -6,6 +6,7 @@ use blob_share::client::{
     Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference, NoncePreference,
 };
 use clap::Parser;
+use dotenv::dotenv;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer};
@@ -17,39 +18,40 @@ use tokio::time::sleep;
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Blob share API base URL
-    #[arg(long)]
+    #[arg(env, long)]
     pub url: String,
 
     /// JSON RPC URL to the network where blobs are posted
-    #[arg(long)]
+    #[arg(env, long)]
     pub eth_provider: String,
 
     /// Mnemonic to derive sender key from
-    #[arg(long)]
+    #[arg(env, long)]
     pub mnemonic: Option<String>,
 
     /// Private key hex encoded to derive sender key from
-    #[arg(long)]
+    #[arg(env, long)]
     pub priv_key: Option<String>,
 
     /// Path of data to post
-    #[arg(long)]
+    #[arg(env, long)]
     pub data: String,
 
     /// Lower bound balance to trigger a topup: 1e17
-    #[arg(long, default_value_t = 100000000000000000)]
+    #[arg(env, long, default_value_t = 100000000000000000)]
     pub balance_lower_bound: u128,
     /// If under lower bound, topup to upper bound: 2e17
-    #[arg(long, default_value_t = 200000000000000000)]
+    #[arg(env, long, default_value_t = 200000000000000000)]
     pub balance_upper_bound: u128,
 
     /// Factor of extra pricing against next block's blob gas price
-    #[arg(long, default_value_t = 1.25)]
+    #[arg(env, long, default_value_t = 1.25)]
     pub blob_gas_price_factor: f64,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    dotenv().ok();
     let args = Args::parse();
     let client = Client::new(&args.url)?;
 

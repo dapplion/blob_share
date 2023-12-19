@@ -29,7 +29,7 @@ test-threads = 1
 
 [dependencies]
 actix-web = "4"
-clap = { version = "4.4.8", features = ["derive"] }
+clap = { version = "4.4.8", features = ["derive", "env"] }
 env_logger = "0.10.1"
 ethers = { version = "2.0.11", features = ["ws"] }
 eyre = "0.6.9"
@@ -59,6 +59,7 @@ futures = "0.3.29"
 rand = "0.8.5"
 prometheus = { version = "0.13.3", features = ["push"] }
 lazy_static = "1.4.0"
+dotenv = "0.15.0"
 
 [dev-dependencies]
 hex = "0.4.3"
