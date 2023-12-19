@@ -230,6 +230,7 @@ impl AppData {
 
         let mut next_nonce = sync.participant_count_of_user(from);
         let nonces_pending = data_intent_tracker.pending_nonces(from);
+        dbg!((from, next_nonce, &nonces_pending));
 
         loop {
             if !nonces_pending.contains(&next_nonce) {
