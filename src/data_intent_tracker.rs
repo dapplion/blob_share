@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ethers::types::{Address, TxHash};
 use eyre::{bail, eyre, Result};
 
-use crate::{data_intent::DataIntentId, DataIntent};
+use crate::{data_intent::DataIntentId, metrics, DataIntent};
 
 #[derive(Default)]
 pub struct DataIntentTracker {
@@ -21,6 +21,11 @@ pub enum DataIntentItem {
 
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
+    pub fn collect_metrics(&self) {
+        metrics::PENDING_INTENTS_CACHE.set(self.pending_intents.len() as f64);
+        metrics::INCLUDED_INTENTS_CACHE.set(self.included_intents.len() as f64);
+    }
+
     /// Returns the total sum of pending itents cost from `from`.
     pub fn pending_intents_total_cost(&self, from: &Address) -> u128 {
         self.pending_intents
