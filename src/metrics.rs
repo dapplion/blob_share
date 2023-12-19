@@ -78,6 +78,13 @@ lazy_static! {
         vec![16384., 32768., 65536., 78643., 91750., 104857., 117964., 131072.]
     ).unwrap();
     //
+    // Data intent
+    //
+    pub(crate) static ref PENDING_INTENTS_CACHE: Gauge =
+        register_gauge!("blobshare_pending_intents_cache", "pending intents cache").unwrap();
+    pub(crate) static ref INCLUDED_INTENTS_CACHE: Gauge =
+        register_gauge!("blobshare_included_intents_cache", "included intents cache").unwrap();
+    //
     // Metrics
     //
     static ref PUSH_REQ_HISTOGRAM: Histogram = register_histogram!(
@@ -93,8 +100,6 @@ pub(crate) async fn get_metrics(
     req: HttpRequest,
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    debug!("{:?} {:?}", req.uri(), req.headers());
-
     // > Authorization: Bearer 12345678:AABBAABABABA==
     if let Some(expected_bearer_token) = &data.config.metrics_server_bearer_token {
         let bearer_token =
@@ -104,7 +109,11 @@ pub(crate) async fn get_metrics(
         }
     }
 
-    let (buf, content_type) = encode_metrics_plain_text(&prometheus::gather()).map_err(e500)?;
+    // Trigger collect on passive metrics
+    data.collect_metrics().await;
+    let mfs = prometheus::gather();
+
+    let (buf, content_type) = encode_metrics_plain_text(&mfs).map_err(e500)?;
 
     Ok(HttpResponse::Ok().content_type(content_type).body(buf))
 }
