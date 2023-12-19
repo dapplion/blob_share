@@ -154,18 +154,17 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     // transaction to the execution client, and remove them if there's an error.
     //
     // Declare items as pending on the computed tx_hash
-    app_data
-        .data_intent_tracker
-        .write()
-        .await
-        .mark_items_as_pending(&data_intent_ids, blob_tx.tx_hash)
-        .wrap_err("consistency error with blob_tx intents")?;
-    app_data
-        .sync
-        .write()
-        .await
-        .register_pending_blob_tx(blob_tx.tx_summary)
-        .wrap_err("consistency error with blob_tx")?;
+    {
+        // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
+        // is consistent in both structs
+        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
+        let mut sync = app_data.sync.write().await;
+        data_intent_tracker
+            .include_in_blob_tx(&data_intent_ids, blob_tx.tx_hash)
+            .wrap_err("consistency error with blob_tx intents")?;
+        sync.register_pending_blob_tx(blob_tx.tx_summary)
+            .wrap_err("consistency error with blob_tx")?;
+    }
 
     Ok(SendResult::SentBlobTx)
 }

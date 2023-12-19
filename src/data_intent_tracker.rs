@@ -98,7 +98,7 @@ impl DataIntentTracker {
         }
     }
 
-    pub fn mark_items_as_pending(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
+    pub fn include_in_blob_tx(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
         for id in ids {
             match self.pending_intents.remove(id) {
                 None => bail!("pending intent removed while moving into pending {}", id),
