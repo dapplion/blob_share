@@ -60,7 +60,7 @@ pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
 #[cfg(not(test))]
-pub(crate) use log::{debug, error, info, warn};
+pub(crate) use tracing::{debug, error, info, warn};
 
 // Workaround to use prinltn! for logs.
 // std stdio has dedicated logic to capture logs during test execution

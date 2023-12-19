@@ -107,6 +107,7 @@ pub(crate) async fn get_status_by_id(
     Ok(HttpResponse::Ok().json(status))
 }
 
+#[tracing::instrument(skip(data))]
 #[get("/v1/balance/{address}")]
 pub(crate) async fn get_balance_by_address(
     data: web::Data<Arc<AppData>>,
@@ -116,6 +117,7 @@ pub(crate) async fn get_balance_by_address(
     Ok(HttpResponse::Ok().json(balance))
 }
 
+#[tracing::instrument(skip(data))]
 #[get("/v1/last_seen_nonce/{address}")]
 pub(crate) async fn get_last_seen_nonce_by_address(
     data: web::Data<Arc<AppData>>,
@@ -212,6 +214,7 @@ async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
 }
 
 impl AppData {
+    #[tracing::instrument(skip(self))]
     async fn balance_of_user(&self, from: &Address) -> i128 {
         self.sync.read().await.balance_with_pending(from)
             - self

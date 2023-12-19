@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    blob_tx_data::BlobTxSummary, eth_provider::EthProvider, info, routes::SyncStatusBlock,
+    blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, info, routes::SyncStatusBlock,
     BlockGasSummary,
 };
 
@@ -232,6 +232,7 @@ impl BlockSync {
     }
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
+    #[tracing::instrument(skip(self), fields(new_anchor_index))]
     pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
         let head_number = self.get_head().number;
         let new_anchor_index =
@@ -271,6 +272,11 @@ impl BlockSync {
     /// Register a new head block with sync. The new head's parent can be unknown. This function
     /// will recursively fetch all ancenstors until finding a common parent. Does not guarantee
     /// consistency where the entire chain of `block` is imported.
+    #[tracing::instrument(
+        skip(sync, provider, block),
+        fields(block.hash = %block.hash, block.number = %block.number),
+        ret, err
+    )]
     pub async fn sync_next_head<T: BlockProvider>(
         sync: &RwLock<BlockSync>,
         provider: &T,
@@ -297,6 +303,8 @@ impl BlockSync {
                 .get_block_by_hash(&new_chain_parent_hash)
                 .await?
                 .ok_or_else(|| eyre!("parent block {} should be known", new_chain_parent_hash))?;
+            debug!("downloaded block number {}", new_block.number);
+
             new_blocks.push(new_block);
         }
 
