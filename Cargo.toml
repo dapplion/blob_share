@@ -57,6 +57,8 @@ ethereum_serde_utils = "0.5"
 url = "2.5.0"
 futures = "0.3.29"
 rand = "0.8.5"
+prometheus = { version = "0.13.3", features = ["push"] }
+lazy_static = "1.4.0"
 
 [dev-dependencies]
 hex = "0.4.3"

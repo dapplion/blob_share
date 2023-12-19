@@ -7,13 +7,18 @@ use crate::{
     debug, error,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
+    metrics,
     packing::{pack_items, Item},
     warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     loop {
-        app_data.notify.notified().await;
+        // Race a notify signal with an interrupt from the OS
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = app_data.notify.notified() => {}
+        }
 
         loop {
             match maybe_send_blob_tx(app_data.clone()).await {
@@ -30,6 +35,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                     if app_data.config.panic_on_background_task_errors {
                         return Err(e);
                     } else {
+                        metrics::BLOB_SENDER_TASK_ERRORS.inc();
                         error!("error sending blob tx {e:?}");
                         // TODO: Review if breaking out of the inner loop is the best outcome
                         break;
@@ -48,6 +54,8 @@ pub(crate) enum SendResult {
 }
 
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendResult> {
+    let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
+
     let max_fee_per_blob_gas = app_data
         .sync
         .read()
@@ -62,6 +70,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
             max_fee_per_blob_gas,
             items.len()
         );
+        let _timer_pck = metrics::PACKING_TIMES.start_timer();
 
         if let Some(next_blob_items) = select_next_blob_items(&items, max_fee_per_blob_gas) {
             next_blob_items
@@ -160,6 +169,9 @@ async fn construct_and_send_tx(
         &app_data.sender_wallet,
         next_blob_items,
     )?;
+
+    metrics::PACKED_BLOB_USED_LEN.observe(blob_tx.tx_summary.used_bytes as f64);
+    metrics::PACKED_BLOB_ITEMS.observe(blob_tx.tx_summary.participants.len() as f64);
 
     debug!(
         "sending blob transaction {} with intents {:?}: {:?}",

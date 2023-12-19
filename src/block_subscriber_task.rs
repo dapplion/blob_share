@@ -5,8 +5,8 @@ use eyre::{eyre, Context, Result};
 use tokio::fs;
 
 use crate::{
-    debug, error, info,
-    sync::{BlockSync, BlockWithTxs, SyncBlockError},
+    debug, error, info, metrics,
+    sync::{BlockSync, BlockWithTxs, SyncBlockError, SyncBlockOutcome},
     AppData,
 };
 
@@ -19,40 +19,49 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     // Ref: https://www.quicknode.com/docs/ethereum/eth_subscribe
     let mut s = app_data.provider.subscribe_blocks().await?;
 
-    while let Some(block_hash) = s.next().await {
-        let block_hash = block_hash?;
+    loop {
+        tokio::select! {
+            block_hash = s.next() => {
+                let block_hash = block_hash.ok_or_else(|| eyre!("block stream closed"))??;
 
-        // Run sync routine, may involve long network requests if there's a re-org
-        match sync_block(app_data.clone(), block_hash).await {
-            Err(SyncBlockError::ReorgTooDeep {
-                anchor_block_number,
-            }) => {
-                // Irrecoverable error, crash app
-                return Err(eyre!(
-                    "ReorgTooDeep anchor_block_number: {}",
-                    anchor_block_number
-                ));
-            }
-            Err(SyncBlockError::Other(e)) => {
-                if app_data.config.panic_on_background_task_errors {
-                    return Err(e);
-                } else {
-                    error!("error syncing block {:?}: {:?}", block_hash, e);
+                // Run sync routine, may involve long network requests if there's a re-org
+                match sync_block(app_data.clone(), block_hash).await {
+                    Err(SyncBlockError::ReorgTooDeep {
+                        anchor_block_number,
+                    }) => {
+                        // Irrecoverable error, crash app
+                        return Err(eyre!(
+                            "ReorgTooDeep anchor_block_number: {}",
+                            anchor_block_number
+                        ));
+                    }
+                    Err(SyncBlockError::Other(e)) => {
+                        if app_data.config.panic_on_background_task_errors {
+                            return Err(e);
+                        } else {
+                            metrics::BLOCK_SUBSCRIBER_TASK_ERRORS.inc();
+                            error!("error syncing block {:?}: {:?}", block_hash, e);
+                        }
+                    }
+                    Ok(_) => {
+                        debug!("completed sync_block task for {block_hash}");
+                    }
                 }
-            }
-            Ok(_) => {
-                debug!("completed sync_block task for {block_hash}");
-            }
-        }
 
-        // Maybe compute new blob transactions
-        app_data.notify.notify_one();
+                // Maybe compute new blob transactions
+                app_data.notify.notify_one();
+            },
+            _ = tokio::signal::ctrl_c() => break,
+
+        }
     }
 
     Ok(())
 }
 
 async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), SyncBlockError> {
+    let _timer = metrics::BLOCK_SUBSCRIBER_TASK_TIMES.start_timer();
+
     let block_with_txs = app_data
         .provider
         .get_block_with_txs(block_hash)
@@ -67,6 +76,26 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         BlockWithTxs::from_ethers_block(block_with_txs)?,
     )
     .await?;
+
+    match &outcome {
+        SyncBlockOutcome::BlockKnown => metrics::SYNC_BLOCK_KNOWN.inc(),
+        SyncBlockOutcome::Synced {
+            reorg,
+            blob_tx_hashes,
+        } => {
+            if let Some(reorg) = reorg {
+                metrics::SYNC_REORGS.inc();
+                metrics::SYNC_REORG_DEPTHS.observe(reorg.depth as f64);
+            }
+            if !blob_tx_hashes.is_empty() {
+                metrics::SYNC_BLOCK_WITH_BLOB_TXS.inc();
+                metrics::SYNC_BLOB_TXS_SYNCED.inc_by(blob_tx_hashes.len() as f64);
+            }
+        }
+    }
+    if let Some(block_number) = &block_number {
+        metrics::SYNC_HEAD_NUMBER.set(block_number.as_u64() as f64);
+    }
 
     info!(
         "synced block {:?} {:?}, outcome: {:?}",
@@ -83,6 +112,7 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
                 // TODO: should handle each individual error or abort iteration?
                 data_intent_tracker.revert_item_to_pending(tx.tx_hash)?;
             }
+            metrics::UNDERPRICED_TXS_EVICTED.inc_by(underpriced_txs.len() as f64);
         }
 
         // Potentially prepare new blob transactions with correct pricing
@@ -105,6 +135,7 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
             if item.max_blob_gas_price() < blob_gas_price_next_block {
                 // Underpriced transaction, evict
                 data_intent_tracker.evict_underpriced_intent(&item.id())?;
+                metrics::UNDERPRICED_INTENTS_EVICTED.inc();
             }
         }
     }
@@ -121,6 +152,8 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
             "Finalized transactions, new anchor block number {} {:?}",
             new_anchor_block_number, finalized_tx_hashes
         );
+        metrics::SYNC_ANCHOR_NUMBER.set(new_anchor_block_number as f64);
+        metrics::FINALIZED_TXS.inc_by(finalized_tx_hashes.len() as f64);
 
         let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
         for tx in finalized_txs {
