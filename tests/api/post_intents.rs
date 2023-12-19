@@ -204,6 +204,7 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                 // sequence so the server can check the nonce is sequential.
                 let mut intent_ids = vec![];
                 for (i, data) in datas.iter().enumerate() {
+                    info!("sending data intent with nonce {}", i);
                     intent_ids.push(
                         test_harness
                             .post_data(

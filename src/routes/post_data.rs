@@ -2,6 +2,7 @@ use actix_web::{post, web, HttpResponse};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Signature};
 use eyre::{bail, eyre, Result};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_utils::hex_vec;
 use std::sync::Arc;
@@ -37,6 +38,13 @@ pub(crate) async fn post_data(
             data_intent.max_cost()
         )));
     }
+
+    debug!(
+        "accepted data intent from {} nonce {} data_len {}",
+        data_intent.from(),
+        data_intent.nonce(),
+        data_intent.data_len(),
+    );
 
     // data_intent_tracker ensures no duplicates at this point, everything before this statement
     // must be immmutable checks

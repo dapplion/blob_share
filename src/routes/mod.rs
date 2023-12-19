@@ -222,8 +222,14 @@ impl AppData {
     }
 
     async fn nonce_of_user(&self, from: &Address) -> u64 {
-        let mut next_nonce = self.sync.read().await.participant_count_of_user(from);
-        let nonces_pending = self.data_intent_tracker.read().await.pending_nonces(from);
+        // Hold the lock for both sync and data_intent_tracker to ensure nonce information is
+        // consistent. Otherwise, elements can be moved from data_intent_tracker to the sync while
+        // waiting for the locks.
+        let sync = self.sync.read().await;
+        let data_intent_tracker = self.data_intent_tracker.read().await;
+
+        let mut next_nonce = sync.participant_count_of_user(from);
+        let nonces_pending = data_intent_tracker.pending_nonces(from);
 
         loop {
             if !nonces_pending.contains(&next_nonce) {
