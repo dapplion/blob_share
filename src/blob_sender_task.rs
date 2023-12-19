@@ -17,10 +17,15 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 
         loop {
             match maybe_send_blob_tx(app_data.clone()).await {
-                // Loop again to try to create another blob transaction
-                Ok(SendResult::SentBlobTx) => continue,
-                // Break out of inner loop and wait for new notification
-                Ok(SendResult::NoViableSet) | Ok(SendResult::NoNonceAvailable) => break,
+                Ok(outcome) => {
+                    debug!("send blob task outcome {outcome:?}");
+                    match outcome {
+                        // Loop again to try to create another blob transaction
+                        SendResult::SentBlobTx => continue,
+                        // Break out of inner loop and wait for new notification
+                        SendResult::NoViableSet | SendResult::NoNonceAvailable => break,
+                    }
+                }
                 Err(e) => {
                     if app_data.config.panic_on_background_task_errors {
                         return Err(e);
@@ -35,6 +40,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum SendResult {
     NoViableSet,
     SentBlobTx,
@@ -51,10 +57,15 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
 
     let next_blob_items = {
         let items = app_data.data_intent_tracker.read().await.get_all_pending();
+        debug!(
+            "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
+            max_fee_per_blob_gas,
+            items.len()
+        );
+
         if let Some(next_blob_items) = select_next_blob_items(&items, max_fee_per_blob_gas) {
             next_blob_items
         } else {
-            debug!("no viable set of items for blob, out of {}", items.len());
             return Ok(SendResult::NoViableSet);
         }
     };
@@ -109,8 +120,8 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     )?;
 
     debug!(
-        "sending blob transaction {}: {:?}",
-        blob_tx.tx_hash, blob_tx.tx_summary
+        "sending blob transaction {} with intents {:?}: {:?}",
+        blob_tx.tx_hash, data_intent_ids, blob_tx.tx_summary
     );
 
     // TODO: do not await here, spawn another task
