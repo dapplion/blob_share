@@ -43,9 +43,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
                             error!("error syncing block {:?}: {:?}", block_hash, e);
                         }
                     }
-                    Ok(_) => {
-                        debug!("completed sync_block task for {block_hash}");
-                    }
+                    Ok(_) => {}
                 }
 
                 // Maybe compute new blob transactions
@@ -59,6 +57,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     Ok(())
 }
 
+#[tracing::instrument(ret, err, skip(app_data), fields(block_hash = %block_hash))]
 async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), SyncBlockError> {
     let _timer = metrics::BLOCK_SUBSCRIBER_TASK_TIMES.start_timer();
 

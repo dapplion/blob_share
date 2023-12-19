@@ -11,6 +11,7 @@ use crate::data_intent::{DataHash, DataIntent, DataIntentNoSignature};
 use crate::utils::{deserialize_signature, e400, e500, unix_timestamps_millis};
 use crate::AppData;
 
+#[tracing::instrument(skip(body, data))]
 #[post("/v1/data")]
 pub(crate) async fn post_data(
     body: web::Json<PostDataIntentV1Signed>,

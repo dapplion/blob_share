@@ -4,7 +4,7 @@ use ethers::signers::Signer;
 use eyre::{Context, Result};
 
 use crate::{
-    debug, error,
+    debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
@@ -13,6 +13,8 @@ use crate::{
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
+    let mut id = 0_u64;
+
     loop {
         // Race a notify signal with an interrupt from the OS
         tokio::select! {
@@ -21,9 +23,10 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
         }
 
         loop {
-            match maybe_send_blob_tx(app_data.clone()).await {
+            id += 1;
+
+            match maybe_send_blob_tx(app_data.clone(), id).await {
                 Ok(outcome) => {
-                    debug!("send blob task outcome {outcome:?}");
                     match outcome {
                         // Loop again to try to create another blob transaction
                         SendResult::SentBlobTx => continue,
@@ -36,7 +39,6 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                         return Err(e);
                     } else {
                         metrics::BLOB_SENDER_TASK_ERRORS.inc();
-                        error!("error sending blob tx {e:?}");
                         // TODO: Review if breaking out of the inner loop is the best outcome
                         break;
                     }
@@ -53,7 +55,9 @@ pub(crate) enum SendResult {
     NoNonceAvailable,
 }
 
-pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendResult> {
+#[tracing::instrument(ret, err, skip(app_data), fields(id = _id))]
+// `_id` argument is used by tracing to track all internal log lines
+pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Result<SendResult> {
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
 
     let max_fee_per_blob_gas = app_data
@@ -148,6 +152,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     Ok(SendResult::SentBlobTx)
 }
 
+#[tracing::instrument(skip(app_data, gas_config, next_blob_items))]
 async fn construct_and_send_tx(
     app_data: Arc<AppData>,
     nonce: u64,
@@ -218,6 +223,7 @@ async fn construct_and_send_tx(
 
 // TODO: write optimizer algo to find a better distribution
 // TODO: is ok to represent wei units as usize?
+#[tracing::instrument(skip(data_intents))]
 fn select_next_blob_items(
     data_intents: &[DataIntent],
     blob_gas_price: u128,
