@@ -135,6 +135,14 @@ impl BlockSync {
         Ok(None)
     }
 
+    /// Rollback a reserve from reserve_next_available_nonce() in case of error
+    pub fn unreserve_nonce(&mut self, address: Address, nonce: u64) {
+        // TODO: Support multiple sender addresses
+        assert_eq!(address, self.config.target_address);
+
+        self.reserved_nonces.remove(&nonce);
+    }
+
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
     /// blob transactions
     pub fn balance_with_pending(&self, address: &Address) -> i128 {

@@ -6,7 +6,7 @@ use eyre::{Context, Result};
 use crate::{
     debug, error,
     gas::GasConfig,
-    kzg::{construct_blob_tx, TxParams},
+    kzg::{construct_blob_tx, BlobTx, TxParams},
     packing::{pack_items, Item},
     warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
 };
@@ -105,6 +105,48 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         return Ok(SendResult::NoNonceAvailable);
     };
 
+    let blob_tx =
+        match construct_and_send_tx(app_data.clone(), nonce, &gas_config, next_blob_items).await {
+            Ok(blob_tx) => blob_tx,
+            Err(e) => {
+                app_data
+                    .sync
+                    .write()
+                    .await
+                    .unreserve_nonce(sender_address, nonce);
+                return Err(e);
+            }
+        };
+
+    // TODO: Assumes this function is never called concurrently. Therefore it can afford to
+    // register the transaction when it has been accepted by the execution node. If this function
+    // can be called concurrently it should mark the items as 'Pending' before sending the
+    // transaction to the execution client, and remove them if there's an error.
+    //
+    // Declare items as pending on the computed tx_hash
+    {
+        // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
+        // is consistent in both structs
+        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
+        let mut sync = app_data.sync.write().await;
+        data_intent_tracker
+            .include_in_blob_tx(&data_intent_ids, blob_tx.tx_hash)
+            .wrap_err("consistency error with blob_tx intents")?;
+        sync.register_pending_blob_tx(blob_tx.tx_summary)
+            .wrap_err("consistency error with blob_tx")?;
+    }
+
+    Ok(SendResult::SentBlobTx)
+}
+
+async fn construct_and_send_tx(
+    app_data: Arc<AppData>,
+    nonce: u64,
+    gas_config: &GasConfig,
+    next_blob_items: Vec<DataIntent>,
+) -> Result<BlobTx> {
+    let intent_ids = next_blob_items.iter().map(|i| i.id()).collect::<Vec<_>>();
+
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
         nonce,
@@ -113,7 +155,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
     let blob_tx = construct_blob_tx(
         &app_data.kzg_settings,
         &app_data.publish_config,
-        &gas_config,
+        gas_config,
         &tx_params,
         &app_data.sender_wallet,
         next_blob_items,
@@ -121,7 +163,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
 
     debug!(
         "sending blob transaction {} with intents {:?}: {:?}",
-        blob_tx.tx_hash, data_intent_ids, blob_tx.tx_summary
+        blob_tx.tx_hash, intent_ids, blob_tx.tx_summary
     );
 
     // TODO: do not await here, spawn another task
@@ -136,7 +178,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
                     "invalid_tx_blob_networking_{}.rlp",
                     hex::encode(blob_tx.tx_hash)
                 ),
-                blob_tx.blob_tx_networking,
+                blob_tx.blob_tx_networking.clone(),
             ) {
                 warn!(
                     "error persisting invalid tx {} {e:?}",
@@ -159,25 +201,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>) -> Result<SendRes
         );
     }
 
-    // TODO: Assumes this function is never called concurrently. Therefore it can afford to
-    // register the transaction when it has been accepted by the execution node. If this function
-    // can be called concurrently it should mark the items as 'Pending' before sending the
-    // transaction to the execution client, and remove them if there's an error.
-    //
-    // Declare items as pending on the computed tx_hash
-    {
-        // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
-        // is consistent in both structs
-        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
-        let mut sync = app_data.sync.write().await;
-        data_intent_tracker
-            .include_in_blob_tx(&data_intent_ids, blob_tx.tx_hash)
-            .wrap_err("consistency error with blob_tx intents")?;
-        sync.register_pending_blob_tx(blob_tx.tx_summary)
-            .wrap_err("consistency error with blob_tx")?;
-    }
-
-    Ok(SendResult::SentBlobTx)
+    Ok(blob_tx)
 }
 
 // TODO: write optimizer algo to find a better distribution
