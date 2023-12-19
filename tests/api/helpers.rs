@@ -4,7 +4,7 @@ use ethers::{
     types::{Address, Transaction, TransactionRequest, H256},
     utils::parse_ether,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{bail, eyre, Result};
 use futures::future::try_join_all;
 use log::LevelFilter;
 use std::{
@@ -15,6 +15,7 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
+use tempfile::{tempdir, TempDir};
 use tokio::time::{sleep, timeout};
 
 use blob_share::{
@@ -40,6 +41,7 @@ pub struct TestHarness {
     pub eth_provider: Provider<Http>,
     geth_instance: GethInstance,
     lodestar_instance: Option<LodestarInstance>,
+    pub temp_data_dir: TempDir,
     pub sender_address: Address,
     app_status: AppStatus,
 }
@@ -98,6 +100,8 @@ impl TestHarness {
             }
         };
 
+        let temp_data_dir = tempdir().unwrap();
+
         let args = Args {
             port: 0,
             bind_address: "127.0.0.1".to_string(),
@@ -105,6 +109,7 @@ impl TestHarness {
             // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
             eth_provider_interval: Some(1),
             starting_block: 0,
+            data_dir: temp_data_dir.path().to_str().unwrap().to_string(),
             mnemonic: Some(
                 "work man father plunge mystery proud hollow address reunion sauce theory bonus"
                     .to_string(),
@@ -130,6 +135,7 @@ impl TestHarness {
             eth_provider,
             geth_instance,
             lodestar_instance,
+            temp_data_dir,
             sender_address,
             app_status: AppStatus::Built(app),
         }
@@ -340,14 +346,14 @@ impl TestHarness {
         }
     }
 
-    pub async fn wait_for_app_health(&self, timeout: Duration) -> Result<()> {
+    pub async fn wait_for_app_health(&self) {
         retry_with_timeout(
             || async { self.client.health().await },
-            timeout,
+            Duration::from_secs(1),
             Duration::from_millis(10),
         )
         .await
-        .wrap_err("timeout waiting for health")
+        .expect("timeout waiting for health")
     }
 
     pub async fn get_all_past_sender_txs(&self) -> Result<Vec<Transaction>> {

@@ -7,9 +7,12 @@ use ethers::{
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
-use eyre::{eyre, Result};
-use std::{env, net::TcpListener, str::FromStr, sync::Arc};
-use tokio::sync::{Notify, RwLock};
+use eyre::{bail, eyre, Context, Result};
+use std::{env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc};
+use tokio::{
+    fs,
+    sync::{Notify, RwLock},
+};
 
 use crate::{
     blob_sender_task::blob_sender_task,
@@ -85,6 +88,10 @@ pub struct Args {
     #[arg(long, default_value_t = 0)]
     pub starting_block: u64,
 
+    /// Directory to persist anchor block finalized data
+    #[arg(long, default_value = "./data")]
+    pub data_dir: String,
+
     /// Mnemonic for tx sender. If not set a random account will be generated.
     /// TODO: UNSAFE, handle hot keys better
     #[arg(long)]
@@ -119,6 +126,7 @@ struct PublishConfig {
 
 struct AppConfig {
     panic_on_background_task_errors: bool,
+    anchor_block_filepath: PathBuf,
 }
 
 struct AppData {
@@ -174,28 +182,32 @@ impl App {
         // Address to send funds to increase an account's balance
         let target_address = wallet.address();
 
+        // Ensure data_dir exists
+        let data_dir = PathBuf::from(&args.data_dir);
+        fs::create_dir_all(&data_dir)
+            .await
+            .wrap_err_with(|| "creating data dir")?;
+
+        let anchor_block_filepath = data_dir.join("anchor_block.json");
+
         // TODO: choose starting point that's not genesis
-        let anchor_block = match starting_point {
-            StartingPoint::StartingBlock(starting_block) => {
-                let anchor_block = provider
-                    .get_block(starting_block)
-                    .await?
-                    .ok_or_else(|| eyre!("genesis block not available"))?;
-                let hash = anchor_block
-                    .hash
-                    .ok_or_else(|| eyre!("block has no hash property"))?;
-                let number = anchor_block
-                    .number
-                    .ok_or_else(|| eyre!("block has no number property"))?
-                    .as_u64();
-                AnchorBlock {
-                    hash,
-                    number,
-                    gas: BlockGasSummary::from_block(&anchor_block)?,
-                    // At genesis all balances are zero
-                    finalized_balances: <_>::default(),
-                    finalized_user_participation_count: <_>::default(),
+        let anchor_block = {
+            // Attempt to read persisted file first if exists
+            match fs::read_to_string(&anchor_block_filepath).await {
+                Ok(str) => {
+                    serde_json::from_str(&str).wrap_err_with(|| "parsing anchor block file")?
                 }
+                Err(e) => match e.kind() {
+                    io::ErrorKind::NotFound => match starting_point {
+                        StartingPoint::StartingBlock(starting_block) => {
+                            anchor_block_from_starting_block(&provider, starting_block).await?
+                        }
+                    },
+                    _ => bail!(
+                        "error opening anchor_block file {}: {e:?}",
+                        anchor_block_filepath.to_string_lossy()
+                    ),
+                },
             }
         };
 
@@ -221,6 +233,7 @@ impl App {
             chain_id,
             config: AppConfig {
                 panic_on_background_task_errors: args.panic_on_background_task_errors,
+                anchor_block_filepath,
             },
         });
 
@@ -289,4 +302,30 @@ pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
         &trusted_setup.g1_points(),
         &trusted_setup.g2_points(),
     )?)
+}
+
+/// Initialize empty anchor block state from a network block
+async fn anchor_block_from_starting_block(
+    provider: &EthProvider,
+    starting_block: u64,
+) -> Result<AnchorBlock> {
+    let anchor_block = provider
+        .get_block(starting_block)
+        .await?
+        .ok_or_else(|| eyre!("genesis block not available"))?;
+    let hash = anchor_block
+        .hash
+        .ok_or_else(|| eyre!("block has no hash property"))?;
+    let number = anchor_block
+        .number
+        .ok_or_else(|| eyre!("block has no number property"))?
+        .as_u64();
+    Ok(AnchorBlock {
+        hash,
+        number,
+        gas: BlockGasSummary::from_block(&anchor_block)?,
+        // At genesis all balances are zero
+        finalized_balances: <_>::default(),
+        finalized_user_participation_count: <_>::default(),
+    })
 }

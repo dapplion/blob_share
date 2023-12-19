@@ -1,5 +1,6 @@
 use ethers::types::{Block, TxHash};
 use eyre::{eyre, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::sync::BlockWithTxs;
 
@@ -13,7 +14,7 @@ pub struct GasConfig {
     pub max_fee_per_blob_gas: u128,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BlockGasSummary {
     blob_gas_used: u128,
     excess_blob_gas: u128,

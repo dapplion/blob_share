@@ -19,7 +19,7 @@ use std::{
 use crate::helpers::retry_with_timeout;
 
 /// How long we will wait for anvil to indicate that it is ready.
-const STARTUP_TIMEOUT_MILLIS: u64 = 2000;
+const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
 const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
 const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
