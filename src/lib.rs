@@ -54,7 +54,7 @@ mod utils;
 
 pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
-pub use data_intent::DataIntent;
+pub use data_intent::{BlobGasPrice, DataIntent};
 pub use gas::BlockGasSummary;
 pub use metrics::{PushMetricsConfig, PushMetricsFormat};
 pub use utils::increase_by_min_percent;
@@ -268,10 +268,15 @@ impl App {
             anchor_block,
         );
 
+        let mut data_intent_tracker = DataIntentTracker::default();
+        info!("syncing data intent track");
+        data_intent_tracker.sync_with_db(&db_pool).await?;
+        info!("synced data intent track");
+
         let app_data = Arc::new(AppData {
             kzg_settings: load_kzg_settings()?,
             notify: <_>::default(),
-            data_intent_tracker: <_>::default(),
+            data_intent_tracker: data_intent_tracker.into(),
             sign_nonce_tracker: <_>::default(),
             sync: sync.into(),
             db_pool,

@@ -65,6 +65,14 @@ pub(crate) enum SendResult {
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Result<SendResult> {
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
 
+    // Sync available intents
+    app_data
+        .data_intent_tracker
+        .write()
+        .await
+        .sync_with_db(&app_data.db_pool)
+        .await?;
+
     let max_fee_per_blob_gas = app_data
         .sync
         .read()
@@ -271,7 +279,11 @@ fn select_next_blob_items(
 mod tests {
     use ethers::types::H160;
 
-    use crate::{data_intent::DataIntentNoSignature, DataIntent, MAX_USABLE_BLOB_DATA_LEN};
+    use crate::{
+        client::{DataIntentId, DataIntentSummary},
+        data_intent::BlobGasPrice,
+        packing, MAX_USABLE_BLOB_DATA_LEN,
+    };
 
     use super::select_next_blob_items;
 
@@ -313,9 +325,9 @@ mod tests {
     }
 
     fn run_select_next_blob_items_test(
-        all_items: &[(usize, u128)],
-        blob_gas_price: u128,
-        expected_selected_items: Option<&[(usize, u128)]>,
+        all_items: &[packing::Item],
+        blob_gas_price: BlobGasPrice,
+        expected_selected_items: Option<&[packing::Item]>,
     ) {
         let mut all_items = generate_data_intents(all_items);
         let expected_selected_items =
@@ -329,13 +341,13 @@ mod tests {
         )
     }
 
-    fn items_to_summary(items: Option<Vec<DataIntent>>) -> Option<Vec<String>> {
+    fn items_to_summary(items: Option<Vec<DataIntentSummary>>) -> Option<Vec<String>> {
         items.map(|mut items| {
             // Sort for stable comparision
             items.sort_by(|a, b| {
-                a.data_len()
-                    .cmp(&b.data_len())
-                    .then_with(|| b.max_blob_gas_price().cmp(&a.max_blob_gas_price()))
+                a.data_len
+                    .cmp(&b.data_len)
+                    .then_with(|| b.max_blob_gas_price.cmp(&a.max_blob_gas_price))
             });
 
             items
@@ -343,27 +355,32 @@ mod tests {
                 .map(|d| {
                     format!(
                         "(MAX / {}, {})",
-                        MAX_USABLE_BLOB_DATA_LEN / d.data_len(),
-                        d.max_blob_gas_price()
+                        MAX_USABLE_BLOB_DATA_LEN / d.data_len,
+                        d.max_blob_gas_price
                     )
                 })
                 .collect()
         })
     }
 
-    fn generate_data_intents(items: &[(usize, u128)]) -> Vec<DataIntent> {
+    fn generate_data_intents(items: &[packing::Item]) -> Vec<DataIntentSummary> {
         items
             .iter()
             .map(|(data_len, max_cost_wei)| generate_data_intent(*data_len, *max_cost_wei))
             .collect()
     }
 
-    fn generate_data_intent(data_len: usize, max_blob_gas_price: u128) -> DataIntent {
-        DataIntent::NoSignature(DataIntentNoSignature {
+    fn generate_data_intent(
+        data_len: usize,
+        max_blob_gas_price: BlobGasPrice,
+    ) -> DataIntentSummary {
+        DataIntentSummary {
+            id: DataIntentId::new_v4(),
             from: H160([0xff; 20]),
-            data: vec![0xbb; data_len],
             data_hash: [0xaa; 32].into(),
+            data_len,
             max_blob_gas_price,
-        })
+            updated_at: <_>::default(),
+        }
     }
 }

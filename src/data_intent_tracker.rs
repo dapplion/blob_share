@@ -32,21 +32,24 @@
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, TxHash};
 use eyre::{bail, eyre, Context, Result};
+use futures::StreamExt;
 use num_traits::cast::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_utils::hex_vec;
 use sqlx::{types::BigDecimal, FromRow, MySql, MySqlPool, QueryBuilder};
-use std::collections::HashMap;
+use std::{cmp, collections::HashMap};
 use uuid::Uuid;
 
 use crate::{
     data_intent::{data_intent_max_cost, BlobGasPrice, DataIntentId},
-    utils::{address_from_vec, address_to_hex_lowercase},
+    utils::{address_from_vec, address_to_hex_lowercase, txhash_from_vec},
     DataIntent,
 };
 
 #[derive(Default)]
 pub struct DataIntentTracker {
+    // DateTime default = NaiveDateTime default = timestamp(0)
+    last_sync_table_data_intents: DateTime<Utc>,
     pending_intents: HashMap<DataIntentId, DataIntentItem>,
     included_intents: HashMap<TxHash, Vec<DataIntentId>>,
 }
@@ -59,6 +62,35 @@ pub enum DataIntentItem {
 
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
+    pub async fn sync_with_db(&mut self, db_pool: &MySqlPool) -> Result<()> {
+        let from = self.last_sync_table_data_intents;
+        let to: DateTime<Utc> = Utc::now();
+
+        let mut stream = sqlx::query(
+            r#"
+SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+FROM data_intents
+WHERE updated_at BETWEEN ? AND ?
+ORDER BY updated_at ASC
+        "#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch(db_pool);
+
+        while let Some(row) = stream.next().await {
+            let data_intent = DataIntentDbRowSummary::from_row(&row?)?;
+
+            let updated_at = data_intent.updated_at;
+            self.pending_intents
+                .insert(data_intent.id, data_intent.try_into()?);
+            self.last_sync_table_data_intents =
+                cmp::max(self.last_sync_table_data_intents, updated_at);
+        }
+
+        Ok(())
+    }
+
     /// Returns the total sum of pending itents cost from `from`.
     pub fn pending_intents_total_cost(&self, from: &Address) -> u128 {
         self.pending_intents
@@ -168,7 +200,11 @@ pub(crate) async fn fetch_data_intent_db_full(
     id: &Uuid,
 ) -> Result<DataIntentDbRowFull> {
     let data_intent = sqlx::query_as::<_, DataIntentDbRowFull>(
-        "SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at FROM data_intents WHERE id = ?")
+        r#"
+SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+FROM data_intents
+WHERE id = ?
+        "#)
         .bind(id)
         .fetch_one(db_pool)
         .await?;
@@ -180,7 +216,13 @@ pub(crate) async fn fetch_many_data_intent_db_full(
     db_pool: &MySqlPool,
     ids: &[Uuid],
 ) -> Result<Vec<DataIntentDbRowFull>> {
-    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new("SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at FROM data_intents WHERE id in");
+    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
+        r#"
+SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+FROM data_intents
+WHERE id in
+    "#,
+    );
 
     // TODO: limit the amount of ids to not reach a limit
     // TODO: try to use different API than `.push_tuples` since you only query by id
@@ -200,7 +242,11 @@ pub(crate) async fn fetch_data_intent_db_summary(
     id: &Uuid,
 ) -> Result<Option<DataIntentDbRowSummary>> {
     let data_intent = sqlx::query_as::<_, DataIntentDbRowSummary>(
-        "SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at FROM data_intents WHERE id = ?")
+        r#"
+SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+FROM data_intents
+WHERE id = ?
+        "#)
         .bind(id)
         .fetch_optional(db_pool)
         .await?;
@@ -223,7 +269,10 @@ pub(crate) async fn store_data_intent<'c>(
 
     // Persist data request
     sqlx::query!(
-            "INSERT INTO data_intents (id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            r#"
+INSERT INTO data_intents (id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
             id,
             eth_address,
             data,
@@ -270,6 +319,17 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
             data_len: value.data_len.try_into()?,
             max_blob_gas_price: value.max_blob_gas_price.try_into()?,
             updated_at: value.updated_at,
+        })
+    }
+}
+
+impl TryFrom<DataIntentDbRowSummary> for DataIntentItem {
+    type Error = eyre::Report;
+
+    fn try_from(value: DataIntentDbRowSummary) -> std::result::Result<Self, Self::Error> {
+        Ok(match value.inclusion_tx_hash.clone() {
+            None => DataIntentItem::Pending(value.try_into()?),
+            Some(tx_hash) => DataIntentItem::Included(value.try_into()?, txhash_from_vec(tx_hash)?),
         })
     }
 }

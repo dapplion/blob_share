@@ -155,15 +155,18 @@ impl DataHash {
 mod tests {
     use std::str::FromStr;
 
-    use ethers::types::H160;
-
     use super::*;
 
     #[test]
     fn data_intent_id_str_serde() {
-        let id = DataIntentId::new(H160([0xab; 20]), [0xfe; 32].into());
-        let id_str = id.to_string();
-        assert_eq!(id_str, "v1-abababababababababababababababababababab-fefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefe");
-        assert_eq!(DataIntentId::from_str(&id_str).unwrap(), id);
+        let id_str = "c4f1bdd0-3331-4470-b427-28a2c514f483";
+        let id = DataIntentId::from_str(id_str).unwrap();
+        assert_eq!(format!("{}", id), id_str);
+        assert_eq!(format!("{:?}", id), id_str);
+
+        let id_as_json = format!("\"{}\"", id_str);
+        let id_from_json = serde_json::from_str(&id_as_json).unwrap();
+        assert_eq!(id, id_from_json);
+        assert_eq!(serde_json::to_string(&id).unwrap(), id_as_json);
     }
 }

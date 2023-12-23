@@ -269,7 +269,7 @@ mod tests {
 
     fn run_test_brute_force(
         max_len: usize,
-        cost_per_len: u128,
+        cost_per_len: BlobGasPrice,
         expected_best_combination: Option<&[Item]>,
         extra_items: &[Item],
     ) {
@@ -294,9 +294,9 @@ mod tests {
     proptest! {
         #[test]
         fn test_pack_items_brute_force_proptest(
-            items in prop::collection::vec((0..50usize, 1..1000u128), 1..10), // Generate vectors of items (length, max_price)
+            items in prop::collection::vec((0..50usize, 1..1000 as BlobGasPrice), 1..10), // Generate vectors of items (length, max_price)
             max_len in 1..100usize, // Random max length
-            cost_per_len in 1..10u128, // Random price per length unit
+            cost_per_len in 1..10 as BlobGasPrice, // Random price per length unit
         ) {
         if let Some(indexes) = pack_items_brute_force(&items, max_len, cost_per_len) {
             let selected_items = unwrap_items(indexes, &items);
@@ -309,9 +309,15 @@ mod tests {
         }
     }
 
-    fn is_priced_ok(item: &Item, max_len: usize, cost_per_len: u128, selected_len: usize) -> bool {
-        let effective_cost_per_len = (max_len as u128 * cost_per_len) / selected_len as u128;
-        effective_cost_per_len <= item.1
+    fn is_priced_ok(
+        item: &Item,
+        max_len: usize,
+        cost_per_len: BlobGasPrice,
+        selected_len: usize,
+    ) -> bool {
+        let effective_cost_per_len =
+            (max_len as u128 * cost_per_len as u128) / selected_len as u128;
+        effective_cost_per_len as BlobGasPrice <= item.1
     }
 
     fn items_total_len(items: &[Item]) -> usize {
@@ -349,7 +355,7 @@ mod tests {
     fn run_test_knapsack_equals_bruteforce(item_lens: &[usize], max_len: usize) -> bool {
         let items = item_lens
             .iter()
-            .map(|len| (*len, 10 * max_len as u128))
+            .map(|len| (*len, 10 * max_len as BlobGasPrice))
             .collect::<Vec<_>>();
 
         let selected_indexes_knapsack = pack_items_knapsack(&items, max_len, 1).unwrap();

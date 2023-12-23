@@ -33,11 +33,27 @@ type Nonce = u64;
 /// 2. Wait for next block, tx included?
 ///   2.1. Tx included => Ok
 ///   2.2. Tx not included, blob gas price increase?
-///     2.2.1. Increase => cancel tx
+///     2.2.1. Increase => allow to replace
 ///     2.2.2. Same or decrease => Ok
 /// 3. Wait for re-org
 ///   3.1. Tx included in new head chain => Ok
 ///   3.2. Tx dropped => jump to 2.2.
+///
+/// # Tx cancellation
+///
+/// If a transaction is underpriced, there are multiple intents tied to that transaction that
+/// should be packed into a new transaction. When an underpriced transaction is replaced with
+/// another transaction of higher gas price, when can the previous transaction be forgotten?
+/// How to handle the intermediary state of the intents still participant in an old under-priced
+/// transaction
+///
+/// 1. Add new pending data intent   DataIntent(tx_hash = None)
+/// 2. Data intent included in tx    DataIntent(tx_hash = TxHash)
+/// 3. Tx becomes underpriced
+/// 4. Attempt to include in Tx
+/// 5a. New transaction gets included
+/// 5b. Previous transaction gets included
+/// 5c. Re-org an included transaction changes
 ///
 pub struct BlockSync {
     anchor_block: AnchorBlock,

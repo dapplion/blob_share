@@ -12,7 +12,6 @@ use std::{
     future::Future,
     hash::Hash,
     mem,
-    str::FromStr,
     time::{Duration, Instant},
 };
 use tempfile::{tempdir, TempDir};
@@ -223,7 +222,7 @@ impl TestHarness {
             .await
             .unwrap();
 
-        DataIntentId::from_str(&res.id).unwrap()
+        res.id
     }
 
     pub async fn post_data_and_wait_for_pending(
