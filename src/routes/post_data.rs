@@ -46,7 +46,7 @@ pub(crate) async fn post_data(
     // data_intent_tracker ensures no duplicates at this point, everything before this statement
     // must be immmutable checks
     let id = data_intent.id();
-    let from = data_intent.from().clone();
+    let from = *data_intent.from();
     let data_len = data_intent.data_len();
 
     data.data_intent_tracker
