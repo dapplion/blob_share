@@ -74,11 +74,13 @@ jobs:
           brew install docker-buildx
       - name: Test docker
         run: docker run hello-world
-        # </setup>
+      - name: Install sqlx-cli
+        run: cargo install --version='~0.7' sqlx-cli --no-default-features --features rustls,mysql
       - name: Migrate database
         run: |
           sudo apt-get install mysql -y
           ./scripts/init_db.sh
+        # </setup>
       - name: Check
         run: cargo check
       - name: Test
