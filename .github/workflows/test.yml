@@ -75,6 +75,10 @@ jobs:
       - name: Test docker
         run: docker run hello-world
         # </setup>
+      - name: Migrate database
+        run: |
+          sudo apt-get install mysql -y
+          ./scripts/init_db.sh
       - name: Check
         run: cargo check
       - name: Test
