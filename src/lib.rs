@@ -8,6 +8,7 @@ use ethers::{
     types::Address,
 };
 use eyre::{bail, eyre, Context, Result};
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use std::{
     collections::HashMap, env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
     time::Duration,
@@ -122,6 +123,10 @@ pub struct Args {
     #[arg(env, long, default_value_t = 6)]
     pub max_pending_transactions: u64,
 
+    /// Database URL to mysql DB with format `mysql://user:password@localhost/test`
+    #[arg(env, long)]
+    pub database_url: String,
+
     /// Enable serving metrics
     #[arg(env, long)]
     pub metrics: bool,
@@ -169,6 +174,7 @@ struct AppData {
     // TODO: Store in remote DB persisting
     sign_nonce_tracker: RwLock<HashMap<Address, u128>>,
     sync: RwLock<BlockSync>,
+    db_pool: MySqlPool,
     provider: EthProvider,
     sender_wallet: LocalWallet,
     publish_config: PublishConfig,
@@ -224,6 +230,12 @@ impl App {
             .await
             .wrap_err_with(|| "creating data dir")?;
 
+        // TODO: Should use connect_lazy_with
+        let db_pool = MySqlPoolOptions::new()
+            .max_connections(5)
+            .connect(&args.database_url)
+            .await?;
+
         let anchor_block_filepath = data_dir.join("anchor_block.json");
 
         // TODO: choose starting point that's not genesis
@@ -262,6 +274,7 @@ impl App {
             data_intent_tracker: <_>::default(),
             sign_nonce_tracker: <_>::default(),
             sync: sync.into(),
+            db_pool,
             publish_config: PublishConfig {
                 l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             },

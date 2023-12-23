@@ -9,7 +9,7 @@ pub use crate::eth_provider::EthProvider;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
 pub use crate::{data_intent::DataIntentId, DataIntent};
 use crate::{data_intent::DataIntentSummary, routes::SyncStatus, utils::unix_timestamps_millis};
-use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex};
+use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex_lowercase};
 use crate::{utils::is_ok_response, BlockGasSummary};
 
 pub struct Client {
@@ -111,7 +111,7 @@ impl Client {
     pub async fn get_balance_by_address(&self, address: Address) -> Result<i128> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/balance/{}", address_to_hex(address))))
+            .get(&self.url(&format!("v1/balance/{}", address_to_hex_lowercase(address))))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -120,7 +120,10 @@ impl Client {
     pub async fn get_last_seen_nonce_by_address(&self, address: Address) -> Result<Option<u128>> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/last_seen_nonce/{}", address_to_hex(address))))
+            .get(&self.url(&format!(
+                "v1/last_seen_nonce/{}",
+                address_to_hex_lowercase(address)
+            )))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -165,5 +168,5 @@ impl GasPreference {
 
 pub enum NoncePreference {
     Timebased,
-    Value(u128),
+    Value(u64),
 }

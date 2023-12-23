@@ -4,7 +4,7 @@ use ethers::types::{Address, Signature};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
 use std::cmp::PartialEq;
-use std::fmt::{Debug, Display};
+use std::fmt::{self, Debug, Display};
 use std::ops::{Add, Div, Mul};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,8 +54,8 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
     }
 }
 
-/// Return 0x prefixed hex representation of address (not checksum)
-pub fn address_to_hex(addr: Address) -> String {
+/// Return 0x prefixed hex representation of address (lowercase, not checksum)
+pub fn address_to_hex_lowercase(addr: Address) -> String {
     format!("0x{}", hex::encode(addr.to_fixed_bytes()))
 }
 
@@ -65,11 +65,11 @@ pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
 }
 
 /// Return unix timestamp in milliseconds
-pub fn unix_timestamps_millis() -> u128 {
+pub fn unix_timestamps_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
-        .as_millis()
+        .as_millis() as u64
 }
 
 /// Extract Bearer token from actix_web request, or return an error
@@ -103,5 +103,21 @@ pub fn parse_basic_auth(auth: &str) -> Result<BasicAuthentication> {
         })
     } else {
         bail!("Invalid auth format. Use 'username:password'")
+    }
+}
+
+trait ResultExt<T, E>
+where
+    E: fmt::Display,
+{
+    fn prefix_err(self, prefix: &str) -> eyre::Result<T>;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E>
+where
+    E: fmt::Display,
+{
+    fn prefix_err(self, prefix: &str) -> eyre::Result<T> {
+        self.map_err(|e| eyre::eyre!("{}: {}", prefix, e.to_string().replace('\n', "; ")))
     }
 }

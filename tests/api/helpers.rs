@@ -117,6 +117,9 @@ impl TestHarness {
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
             max_pending_transactions: 6,
+            // TODO: De-duplicate of configure properly
+            // TODO: Use different db names every run
+            database_url: "mysql://mysql:password@localhost:3306/blob_share".to_string(),
             metrics: false,
             metrics_port: 0,
             metrics_bearer_token: None,

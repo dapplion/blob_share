@@ -1,17 +1,20 @@
 use actix_web::{post, web, HttpResponse};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Signature};
-use eyre::{bail, eyre, Result};
+use eyre::{bail, eyre, Result, WrapErr};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_utils::hex_vec;
+use sqlx::MySqlPool;
 use std::sync::Arc;
 
 use crate::data_intent::{DataHash, DataIntent, DataIntentNoSignature};
-use crate::utils::{deserialize_signature, e400, e500, unix_timestamps_millis};
+use crate::utils::{
+    address_to_hex_lowercase, deserialize_signature, e400, e500, unix_timestamps_millis,
+};
 use crate::AppData;
 
-#[tracing::instrument(skip(body, data))]
+#[tracing::instrument(skip(body, data), err)]
 #[post("/v1/data")]
 pub(crate) async fn post_data(
     body: web::Json<PostDataIntentV1Signed>,
@@ -33,38 +36,72 @@ pub(crate) async fn post_data(
 
     // Check that the nonce is the next expected
     // Unsafe channel, check that this message is new and not replayed
+    if !atomic_update_ensure_higher_nonce(&data.db_pool, data_intent.from(), nonce)
+        .await
+        .map_err(e500)?
     {
-        if let Some(last_seen_nonce) = data.sign_nonce_tracker.read().await.get(data_intent.from())
-        {
-            if nonce <= *last_seen_nonce {
-                return Err(e400(eyre!(
-                    "nonce {nonce} less than last seen {last_seen_nonce}"
-                )));
-            }
-        }
+        return Err(e400(eyre!("nonce {nonce} less than last seen nonce")));
     }
-
-    debug!(
-        "accepted data intent from {} nonce {} data_len {} id {}",
-        data_intent.from(),
-        nonce,
-        data_intent.data_len(),
-        data_intent.id(),
-    );
 
     // data_intent_tracker ensures no duplicates at this point, everything before this statement
     // must be immmutable checks
     let id = data_intent.id();
+    let from = data_intent.from().clone();
+    let data_len = data_intent.data_len();
+
     data.data_intent_tracker
         .write()
         .await
         .add(data_intent)
         .map_err(e500)?;
 
+    debug!("accepted data intent from {from} nonce {nonce} data_len {data_len} id {id}");
+
     // Potentially send a blob transaction including this new participation
     data.notify.notify_one();
 
     Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
+}
+
+#[tracing::instrument(skip(pool))]
+pub async fn atomic_update_ensure_higher_nonce(
+    pool: &MySqlPool,
+    from: &Address,
+    new_nonce: u64,
+) -> Result<bool> {
+    let from_hex_lowercase = address_to_hex_lowercase(*from);
+
+    let mut tx = pool.begin().await?;
+
+    // Note: The "FOR UPDATE" clause locks the selected rows
+    let row = sqlx::query!(
+        r#"
+SELECT nonce FROM post_data_nonces WHERE eth_address = ? FOR UPDATE
+        "#,
+        from_hex_lowercase,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(row) = row {
+        let current_nonce = row.nonce.try_into()?;
+        if new_nonce <= current_nonce {
+            tx.rollback().await.wrap_err("sqlx rollback")?;
+            return Ok(false);
+        }
+    }
+
+    // Nonce is ok, commit
+    sqlx::query!(
+        "UPDATE post_data_nonces SET nonce = ? WHERE eth_address = ?",
+        new_nonce,
+        from_hex_lowercase
+    )
+    .execute(&mut *tx)
+    .await
+    .wrap_err_with(|| format!("sqlx query update nonce of {}", from))?;
+    tx.commit().await.wrap_err("sqlx commit")?;
+    Ok(true)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -91,7 +128,10 @@ pub struct PostDataIntentV1Signed {
     /// DataIntent nonce, to allow replay protection. Each new intent must have a nonce higher than
     /// the last known nonce from this `from` sender. Re-pricings will be done with a different
     /// nonce. For simplicity just pick the current UNIX timestemp in miliseconds.
-    pub nonce: u128,
+    ///
+    /// u64::MAX is 18446744073709551616, able to represent unix timestamps in miliseconds way into
+    /// the future.
+    pub nonce: u64,
     /// Signature over := data | nonce | max_blob_gas_price
     #[serde(with = "hex_vec")]
     pub signature: Vec<u8>,
@@ -101,7 +141,7 @@ impl PostDataIntentV1Signed {
     pub async fn with_signature(
         wallet: &LocalWallet,
         intent: PostDataIntentV1,
-        nonce: Option<u128>,
+        nonce: Option<u64>,
     ) -> Result<Self> {
         if wallet.address() != intent.from {
             bail!(
@@ -121,7 +161,7 @@ impl PostDataIntentV1Signed {
         })
     }
 
-    fn sign_hash(intent: &PostDataIntentV1, nonce: u128) -> Vec<u8> {
+    fn sign_hash(intent: &PostDataIntentV1, nonce: u64) -> Vec<u8> {
         let data_hash = DataHash::from_data(&intent.data);
 
         // Concat: data_hash | nonce | max_blob_gas_price
