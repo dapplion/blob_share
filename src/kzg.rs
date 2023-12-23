@@ -17,7 +17,7 @@ use crate::{
         tx_eip4844::TxEip4844,
         tx_sidecar::{BlobTransaction, BlobTransactionSidecar},
     },
-    DataIntent, PublishConfig, MAX_USABLE_BLOB_DATA_LEN,
+    PublishConfig, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -46,20 +46,13 @@ pub(crate) fn construct_blob_tx(
     gas_config: &GasConfig,
     tx_params: &TxParams,
     wallet: &LocalWallet,
-    next_blob_items: Vec<DataIntent>,
+    participants: Vec<BlobTxParticipant>,
+    datas: Vec<Vec<u8>>,
 ) -> Result<BlobTx> {
-    let participants = next_blob_items
-        .iter()
-        .map(|item| BlobTxParticipant {
-            address: *item.from(),
-            data_len: item.data().len(),
-        })
-        .collect::<Vec<_>>();
-
     let mut data = vec![];
-    for item in next_blob_items.into_iter() {
+    for item in datas.into_iter() {
         // TODO: do less copying
-        data.extend_from_slice(item.data());
+        data.extend_from_slice(&item);
     }
 
     // TODO: should chunk data in 31 bytes to ensure each field element if < BLS_MODULUS

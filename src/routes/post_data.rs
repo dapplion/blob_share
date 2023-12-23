@@ -10,7 +10,9 @@ use sqlx::types::BigDecimal;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
-use crate::data_intent::{DataHash, DataIntent, DataIntentNoSignature};
+use crate::client::DataIntentId;
+use crate::data_intent::{BlobGasPrice, DataHash, DataIntent, DataIntentNoSignature};
+use crate::data_intent_tracker::store_data_intent;
 use crate::utils::{
     address_to_hex_lowercase, deserialize_signature, e400, e500, unix_timestamps_millis,
 };
@@ -29,27 +31,31 @@ pub(crate) async fn post_data(
 
     let from = *data_intent.from();
     let data_len = data_intent.data_len();
-    let id = data_intent.id();
 
-    atomic_update_post_data_on_unsafe_channel(&data.db_pool, data_intent, nonce, onchain_balance)
-        .await
-        .map_err(e500)?;
+    let id = atomic_update_post_data_on_unsafe_channel(
+        &data.db_pool,
+        data_intent,
+        nonce,
+        onchain_balance,
+    )
+    .await
+    .map_err(e500)?;
 
     debug!("accepted data intent from {from} nonce {nonce} data_len {data_len} id {id}");
 
     // Potentially send a blob transaction including this new participation
     data.notify.notify_one();
 
-    Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
+    Ok(HttpResponse::Ok().json(PostDataResponse { id }))
 }
 
-#[tracing::instrument(skip(db_pool))]
+#[tracing::instrument(skip(db_pool, data_intent))]
 pub async fn atomic_update_post_data_on_unsafe_channel(
     db_pool: &MySqlPool,
     data_intent: DataIntent,
     nonce: u64,
     onchain_balance: i128,
-) -> Result<()> {
+) -> Result<DataIntentId> {
     let cost = data_intent.max_cost() as i128;
     let eth_address = address_to_hex_lowercase(*data_intent.from());
 
@@ -71,7 +77,7 @@ pub async fn atomic_update_post_data_on_unsafe_channel(
             .ok_or_else(|| eyre!("invalid db value total_data_intent_cost"))?,
         None => 0,
     };
-    let last_nonce = user_row.map(|row| row.post_data_nonce).flatten();
+    let last_nonce = user_row.and_then(|row| row.post_data_nonce);
     let balance = onchain_balance - total_data_intent_cost;
 
     if balance < cost {
@@ -98,32 +104,17 @@ pub async fn atomic_update_post_data_on_unsafe_channel(
     .execute(&mut *tx)
     .await?;
 
-    let data = data_intent.data();
-    let data_hash = data_intent.data_hash().to_vec();
-    let max_blob_gas_price = BigDecimal::from_u128(data_intent.max_blob_gas_price());
-    let data_hash_signature = data_intent.data_hash_signature().map(|sig| sig.to_vec());
-
-    // Persist data request
-    sqlx::query!(
-        "INSERT INTO data_intents (eth_address, data, data_hash, max_blob_gas_price, data_hash_signature) VALUES (?, ?, ?, ?, ?)",
-        eth_address,
-        data,
-        data_hash,
-        max_blob_gas_price,
-        data_hash_signature
-    )
-    .execute(&mut *tx)
-    .await?;
+    let id = store_data_intent(&mut tx, data_intent).await?;
 
     // Commit transaction
     tx.commit().await?;
 
-    Ok(())
+    Ok(id)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataResponse {
-    pub id: String,
+    pub id: DataIntentId,
 }
 
 /// TODO: Expose a "login with Ethereum" function an expose the non-signed variant
@@ -135,7 +126,7 @@ pub struct PostDataIntentV1 {
     #[serde(with = "hex_vec")]
     pub data: Vec<u8>,
     /// Max price user is willing to pay in wei
-    pub max_blob_gas_price: u128,
+    pub max_blob_gas_price: BlobGasPrice,
 }
 
 /// PostDataIntent message for non authenticated channels

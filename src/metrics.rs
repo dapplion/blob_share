@@ -55,8 +55,6 @@ lazy_static! {
         register_gauge!("blobshare_sync_anchor_number", "sync anchor number").unwrap();
     pub(crate) static ref UNDERPRICED_TXS_EVICTED: Counter =
         register_counter!("blobshare_underpriced_txs_evicted_total", "underpriced txs evicted total").unwrap();
-    pub(crate) static ref UNDERPRICED_INTENTS_EVICTED: Counter =
-        register_counter!("blobshare_underpriced_intents_evicted_total", "underpriced intents evicted total").unwrap();
     pub(crate) static ref FINALIZED_TXS: Counter =
         register_counter!("blobshare_finalized_txs_total", "finalized txs total").unwrap();
     //
@@ -272,7 +270,6 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         SYNC_HEAD_NUMBER.inc();
         SYNC_ANCHOR_NUMBER.inc();
         UNDERPRICED_TXS_EVICTED.inc();
-        UNDERPRICED_INTENTS_EVICTED.inc();
         FINALIZED_TXS.inc();
         BLOB_SENDER_TASK_TIMES.observe(0.);
         BLOB_SENDER_TASK_ERRORS.inc();

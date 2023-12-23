@@ -8,9 +8,12 @@ use ethers::{
     types::{Address, Signature},
     utils::keccak256,
 };
-use eyre::{bail, Result};
+use eyre::Result;
 use serde::{Deserialize, Serialize};
-use serde_utils::hex_vec;
+use uuid::Uuid;
+
+// Max gas price possible to represent is ~18 ETH / byte, or ~2.4e6 ETH per blob
+pub type BlobGasPrice = u64;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum DataIntent {
@@ -23,7 +26,7 @@ pub struct DataIntentNoSignature {
     pub from: Address,
     pub data: Vec<u8>,
     pub data_hash: DataHash,
-    pub max_blob_gas_price: u128,
+    pub max_blob_gas_price: BlobGasPrice,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -31,26 +34,19 @@ pub struct DataIntentWithSignature {
     pub from: Address,
     pub data: Vec<u8>,
     pub data_hash: DataHash,
-    pub max_blob_gas_price: u128,
+    pub max_blob_gas_price: BlobGasPrice,
     pub signature: Signature,
 }
 
 impl DataIntent {
     pub fn max_cost(&self) -> u128 {
-        self.data().len() as u128 * self.max_blob_gas_price()
+        data_intent_max_cost(self.data_len(), self.max_blob_gas_price())
     }
 
-    pub fn max_blob_gas_price(&self) -> u128 {
+    pub fn max_blob_gas_price(&self) -> BlobGasPrice {
         match self {
             DataIntent::NoSignature(d) => d.max_blob_gas_price,
             DataIntent::WithSignature(d) => d.max_blob_gas_price,
-        }
-    }
-
-    pub fn id(&self) -> DataIntentId {
-        match self {
-            DataIntent::NoSignature(d) => DataIntentId::new(d.from, d.data_hash),
-            DataIntent::WithSignature(d) => DataIntentId::new(d.from, d.data_hash),
         }
     }
 
@@ -89,7 +85,7 @@ impl DataIntent {
     pub async fn with_signature(
         wallet: &LocalWallet,
         data: Vec<u8>,
-        max_blob_gas_price: u128,
+        max_blob_gas_price: BlobGasPrice,
     ) -> Result<Self> {
         let data_hash = DataHash::from_data(&data);
         let signature: Signature = wallet.sign_message(data_hash.0).await?;
@@ -104,82 +100,12 @@ impl DataIntent {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DataIntentSummary {
-    pub id: String,
-    pub from: Address,
-    #[serde(with = "hex_vec")]
-    pub data_hash: Vec<u8>,
-    pub data_len: usize,
-    pub max_blob_gas_price: u128,
+/// Max possible cost of data intent, billed cost prior to inclusion
+pub(crate) fn data_intent_max_cost(data_len: usize, max_blob_gas_price: BlobGasPrice) -> u128 {
+    data_len as u128 * max_blob_gas_price as u128
 }
 
-impl From<&DataIntent> for DataIntentSummary {
-    fn from(value: &DataIntent) -> Self {
-        let id = value.id().to_string();
-        match value {
-            DataIntent::WithSignature(d) => Self {
-                id,
-                from: d.from,
-                data_hash: d.data_hash.to_vec(),
-                data_len: d.data.len(),
-                max_blob_gas_price: d.max_blob_gas_price,
-            },
-            DataIntent::NoSignature(d) => Self {
-                id,
-                from: d.from,
-                data_hash: d.data_hash.to_vec(),
-                data_len: d.data.len(),
-                max_blob_gas_price: d.max_blob_gas_price,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
-pub struct DataIntentId(Address, DataHash);
-
-impl DataIntentId {
-    fn new(from: Address, data_hash: DataHash) -> Self {
-        Self(from, data_hash)
-    }
-}
-
-impl std::fmt::Debug for DataIntentId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v1-{}-{}", hex::encode(self.0), hex::encode(self.1 .0))
-    }
-}
-
-impl Display for DataIntentId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v1-{}-{}", hex::encode(self.0), hex::encode(self.1 .0))
-    }
-}
-
-impl FromStr for DataIntentId {
-    type Err = eyre::Report;
-
-    fn from_str(s: &str) -> Result<Self> {
-        let parts: Vec<&str> = s.split('-').collect();
-
-        if parts.len() != 3 {
-            bail!("Invalid id format format".to_string());
-        }
-        let version = parts[0];
-        let address = parts[1];
-        let data_hash = parts[2];
-
-        if version != "v1" {
-            bail!("Unsupported version {}", version);
-        }
-
-        let address = Address::from_str(address)?;
-        let data_hash = DataHash::from_str(data_hash)?;
-
-        Ok(DataIntentId::new(address, data_hash))
-    }
-}
+pub type DataIntentId = Uuid;
 
 #[derive(Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct DataHash([u8; 32]);

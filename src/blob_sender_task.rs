@@ -4,12 +4,17 @@ use ethers::signers::Signer;
 use eyre::{Context, Result};
 
 use crate::{
+    blob_tx_data::BlobTxParticipant,
+    client::DataIntentSummary,
+    data_intent::BlobGasPrice,
+    data_intent_tracker::{fetch_many_data_intent_db_full, DataIntentDbRowFull},
     debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
     packing::{pack_items, Item},
-    warn, AppData, DataIntent, MAX_USABLE_BLOB_DATA_LEN,
+    utils::address_from_vec,
+    warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
@@ -67,7 +72,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         .get_head_gas()
         .blob_gas_price_next_block();
 
-    let next_blob_items = {
+    let data_intent_summaries = {
         let items = app_data.data_intent_tracker.read().await.get_all_pending();
         debug!(
             "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
@@ -76,23 +81,28 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         );
         let _timer_pck = metrics::PACKING_TIMES.start_timer();
 
-        if let Some(next_blob_items) = select_next_blob_items(&items, max_fee_per_blob_gas) {
+        if let Some(next_blob_items) =
+            select_next_blob_items(&items, max_fee_per_blob_gas.try_into()?)
+        {
             next_blob_items
         } else {
             return Ok(SendResult::NoViableSet);
         }
     };
 
-    let data_intent_ids = next_blob_items
+    let data_intent_ids = data_intent_summaries
         .iter()
-        .map(|item| item.id())
+        .map(|item| item.id)
         .collect::<Vec<_>>();
 
     debug!(
         "selected {} items for blob tx: {:?}",
-        next_blob_items.len(),
+        data_intent_summaries.len(),
         data_intent_ids
     );
+
+    // TODO: Do this sequence atomic, lock data intent rows here
+    let data_intents = fetch_many_data_intent_db_full(&app_data.db_pool, &data_intent_ids).await?;
 
     // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
     let (max_fee_per_gas, max_priority_fee_per_gas) =
@@ -119,7 +129,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     };
 
     let blob_tx =
-        match construct_and_send_tx(app_data.clone(), nonce, &gas_config, next_blob_items).await {
+        match construct_and_send_tx(app_data.clone(), nonce, &gas_config, data_intents).await {
             Ok(blob_tx) => blob_tx,
             Err(e) => {
                 app_data
@@ -157,14 +167,28 @@ async fn construct_and_send_tx(
     app_data: Arc<AppData>,
     nonce: u64,
     gas_config: &GasConfig,
-    next_blob_items: Vec<DataIntent>,
+    next_blob_items: Vec<DataIntentDbRowFull>,
 ) -> Result<BlobTx> {
-    let intent_ids = next_blob_items.iter().map(|i| i.id()).collect::<Vec<_>>();
+    let intent_ids = next_blob_items.iter().map(|i| i.id).collect::<Vec<_>>();
 
     let tx_params = TxParams {
         chain_id: app_data.chain_id,
         nonce,
     };
+
+    let participants = next_blob_items
+        .iter()
+        .map(|item| {
+            Ok(BlobTxParticipant {
+                address: address_from_vec(item.eth_address.clone())?,
+                data_len: item.data.len(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let datas = next_blob_items
+        .into_iter()
+        .map(|item| item.data)
+        .collect::<Vec<_>>();
 
     let blob_tx = construct_blob_tx(
         &app_data.kzg_settings,
@@ -172,7 +196,8 @@ async fn construct_and_send_tx(
         gas_config,
         &tx_params,
         &app_data.sender_wallet,
-        next_blob_items,
+        participants,
+        datas,
     )?;
 
     metrics::PACKED_BLOB_USED_LEN.observe(blob_tx.tx_summary.used_bytes as f64);
@@ -225,12 +250,12 @@ async fn construct_and_send_tx(
 // TODO: is ok to represent wei units as usize?
 #[tracing::instrument(skip(data_intents))]
 fn select_next_blob_items(
-    data_intents: &[DataIntent],
-    blob_gas_price: u128,
-) -> Option<Vec<DataIntent>> {
+    data_intents: &[DataIntentSummary],
+    blob_gas_price: BlobGasPrice,
+) -> Option<Vec<DataIntentSummary>> {
     let items: Vec<Item> = data_intents
         .iter()
-        .map(|e| (e.data().len(), e.max_blob_gas_price()))
+        .map(|e| (e.data_len, e.max_blob_gas_price))
         .collect::<Vec<_>>();
 
     pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {

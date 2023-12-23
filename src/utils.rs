@@ -1,6 +1,6 @@
 use actix_web::http::header::AUTHORIZATION;
 use actix_web::HttpRequest;
-use ethers::types::{Address, Signature};
+use ethers::types::{Address, Signature, TxHash, H160, H256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
 use std::cmp::PartialEq;
@@ -57,6 +57,22 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
 /// Return 0x prefixed hex representation of address (lowercase, not checksum)
 pub fn address_to_hex_lowercase(addr: Address) -> String {
     format!("0x{}", hex::encode(addr.to_fixed_bytes()))
+}
+
+/// Convert Vec<u8> into ethers Address H160 type. Errors if v.len() != 20.
+pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
+    let fixed_vec: [u8; 20] = v
+        .try_into()
+        .map_err(|_| eyre!("address as vec not 20 bytes in len"))?;
+    Ok(H160(fixed_vec))
+}
+
+/// Convert Vec<u8> into ethers TxHash H256 type. Errors if v.len() != 32.
+pub fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
+    let fixed_vec: [u8; 32] = v
+        .try_into()
+        .map_err(|_| eyre!("txhash as vec not 32 bytes in len"))?;
+    Ok(H256(fixed_vec))
 }
 
 /// Deserialize ethers' Signature

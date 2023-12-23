@@ -118,27 +118,6 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         app_data.notify.notify_one();
     }
 
-    // Check if any intents are underpriced
-    {
-        let blob_gas_price_next_block = {
-            app_data
-                .sync
-                .read()
-                .await
-                .get_head_gas()
-                .blob_gas_price_next_block()
-        };
-        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
-        let items = data_intent_tracker.get_all_pending();
-        for item in items {
-            if item.max_blob_gas_price() < blob_gas_price_next_block {
-                // Underpriced transaction, evict
-                data_intent_tracker.evict_underpriced_intent(&item.id())?;
-                metrics::UNDERPRICED_INTENTS_EVICTED.inc();
-            }
-        }
-    }
-
     // Finalize transactions
     let new_anchor_block_number = if let Some((finalized_txs, new_anchor_block_number)) =
         app_data.sync.write().await.maybe_advance_anchor_block()?

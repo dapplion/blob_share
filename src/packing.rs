@@ -1,11 +1,17 @@
 use std::cmp;
 
+use crate::{data_intent::BlobGasPrice, increase_by_min_percent};
+
 /// (len, max_len_price)
-pub type Item = (usize, u128);
+pub type Item = (usize, BlobGasPrice);
 
 const MAX_COUNT_FOR_BRUTEFORCE: usize = 8;
 
-pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u128) -> Option<Vec<usize>> {
+pub fn pack_items(
+    items: &[Item],
+    max_len: usize,
+    cost_per_len: BlobGasPrice,
+) -> Option<Vec<usize>> {
     if items.len() < MAX_COUNT_FOR_BRUTEFORCE {
         return pack_items_brute_force(items, max_len, cost_per_len);
     }
@@ -51,7 +57,7 @@ pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u128) -> Option<
 pub fn pack_items_brute_force(
     items: &[Item],
     max_len: usize,
-    cost_per_len: u128,
+    cost_per_len: BlobGasPrice,
 ) -> Option<Vec<usize>> {
     let n = items.len();
     // Max n to shift mask to
@@ -59,12 +65,12 @@ pub fn pack_items_brute_force(
 
     let mut best_combination = None;
     let mut best_selected_len = 0;
-    let fixed_cost = max_len as u128 * cost_per_len;
+    let fixed_cost = max_len as u128 * cost_per_len as u128;
 
     // Iterate over all possible combinations
     'comb: for mask in 0..(1_u32 << n) {
         let mut selected_len = 0;
-        let mut min_len_price_combination = u128::MAX;
+        let mut min_len_price_combination = BlobGasPrice::MAX;
 
         for (i, item) in items.iter().enumerate().take(n) {
             if mask & (1 << i) != 0 {
@@ -111,14 +117,14 @@ pub fn pack_items_brute_force(
     }
 }
 
-fn item_is_priced_ok(fixed_cost: u128, selected_len: usize, max_len_price: u128) -> bool {
-    fixed_cost / (selected_len as u128) <= max_len_price
+fn item_is_priced_ok(fixed_cost: u128, selected_len: usize, max_len_price: BlobGasPrice) -> bool {
+    fixed_cost / (selected_len as u128) <= max_len_price as u128
 }
 
 pub fn pack_items_knapsack(
-    items: &[(usize, u128)],
+    items: &[Item],
     max_len: usize,
-    _cost_per_len: u128,
+    _cost_per_len: BlobGasPrice,
 ) -> Option<Vec<usize>> {
     // TODO: consider max_cost
     let item_lens = items.iter().map(|e| e.0).collect::<Vec<_>>();
@@ -154,9 +160,9 @@ fn knapsack(w_max: usize, wt: &[usize], val: &[usize]) -> Vec<usize> {
 
 /// Expects items to by sorted ascending by data len
 pub fn pack_items_greedy_sorted(
-    items: &[(usize, u128)],
+    items: &[Item],
     max_len: usize,
-    cost_per_len: u128,
+    cost_per_len: BlobGasPrice,
 ) -> Option<Vec<usize>> {
     // Keep only items that price at least the current cost
 
@@ -174,7 +180,8 @@ pub fn pack_items_greedy_sorted(
                     return None;
                 } else {
                     // Handles low values to at ensure that min_cost increases in each loop
-                    min_cost_per_len_to_select = percent_mult_ceil(min_cost_per_len_to_select, 110);
+                    min_cost_per_len_to_select =
+                        increase_by_min_percent(min_cost_per_len_to_select, 110);
                 }
             }
             PickResult::EmptySelection => return None,
@@ -189,13 +196,13 @@ enum PickResult {
 }
 
 fn pick_first_items_sorted_ascending(
-    items: &[(usize, u128)],
+    items: &[Item],
     max_len: usize,
-    cost_per_len: u128,
-    min_cost_per_len_to_select: u128,
+    cost_per_len: BlobGasPrice,
+    min_cost_per_len_to_select: BlobGasPrice,
 ) -> PickResult {
     let mut len = 0;
-    let mut min_max_price = u128::MAX;
+    let mut min_max_price = BlobGasPrice::MAX;
     let mut indexes = vec![];
     for (i, item) in items.iter().enumerate() {
         if item.1 >= min_cost_per_len_to_select {
@@ -213,19 +220,10 @@ fn pick_first_items_sorted_ascending(
     // effective_cost_per_len = max_len * cost_per_len / len < min_max_price
     if len == 0 {
         PickResult::EmptySelection
-    } else if (max_len as u128 * cost_per_len) <= len as u128 * min_max_price {
+    } else if (max_len as u128 * cost_per_len as u128) <= len as u128 * min_max_price as u128 {
         PickResult::Some(indexes)
     } else {
         PickResult::InvalidSelection
-    }
-}
-
-fn percent_mult_ceil(value: u128, percent: u128) -> u128 {
-    let new_value = (value * percent) / 100;
-    if new_value == value {
-        new_value + 1
-    } else {
-        new_value
     }
 }
 

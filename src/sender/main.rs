@@ -1,10 +1,7 @@
 use std::fs;
-use std::str::FromStr;
 use std::time::Duration;
 
-use blob_share::client::{
-    Client, DataIntentId, DataIntentStatus, EthProvider, GasPreference, NoncePreference,
-};
+use blob_share::client::{Client, DataIntentStatus, EthProvider, GasPreference, NoncePreference};
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::middleware::SignerMiddleware;
@@ -134,7 +131,7 @@ async fn main() -> Result<()> {
     let response = client
         .post_data_with_wallet(&wallet, data, &gas, &nonce)
         .await?;
-    let id = DataIntentId::from_str(&response.id)?;
+    let id = response.id;
     println!("{:?}", id);
 
     loop {

@@ -5,11 +5,14 @@ use ethers::{
 use eyre::{eyre, Result};
 use url::Url;
 
+pub use crate::data_intent_tracker::DataIntentSummary;
 pub use crate::eth_provider::EthProvider;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
+use crate::{
+    data_intent::BlobGasPrice, routes::PostDataIntentV1Signed, utils::address_to_hex_lowercase,
+};
 pub use crate::{data_intent::DataIntentId, DataIntent};
-use crate::{data_intent::DataIntentSummary, routes::SyncStatus, utils::unix_timestamps_millis};
-use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex_lowercase};
+use crate::{routes::SyncStatus, utils::unix_timestamps_millis};
 use crate::{utils::is_ok_response, BlockGasSummary};
 
 pub struct Client {
@@ -142,7 +145,7 @@ pub enum GasPreference {
 const FACTOR_RESOLUTION: u128 = 1000;
 
 impl GasPreference {
-    pub async fn max_blob_gas_price(&self) -> Result<u128> {
+    pub async fn max_blob_gas_price(&self) -> Result<BlobGasPrice> {
         match self {
             GasPreference::RelativeToHead(provider, factor_to_next_block) => {
                 // Choose data pricing correctly
@@ -155,11 +158,11 @@ impl GasPreference {
                     BlockGasSummary::from_block(&head_block)?.blob_gas_price_next_block();
 
                 Ok(if *factor_to_next_block == 1.0 {
-                    blob_gas_price_next_block
+                    blob_gas_price_next_block as BlobGasPrice
                 } else {
-                    ((FACTOR_RESOLUTION as f64 * factor_to_next_block) as u128
+                    (((FACTOR_RESOLUTION as f64 * factor_to_next_block) as u128
                         * blob_gas_price_next_block)
-                        / FACTOR_RESOLUTION
+                        / FACTOR_RESOLUTION) as BlobGasPrice
                 })
             }
         }
