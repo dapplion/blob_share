@@ -1,10 +1,12 @@
 use actix_web::{post, web, HttpResponse};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, Signature};
-use eyre::{bail, eyre, Result, WrapErr};
+use eyre::{bail, eyre, Result};
 use log::debug;
+use num_traits::cast::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Serialize};
 use serde_utils::hex_vec;
+use sqlx::types::BigDecimal;
 use sqlx::MySqlPool;
 use std::sync::Arc;
 
@@ -23,36 +25,14 @@ pub(crate) async fn post_data(
     // .try_into() verifies the signature
     let nonce = body.nonce;
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
+    let onchain_balance = data.balance_of_user(data_intent.from()).await;
 
-    // Check user has enough balance to cover the max cost allowed
-    let balance = data.balance_of_user(data_intent.from()).await;
-    if balance < data_intent.max_cost() as i128 {
-        return Err(e400(eyre!(
-            "Insufficient balance, current balance {} requested {}",
-            balance,
-            data_intent.max_cost()
-        )));
-    }
-
-    // Check that the nonce is the next expected
-    // Unsafe channel, check that this message is new and not replayed
-    if !atomic_update_ensure_higher_nonce(&data.db_pool, data_intent.from(), nonce)
-        .await
-        .map_err(e500)?
-    {
-        return Err(e400(eyre!("nonce {nonce} less than last seen nonce")));
-    }
-
-    // data_intent_tracker ensures no duplicates at this point, everything before this statement
-    // must be immmutable checks
-    let id = data_intent.id();
     let from = *data_intent.from();
     let data_len = data_intent.data_len();
+    let id = data_intent.id();
 
-    data.data_intent_tracker
-        .write()
+    atomic_update_post_data_on_unsafe_channel(&data.db_pool, data_intent, nonce, onchain_balance)
         .await
-        .add(data_intent)
         .map_err(e500)?;
 
     debug!("accepted data intent from {from} nonce {nonce} data_len {data_len} id {id}");
@@ -63,45 +43,82 @@ pub(crate) async fn post_data(
     Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
 }
 
-#[tracing::instrument(skip(pool))]
-pub async fn atomic_update_ensure_higher_nonce(
-    pool: &MySqlPool,
-    from: &Address,
-    new_nonce: u64,
-) -> Result<bool> {
-    let from_hex_lowercase = address_to_hex_lowercase(*from);
+#[tracing::instrument(skip(db_pool))]
+pub async fn atomic_update_post_data_on_unsafe_channel(
+    db_pool: &MySqlPool,
+    data_intent: DataIntent,
+    nonce: u64,
+    onchain_balance: i128,
+) -> Result<()> {
+    let cost = data_intent.max_cost() as i128;
+    let eth_address = address_to_hex_lowercase(*data_intent.from());
 
-    let mut tx = pool.begin().await?;
+    let mut tx = db_pool.begin().await?;
 
-    // Note: The "FOR UPDATE" clause locks the selected rows
-    let row = sqlx::query!(
-        r#"
-SELECT nonce FROM post_data_nonces WHERE eth_address = ? FOR UPDATE
-        "#,
-        from_hex_lowercase,
+    // Fetch user row, may not have any records yet
+    let user_row = sqlx::query!(
+        "SELECT total_data_intent_cost, post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+        eth_address,
     )
     .fetch_optional(&mut *tx)
     .await?;
 
-    if let Some(row) = row {
-        let current_nonce = row.nonce.try_into()?;
-        if new_nonce <= current_nonce {
-            tx.rollback().await.wrap_err("sqlx rollback")?;
-            return Ok(false);
+    // Check user balance
+    let total_data_intent_cost = match &user_row {
+        Some(row) => row
+            .total_data_intent_cost
+            .to_i128()
+            .ok_or_else(|| eyre!("invalid db value total_data_intent_cost"))?,
+        None => 0,
+    };
+    let last_nonce = user_row.map(|row| row.post_data_nonce).flatten();
+    let balance = onchain_balance - total_data_intent_cost;
+
+    if balance < cost {
+        bail!("Insufficient balance");
+    }
+
+    // Check nonce is higher
+    if let Some(last_nonce) = last_nonce {
+        if nonce <= last_nonce.try_into()? {
+            bail!("Nonce not new, replay protection");
         }
     }
 
-    // Nonce is ok, commit
+    let new_total_data_intent_cost = BigDecimal::from_i128(total_data_intent_cost + cost);
+
+    // Update balance and nonce
+    // TODO: Should assert that 1 row was affected?
     sqlx::query!(
-        "UPDATE post_data_nonces SET nonce = ? WHERE eth_address = ?",
-        new_nonce,
-        from_hex_lowercase
+        "UPDATE users SET total_data_intent_cost = ?, post_data_nonce = ? WHERE eth_address = ?",
+        new_total_data_intent_cost,
+        Some(nonce),
+        eth_address,
     )
     .execute(&mut *tx)
-    .await
-    .wrap_err_with(|| format!("sqlx query update nonce of {}", from))?;
-    tx.commit().await.wrap_err("sqlx commit")?;
-    Ok(true)
+    .await?;
+
+    let data = data_intent.data();
+    let data_hash = data_intent.data_hash().to_vec();
+    let max_blob_gas_price = BigDecimal::from_u128(data_intent.max_blob_gas_price());
+    let data_hash_signature = data_intent.data_hash_signature().map(|sig| sig.to_vec());
+
+    // Persist data request
+    sqlx::query!(
+        "INSERT INTO data_intents (eth_address, data, data_hash, max_blob_gas_price, data_hash_signature) VALUES (?, ?, ?, ?, ?)",
+        eth_address,
+        data,
+        data_hash,
+        max_blob_gas_price,
+        data_hash_signature
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Commit transaction
+    tx.commit().await?;
+
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

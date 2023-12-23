@@ -72,6 +72,20 @@ impl DataIntent {
         }
     }
 
+    pub fn data_hash(&self) -> &DataHash {
+        match self {
+            DataIntent::NoSignature(d) => &d.data_hash,
+            DataIntent::WithSignature(d) => &d.data_hash,
+        }
+    }
+
+    pub fn data_hash_signature(&self) -> Option<&Signature> {
+        match self {
+            DataIntent::NoSignature(_) => None,
+            DataIntent::WithSignature(d) => Some(&d.signature),
+        }
+    }
+
     pub async fn with_signature(
         wallet: &LocalWallet,
         data: Vec<u8>,
@@ -204,6 +218,10 @@ impl DataHash {
 
     pub fn to_vec(self) -> Vec<u8> {
         self.0.to_vec()
+    }
+
+    pub fn to_fixed_bytes(self) -> [u8; 32] {
+        self.0
     }
 }
 
