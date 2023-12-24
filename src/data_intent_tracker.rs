@@ -333,7 +333,7 @@ WHERE id IN
     for id in ids {
         sqlx::query("UPDATE data_intents SET inclusion_tx_hash = ? WHERE id = ?")
             .bind(&new_inclusion_tx_hash)
-            .bind(&id)
+            .bind(id)
             .execute(&mut *tx)
             .await?;
     }
@@ -364,7 +364,7 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
             from: address_from_vec(value.eth_address)?,
             data_hash: value.data_hash,
             data_len: value.data_len.try_into()?,
-            max_blob_gas_price: value.max_blob_gas_price.try_into()?,
+            max_blob_gas_price: value.max_blob_gas_price,
             updated_at: value.updated_at,
         })
     }
