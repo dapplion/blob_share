@@ -12,12 +12,13 @@ readme_file = "README.md"
 # To prevent leaking defaults or sensitive data from a local .env
 def load_env_file(file_path):
     env_vars = {}
-    with open(file_path, 'r') as file:
-        for line in file:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                key, _, _ = line.partition('=')
-                env_vars[key] = ''
+    if os.path.exists(file_path):
+       with open(file_path, 'r') as file:
+           for line in file:
+               line = line.strip()
+               if line and not line.startswith('#'):
+                   key, _, _ = line.partition('=')
+                   env_vars[key] = ''
     return env_vars
 clean_env = load_env_file('.env')
 
