@@ -42,6 +42,7 @@ use uuid::Uuid;
 
 use crate::{
     data_intent::{data_intent_max_cost, BlobGasPrice, DataIntentId},
+    metrics,
     utils::{address_from_vec, option_hex_vec, txhash_from_vec},
     DataIntent,
 };
@@ -62,6 +63,11 @@ pub enum DataIntentItem {
 
 // TODO: Need to prune all items once included for long enough
 impl DataIntentTracker {
+    pub fn collect_metrics(&self) {
+        metrics::PENDING_INTENTS_CACHE.set(self.pending_intents.len() as f64);
+        metrics::INCLUDED_INTENTS_CACHE.set(self.included_intents.len() as f64);
+    }
+
     pub async fn sync_with_db(&mut self, db_pool: &MySqlPool) -> Result<()> {
         let from = self.last_sync_table_data_intents;
         let to: DateTime<Utc> = Utc::now();

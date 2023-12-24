@@ -183,6 +183,13 @@ struct AppData {
     config: AppConfig,
 }
 
+impl AppData {
+    async fn collect_metrics(&self) {
+        self.sync.read().await.collect_metrics();
+        self.data_intent_tracker.read().await.collect_metrics();
+    }
+}
+
 pub struct App {
     port: u16,
     server: Server,

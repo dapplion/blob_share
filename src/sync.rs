@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, info, routes::SyncStatusBlock,
-    BlockGasSummary,
+    blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, info, metrics,
+    routes::SyncStatusBlock, BlockGasSummary,
 };
 
 type Nonce = u64;
@@ -90,6 +90,11 @@ impl BlockSync {
             pending_transactions: <_>::default(),
             config,
         }
+    }
+
+    pub fn collect_metrics(&self) {
+        metrics::SYNC_HEAD_NUMBER.set(self.get_head().number as f64);
+        metrics::SYNC_ANCHOR_NUMBER.set(self.get_anchor().number as f64);
     }
 
     /// Return gas summary of the current head
