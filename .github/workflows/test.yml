@@ -16,6 +16,8 @@ jobs:
   style:
     name: Check Style
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v2
@@ -125,6 +127,8 @@ jobs:
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v2

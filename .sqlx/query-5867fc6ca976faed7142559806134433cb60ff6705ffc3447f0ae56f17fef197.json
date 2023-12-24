@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE users SET total_data_intent_cost = ?, post_data_nonce = ? WHERE eth_address = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5867fc6ca976faed7142559806134433cb60ff6705ffc3447f0ae56f17fef197"
+}

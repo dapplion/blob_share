@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "\nINSERT INTO data_intents (id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature)\nVALUES (?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "f526aedee4ce66498740ef5a8429e1b330698b160fed08ac58b83646a8edd02b"
+}

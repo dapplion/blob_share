@@ -1,0 +1,36 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT total_data_intent_cost, post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_data_intent_cost",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "char_set": 63,
+          "max_size": 39
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "post_data_nonce",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "",
+          "char_set": 63,
+          "max_size": 20
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "88d61f67c86c9cadf509923224a9672e21dccdfca10939d700092fa06a59eb56"
+}
