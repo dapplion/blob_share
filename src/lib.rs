@@ -7,10 +7,10 @@ use ethers::{
     signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
     types::Address,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use std::{
-    collections::HashMap, env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
+    collections::HashMap, env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -20,6 +20,7 @@ use tokio::{
 use url::Url;
 
 use crate::{
+    anchor_block::get_anchor_block,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     metrics::{get_metrics, push_metrics_task},
@@ -28,11 +29,12 @@ use crate::{
         get_last_seen_nonce_by_address, get_sender, get_status_by_id, get_sync,
         post_data::post_data,
     },
-    sync::{AnchorBlock, BlockSync, BlockSyncConfig},
+    sync::{BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
     utils::parse_basic_auth,
 };
 
+pub mod anchor_block;
 pub mod beacon_api_client;
 mod blob_sender_task;
 mod blob_tx_data;
@@ -71,6 +73,9 @@ pub(crate) use std::{println as error, println as warn, println as info, println
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
+/// Max data allowed per user as pending data intents before inclusion
+pub const MAX_PENDING_DATA_LEN_PER_USER: usize = MAX_USABLE_BLOB_DATA_LEN * 16;
+/// Default target address
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
@@ -246,25 +251,8 @@ impl App {
         let anchor_block_filepath = data_dir.join("anchor_block.json");
 
         // TODO: choose starting point that's not genesis
-        let anchor_block = {
-            // Attempt to read persisted file first if exists
-            match fs::read_to_string(&anchor_block_filepath).await {
-                Ok(str) => {
-                    serde_json::from_str(&str).wrap_err_with(|| "parsing anchor block file")?
-                }
-                Err(e) => match e.kind() {
-                    io::ErrorKind::NotFound => match starting_point {
-                        StartingPoint::StartingBlock(starting_block) => {
-                            anchor_block_from_starting_block(&provider, starting_block).await?
-                        }
-                    },
-                    _ => bail!(
-                        "error opening anchor_block file {}: {e:?}",
-                        anchor_block_filepath.to_string_lossy()
-                    ),
-                },
-            }
-        };
+        let anchor_block =
+            get_anchor_block(&anchor_block_filepath, &db_pool, &provider, starting_point).await?;
 
         let sync = BlockSync::new(
             BlockSyncConfig {
@@ -274,6 +262,7 @@ impl App {
             },
             anchor_block,
         );
+        // TODO: handle initial sync here with a nice progress bar
 
         let mut data_intent_tracker = DataIntentTracker::default();
         info!("syncing data intent track");
@@ -400,29 +389,4 @@ pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
         &trusted_setup.g1_points(),
         &trusted_setup.g2_points(),
     )?)
-}
-
-/// Initialize empty anchor block state from a network block
-async fn anchor_block_from_starting_block(
-    provider: &EthProvider,
-    starting_block: u64,
-) -> Result<AnchorBlock> {
-    let anchor_block = provider
-        .get_block(starting_block)
-        .await?
-        .ok_or_else(|| eyre!("genesis block not available"))?;
-    let hash = anchor_block
-        .hash
-        .ok_or_else(|| eyre!("block has no hash property"))?;
-    let number = anchor_block
-        .number
-        .ok_or_else(|| eyre!("block has no number property"))?
-        .as_u64();
-    Ok(AnchorBlock {
-        hash,
-        number,
-        gas: BlockGasSummary::from_block(&anchor_block)?,
-        // At genesis all balances are zero
-        finalized_balances: <_>::default(),
-    })
 }

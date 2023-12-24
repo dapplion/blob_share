@@ -79,12 +79,14 @@ jobs:
       - name: Install sqlx-cli
         run: cargo install --version='~0.7' sqlx-cli --no-default-features --features rustls,mysql
       - name: Migrate database
+        # linux: mysql-shell, macos: mysql
         run: |
-          sudo apt-get install mysql -y
+          sudo apt-get install mysql-shell -y
           ./scripts/init_db.sh
         # </setup>
       - name: Check
         run: cargo check
+        # To re-sync run `cargo sqlx prepare` ref: https://github.com/launchbadge/sqlx/blob/main/sqlx-cli/README.md#enable-building-in-offline-mode-with-query
       - name: Ensure sqlx-offline data is synced
         run: cargo sqlx prepare --check
       - name: Test

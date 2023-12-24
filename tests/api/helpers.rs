@@ -1,7 +1,7 @@
 use ethers::{
     providers::{Http, Middleware, Provider},
     signers::LocalWallet,
-    types::{Address, Transaction, TransactionRequest, H256},
+    types::{Address, Block, Transaction, TransactionRequest, TxHash, H256, U256},
     utils::parse_ether,
 };
 use eyre::{bail, eyre, Result};
@@ -9,7 +9,7 @@ use futures::future::try_join_all;
 use log::LevelFilter;
 use sqlx::{Connection, Executor, MySqlConnection, MySqlPool};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     future::Future,
     hash::Hash,
     mem,
@@ -20,9 +20,10 @@ use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use blob_share::{
-    client::{DataIntentId, EthProvider, GasPreference, NoncePreference},
+    anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
+    client::{DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataResponse},
     consumer::BlobConsumer,
-    App, Args, Client, PushMetricsFormat,
+    App, Args, BlockGasSummary, Client, PushMetricsFormat,
 };
 
 use crate::{
@@ -57,21 +58,39 @@ pub enum AppStatus {
     Running,
 }
 
+#[derive(Default)]
+pub struct Config {
+    initial_topups: HashMap<Address, i128>,
+    initial_excess_blob_gas: u128,
+}
+
+impl Config {
+    pub fn add_initial_topup(mut self, address: Address, balance: i128) -> Self {
+        self.initial_topups.insert(address, balance);
+        self
+    }
+
+    pub fn set_initial_excess_blob_gas(mut self, value: u128) -> Self {
+        self.initial_excess_blob_gas = value;
+        self
+    }
+}
+
 impl TestHarness {
     pub async fn spawn_with_el_only() -> Self {
-        TestHarness::build(TestMode::ELOnly)
+        TestHarness::build(TestMode::ELOnly, None)
             .await
             .spawn_app_in_background()
     }
 
     #[allow(dead_code)]
     pub async fn spawn_with_chain() -> Self {
-        TestHarness::build(TestMode::WithChain)
+        TestHarness::build(TestMode::WithChain, None)
             .await
             .spawn_app_in_background()
     }
 
-    pub async fn build(test_mode: TestMode) -> Self {
+    pub async fn build(test_mode: TestMode, test_config: Option<Config>) -> Self {
         //  Lazy::force(&TRACING);
 
         // From env_logger docs to capture logs in tests
@@ -101,11 +120,30 @@ impl TestHarness {
             }
         };
 
+        let eth_provider = Provider::<Http>::try_from(geth_instance.http_url()).unwrap();
+        let eth_provider = eth_provider.interval(Duration::from_millis(50));
+
         // Randomise configuration to ensure test isolation
         let database_name = Uuid::new_v4().to_string().replace("-", "");
         let database_url_without_db = "mysql://root:password@localhost:3306";
         // Create and migrate the database
         configure_database(&database_url_without_db, &database_name).await;
+        let database_url = format!("{database_url_without_db}/{database_name}");
+
+        // Apply test config to anchor block
+        if let Some(test_config) = test_config {
+            let provider = EthProvider::Http(eth_provider.clone());
+            let mut anchor_block = anchor_block_from_starting_block(&provider, 0)
+                .await
+                .unwrap();
+            anchor_block.finalized_balances = test_config.initial_topups;
+            anchor_block.gas = block_gas_summary_from_excess(test_config.initial_excess_blob_gas);
+
+            let db_pool = connect_db_pool(&database_url).await;
+            persist_anchor_block_to_db(&db_pool, anchor_block)
+                .await
+                .unwrap();
+        }
 
         let temp_data_dir = tempdir().unwrap();
 
@@ -140,9 +178,6 @@ impl TestHarness {
         let base_url = format!("http://127.0.0.1:{}", app.port());
         let sender_address = app.sender_address();
 
-        let eth_provider = Provider::<Http>::try_from(geth_instance.http_url()).unwrap();
-        let eth_provider = eth_provider.interval(Duration::from_millis(50));
-
         let client = Client::new(&base_url).unwrap();
 
         Self {
@@ -171,7 +206,7 @@ impl TestHarness {
     pub async fn spawn_with_fn<F, Fut>(mut self, f: F) -> Result<()>
     where
         F: FnOnce(Self) -> Fut,
-        Fut: Future<Output = Result<()>>,
+        Fut: Future<Output = ()>,
     {
         let app = match mem::replace(&mut self.app_status, AppStatus::Running) {
             AppStatus::Running => panic!("app already running"),
@@ -191,7 +226,7 @@ impl TestHarness {
             result = f_future => {
                 // This branch is executed if f() finishes first
                 // f() can finish by completing the test successfully, or by encountering some error
-                return result;
+                return Ok(result);
             }
         }
     }
@@ -211,7 +246,23 @@ impl TestHarness {
         .unwrap()
     }
 
-    // $ curl -vv localhost:8000/data -X POST -H "Content-Type: application/json" --data '{"from": "0x00", "data": "0x00", "max_price": 1}'
+    /// Post data with default preferences for random data, may return errors
+    pub async fn post_data_of_len(
+        &self,
+        wallet: &LocalWallet,
+        data_len: usize,
+    ) -> Result<PostDataResponse> {
+        self.client
+            .post_data_with_wallet(
+                wallet,
+                vec![0xff; data_len],
+                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
+                &NoncePreference::Timebased,
+            )
+            .await
+    }
+
+    /// Post data with default preferences, expecting no errors
     pub async fn post_data(
         &self,
         wallet: &LocalWallet,
@@ -390,13 +441,17 @@ impl TestHarness {
         Ok(txs)
     }
 
-    pub async fn fund_sender_account(&self, wallet: &WalletWithProvider) {
+    pub async fn fund_sender_account(&self, wallet: &WalletWithProvider, value: Option<u128>) {
         let sender = self.client.get_sender().await.unwrap();
+
+        let value: U256 = value
+            .map(|value| value.into())
+            .unwrap_or(parse_ether("0.1").unwrap());
 
         let tx = TransactionRequest::new()
             .from(wallet.address())
             .to(sender.address)
-            .value(parse_ether("0.1").unwrap());
+            .value(value);
         let tx = wallet.send_transaction(tx, None).await.unwrap();
         timeout(Duration::from_secs(30), tx.confirmations(1))
             .await
@@ -404,9 +459,15 @@ impl TestHarness {
             .unwrap();
     }
 
-    pub fn get_wallet_genesis_funds(&self) -> WalletWithProvider {
+    pub fn get_signer_genesis_funds(&self) -> WalletWithProvider {
         self.geth_instance.http_provider().unwrap()
     }
+}
+
+async fn connect_db_pool(database_url: &str) -> MySqlPool {
+    MySqlPool::connect(&database_url)
+        .await
+        .expect(&format!("Failed to connect to DB {database_url}"))
 }
 
 async fn configure_database(database_url_without_db: &str, database_name: &str) -> MySqlPool {
@@ -421,15 +482,22 @@ async fn configure_database(database_url_without_db: &str, database_name: &str) 
 
     // Migrate database
     let database_url = format!("{database_url_without_db}/{database_name}");
-    let connection_pool = MySqlPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to Postgres.");
+    let connection_pool = connect_db_pool(&database_url).await;
     sqlx::migrate!("./migrations")
         .run(&connection_pool)
         .await
         .expect("Failed to migrate the database");
 
     connection_pool
+}
+
+/// Test mock BlockGasSummary from `excess_blob_gas` only
+fn block_gas_summary_from_excess(excess_blob_gas: u128) -> BlockGasSummary {
+    let mut block = Block::<TxHash>::default();
+    block.excess_blob_gas = Some(excess_blob_gas.into());
+    block.blob_gas_used = Some(0.into());
+    block.base_fee_per_gas = Some(0.into());
+    BlockGasSummary::from_block(&block).unwrap()
 }
 
 pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(

@@ -16,7 +16,7 @@ use crate::data_intent_tracker::store_data_intent;
 use crate::utils::{
     address_to_hex_lowercase, deserialize_signature, e400, e500, unix_timestamps_millis,
 };
-use crate::AppData;
+use crate::{AppData, MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN};
 
 #[tracing::instrument(skip(body, data), err)]
 #[post("/v1/data")]
@@ -27,10 +27,33 @@ pub(crate) async fn post_data(
     // .try_into() verifies the signature
     let nonce = body.nonce;
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
-    let onchain_balance = data.balance_of_user(data_intent.from()).await;
-
     let from = *data_intent.from();
     let data_len = data_intent.data_len();
+
+    // TODO: Consider support for splitting data over mutliple blobs
+    if data_intent.data_len() > MAX_USABLE_BLOB_DATA_LEN {
+        return Err(e400(eyre!(
+            "data length {} over max usable blob data {}",
+            data_intent.data_len(),
+            MAX_USABLE_BLOB_DATA_LEN
+        )));
+    }
+
+    // TODO: Is this limitation necessary?
+    let pending_total_data_len = data
+        .data_intent_tracker
+        .read()
+        .await
+        .pending_intents_total_data_len(&from);
+    if pending_total_data_len > MAX_PENDING_DATA_LEN_PER_USER {
+        return Err(e400(eyre!(
+            "pending total data_len {} over max {}",
+            pending_total_data_len,
+            MAX_PENDING_DATA_LEN_PER_USER
+        )));
+    }
+
+    let onchain_balance = data.balance_of_user(&from).await;
 
     let id = atomic_update_post_data_on_unsafe_channel(
         &data.db_pool,

@@ -142,6 +142,7 @@ impl Client {
 
 pub enum GasPreference {
     RelativeToHead(EthProvider, f64),
+    Value(BlobGasPrice),
 }
 
 const FACTOR_RESOLUTION: u128 = 1000;
@@ -167,6 +168,7 @@ impl GasPreference {
                         / FACTOR_RESOLUTION) as BlobGasPrice
                 })
             }
+            GasPreference::Value(blob_gas_price) => Ok(*blob_gas_price),
         }
     }
 }

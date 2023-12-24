@@ -186,6 +186,12 @@ impl BlockSync {
             .copied()
             .unwrap_or(0);
 
+        dbg!((
+            balance_delta_block_inclusions,
+            cost_of_pending_txs,
+            finalized_balance
+        ));
+
         finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
     }
 

@@ -28,11 +28,10 @@ DB_HOST="${MYSQL_HOST:=localhost}"
 if [[ -z "${SKIP_DOCKER}" ]]
 then
   # if a mysql container is running, print instructions to kill it and exit
-  RUNNING_MYSQL_CONTAINER=$(docker ps --filter 'name=mysql' --format '{{.ID}}')
+  RUNNING_MYSQL_CONTAINER=$(docker ps --filter 'name=test_mysql' --format '{{.ID}}')
   if [[ -n $RUNNING_MYSQL_CONTAINER ]]; then
-    echo >&2 "there is a mysql container already running, kill it with"
-    echo >&2 "    docker kill ${RUNNING_MYSQL_CONTAINER}"
-    exit 1
+    echo "there is a mysql container already running, killing it"
+    docker kill ${RUNNING_MYSQL_CONTAINER}
   fi
   # Launch mysql using Docker
   docker run \
@@ -42,7 +41,7 @@ then
       -e MYSQL_DATABASE=${DB_NAME} \
       -p "${DB_PORT}":3306 \
       -d \
-      --name "mysql_$(date '+%s')" \
+      --name "test_mysql_$(date '+%s')" \
       mysql
       # Note: Adjust MySQL Docker settings as needed
 fi

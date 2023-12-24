@@ -114,6 +114,23 @@ ORDER BY updated_at ASC
             .sum()
     }
 
+    /// Returns the total sum of pending itents total length.
+    pub fn pending_intents_total_data_len(&self, from: &Address) -> usize {
+        self.pending_intents
+            .values()
+            .map(|item| match item {
+                DataIntentItem::Pending(data_intent) => {
+                    if &data_intent.from == from {
+                        data_intent.data_len
+                    } else {
+                        0
+                    }
+                }
+                DataIntentItem::Included(_, _) => 0,
+            })
+            .sum()
+    }
+
     pub fn get_all_pending(&self) -> Vec<DataIntentSummary> {
         self.pending_intents
             .values()

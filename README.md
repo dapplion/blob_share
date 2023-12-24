@@ -6,7 +6,7 @@ Implementation of trusted blob sharing protocol. Supports submissions via a perm
 
 <!-- HELP_START -->
 ```
-Usage: blobshare [OPTIONS]
+Usage: blobshare [OPTIONS] --database-url <DATABASE_URL>
 
 Options:
   -p, --port <PORT>
@@ -29,6 +29,8 @@ Options:
           Consider blocks `finalize_depth` behind current head final. If there's a re-org deeper than this depth, the app will crash and expect to re-sync on restart [env: FINALIZE_DEPTH=] [default: 64]
       --max-pending-transactions <MAX_PENDING_TRANSACTIONS>
           Max count of pending transactions that will be sent before waiting for inclusion of the previously sent transactions. A number higher than the max count of blobs per block should not result better UX. However, a higher number risks creating transactions that can become underpriced in volatile network conditions [env: MAX_PENDING_TRANSACTIONS=] [default: 6]
+      --database-url <DATABASE_URL>
+          Database URL to mysql DB with format `mysql://user:password@localhost/test` [env: DATABASE_URL=]
       --metrics
           Enable serving metrics [env: METRICS=]
       --metrics-port <METRICS_PORT>
