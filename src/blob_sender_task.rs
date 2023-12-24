@@ -7,7 +7,9 @@ use crate::{
     blob_tx_data::BlobTxParticipant,
     client::DataIntentSummary,
     data_intent::BlobGasPrice,
-    data_intent_tracker::{fetch_many_data_intent_db_full, DataIntentDbRowFull},
+    data_intent_tracker::{
+        fetch_many_data_intent_db_full, update_inclusion_tx_hashes, DataIntentDbRowFull,
+    },
     debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
@@ -156,13 +158,19 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     //
     // Declare items as pending on the computed tx_hash
     {
+        update_inclusion_tx_hashes(&app_data.db_pool, &data_intent_ids, blob_tx.tx_hash).await?;
+
+        // TODO: Review when it's best to re-sync the data_intent_tracker
+        app_data
+            .data_intent_tracker
+            .write()
+            .await
+            .sync_with_db(&app_data.db_pool)
+            .await?;
+
         // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
         // is consistent in both structs
-        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
         let mut sync = app_data.sync.write().await;
-        data_intent_tracker
-            .include_in_blob_tx(&data_intent_ids, blob_tx.tx_hash)
-            .wrap_err("consistency error with blob_tx intents")?;
         sync.register_pending_blob_tx(blob_tx.tx_summary)
             .wrap_err("consistency error with blob_tx")?;
     }

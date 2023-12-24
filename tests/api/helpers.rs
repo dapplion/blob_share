@@ -7,6 +7,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use futures::future::try_join_all;
 use log::LevelFilter;
+use sqlx::{Connection, Executor, MySqlConnection, MySqlPool};
 use std::{
     collections::HashSet,
     future::Future,
@@ -16,6 +17,7 @@ use std::{
 };
 use tempfile::{tempdir, TempDir};
 use tokio::time::{sleep, timeout};
+use uuid::Uuid;
 
 use blob_share::{
     client::{DataIntentId, EthProvider, GasPreference, NoncePreference},
@@ -99,6 +101,12 @@ impl TestHarness {
             }
         };
 
+        // Randomise configuration to ensure test isolation
+        let database_name = Uuid::new_v4().to_string().replace("-", "");
+        let database_url_without_db = "mysql://root:password@localhost:3306";
+        // Create and migrate the database
+        configure_database(&database_url_without_db, &database_name).await;
+
         let temp_data_dir = tempdir().unwrap();
 
         let args = Args {
@@ -117,8 +125,7 @@ impl TestHarness {
             finalize_depth: FINALIZE_DEPTH,
             max_pending_transactions: 6,
             // TODO: De-duplicate of configure properly
-            // TODO: Use different db names every run
-            database_url: "mysql://mysql:password@localhost:3306/blob_share".to_string(),
+            database_url: format!("{database_url_without_db}/{database_name}"),
             metrics: false,
             metrics_port: 0,
             metrics_bearer_token: None,
@@ -400,6 +407,29 @@ impl TestHarness {
     pub fn get_wallet_genesis_funds(&self) -> WalletWithProvider {
         self.geth_instance.http_provider().unwrap()
     }
+}
+
+async fn configure_database(database_url_without_db: &str, database_name: &str) -> MySqlPool {
+    // Create database
+    let mut connection = MySqlConnection::connect(database_url_without_db)
+        .await
+        .expect("Failed to connect to DB");
+    connection
+        .execute(&*format!(r#"CREATE DATABASE {};"#, database_name))
+        .await
+        .expect("Failed to create database.");
+
+    // Migrate database
+    let database_url = format!("{database_url_without_db}/{database_name}");
+    let connection_pool = MySqlPool::connect(&database_url)
+        .await
+        .expect("Failed to connect to Postgres.");
+    sqlx::migrate!("./migrations")
+        .run(&connection_pool)
+        .await
+        .expect("Failed to migrate the database");
+
+    connection_pool
 }
 
 pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(

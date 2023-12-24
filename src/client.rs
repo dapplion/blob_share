@@ -5,7 +5,9 @@ use ethers::{
 use eyre::{eyre, Result};
 use url::Url;
 
-pub use crate::data_intent_tracker::DataIntentSummary;
+pub use crate::data_intent_tracker::{
+    DataIntentDbRowFull, DataIntentDbRowSummary, DataIntentSummary,
+};
 pub use crate::eth_provider::EthProvider;
 pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
 use crate::{
@@ -93,7 +95,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntent> {
+    pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntentDbRowFull> {
         let response = self
             .client
             .get(&self.url(&format!("v1/data/{}", id)))

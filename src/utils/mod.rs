@@ -8,6 +8,8 @@ use std::fmt::{self, Debug, Display};
 use std::ops::{Add, Div, Mul};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod option_hex_vec;
+
 // Return an opaque 500 while preserving the error root's cause for logging.
 #[allow(dead_code)]
 pub(crate) fn e500<T>(e: T) -> actix_web::Error

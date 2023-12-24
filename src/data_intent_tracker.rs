@@ -42,7 +42,7 @@ use uuid::Uuid;
 
 use crate::{
     data_intent::{data_intent_max_cost, BlobGasPrice, DataIntentId},
-    utils::{address_from_vec, address_to_hex_lowercase, txhash_from_vec},
+    utils::{address_from_vec, option_hex_vec, txhash_from_vec},
     DataIntent,
 };
 
@@ -119,28 +119,6 @@ ORDER BY updated_at ASC
             .collect()
     }
 
-    pub fn include_in_blob_tx(&mut self, ids: &[DataIntentId], tx_hash: TxHash) -> Result<()> {
-        for id in ids {
-            match self.pending_intents.remove(id) {
-                None => bail!("pending intent removed while moving into pending {}", id),
-                Some(DataIntentItem::Included(data_intent, prev_tx_hash)) => {
-                    self.pending_intents
-                        .insert(*id, DataIntentItem::Included(data_intent, prev_tx_hash));
-                    bail!("pending item already included in transaction {:?} while moving into pending {}", prev_tx_hash, id)
-                }
-                Some(DataIntentItem::Pending(data_intent)) => {
-                    self.pending_intents
-                        .insert(*id, DataIntentItem::Included(data_intent, tx_hash));
-                }
-            }
-        }
-
-        // TODO: should handle double inclusion for same transaction hash
-        self.included_intents.insert(tx_hash, ids.to_vec());
-
-        Ok(())
-    }
-
     pub fn revert_item_to_pending(&mut self, tx_hash: TxHash) -> Result<()> {
         let ids = self
             .included_intents
@@ -170,17 +148,22 @@ ORDER BY updated_at ASC
     }
 }
 
-#[derive(Debug, FromRow, Serialize)]
+#[derive(Debug, FromRow, Serialize, Deserialize)]
 pub struct DataIntentDbRowFull {
     pub id: Uuid,
-    pub eth_address: Vec<u8>,                 // BINARY(20)
-    pub data: Vec<u8>,                        // MEDIUMBLOB
-    pub data_len: u32,                        // INT
-    pub data_hash: Vec<u8>,                   // BINARY(32)
-    pub max_blob_gas_price: i64,              // BIGINT
+    #[serde(with = "hex_vec")]
+    pub eth_address: Vec<u8>, // BINARY(20)
+    #[serde(with = "hex_vec")]
+    pub data: Vec<u8>, // MEDIUMBLOB
+    pub data_len: u32, // INT
+    #[serde(with = "hex_vec")]
+    pub data_hash: Vec<u8>, // BINARY(32)
+    pub max_blob_gas_price: u64, // BIGINT
+    #[serde(with = "option_hex_vec")]
     pub data_hash_signature: Option<Vec<u8>>, // BINARY(65), Optional
-    pub inclusion_tx_hash: Option<Vec<u8>>,   // BINARY(32), Optional
-    pub updated_at: DateTime<Utc>,            // TIMESTAMP(3)
+    #[serde(with = "option_hex_vec")]
+    pub inclusion_tx_hash: Option<Vec<u8>>, // BINARY(32), Optional
+    pub updated_at: DateTime<Utc>, // TIMESTAMP(3)
 }
 
 #[derive(Debug, FromRow, Serialize)]
@@ -189,7 +172,7 @@ pub struct DataIntentDbRowSummary {
     pub eth_address: Vec<u8>,                 // BINARY(20)
     pub data_len: u32,                        // INT
     pub data_hash: Vec<u8>,                   // BINARY(32)
-    pub max_blob_gas_price: i64,              // BIGINT
+    pub max_blob_gas_price: u64,              // BIGINT
     pub data_hash_signature: Option<Vec<u8>>, // BINARY(65), Optional
     pub inclusion_tx_hash: Option<Vec<u8>>,   // BINARY(32), Optional
     pub updated_at: DateTime<Utc>,            // TIMESTAMP(3)
@@ -201,7 +184,7 @@ pub(crate) async fn fetch_data_intent_db_full(
 ) -> Result<DataIntentDbRowFull> {
     let data_intent = sqlx::query_as::<_, DataIntentDbRowFull>(
         r#"
-SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
 FROM data_intents
 WHERE id = ?
         "#)
@@ -218,7 +201,7 @@ pub(crate) async fn fetch_many_data_intent_db_full(
 ) -> Result<Vec<DataIntentDbRowFull>> {
     let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
         r#"
-SELECT eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
 FROM data_intents
 WHERE id in
     "#,
@@ -260,7 +243,7 @@ pub(crate) async fn store_data_intent<'c>(
     data_intent: DataIntent,
 ) -> Result<DataIntentId> {
     let id = Uuid::new_v4();
-    let eth_address = address_to_hex_lowercase(*data_intent.from());
+    let eth_address = data_intent.from().to_fixed_bytes().to_vec();
     let data = data_intent.data();
     let data_len = data.len() as u32;
     let data_hash = data_intent.data_hash().to_vec();
@@ -297,6 +280,64 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
     Ok(id)
 }
 
+pub(crate) async fn update_inclusion_tx_hashes(
+    db_pool: &MySqlPool,
+    ids: &[Uuid],
+    new_inclusion_tx_hash: TxHash,
+) -> Result<()> {
+    let mut tx = db_pool.begin().await?;
+
+    #[derive(Debug, FromRow, Serialize)]
+    struct Row {
+        id: Uuid,
+        inclusion_tx_hash: Option<Vec<u8>>,
+    }
+
+    // Bulk fetch all rows
+    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
+        r#"
+SELECT id, inclusion_tx_hash
+FROM data_intents
+WHERE id IN
+    "#,
+    );
+
+    // TODO: limit the amount of ids to not reach a limit
+    // TODO: try to use different API than `.push_tuples` since you only query by id
+    query_builder.push_tuples(ids.iter(), |mut b, id| {
+        b.push_bind(id);
+    });
+
+    let rows = query_builder.build().fetch_all(&mut *tx).await?;
+
+    // Filter IDs where inclusion_tx_hash is not set
+    for row in rows {
+        let row = Row::from_row(&row)?;
+        if let Some(tx_hash) = row.inclusion_tx_hash {
+            bail!(
+                "data_intent {} is already included in a tx {}",
+                row.id,
+                hex::encode(tx_hash)
+            );
+        }
+    }
+
+    // Batch update the filtered IDs
+    let new_inclusion_tx_hash = new_inclusion_tx_hash.to_fixed_bytes().to_vec();
+    for id in ids {
+        sqlx::query("UPDATE data_intents SET inclusion_tx_hash = ? WHERE id = ?")
+            .bind(&new_inclusion_tx_hash)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // Commit transaction
+    tx.commit().await?;
+
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DataIntentSummary {
     pub id: DataIntentId,
@@ -331,5 +372,38 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentItem {
             None => DataIntentItem::Pending(value.try_into()?),
             Some(tx_hash) => DataIntentItem::Included(value.try_into()?, txhash_from_vec(tx_hash)?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use chrono::DateTime;
+    use uuid::Uuid;
+
+    use super::DataIntentDbRowFull;
+
+    #[test]
+    fn serde_data_intent_db_row_full() {
+        let item = DataIntentDbRowFull {
+            id: Uuid::from_str("1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e").unwrap(),
+            eth_address: vec![0xaa; 20],
+            data: vec![0xbb; 10],
+            data_len: 10,
+            data_hash: vec![0xcc; 32],
+            data_hash_signature: None,
+            max_blob_gas_price: 100000000,
+            inclusion_tx_hash: Some(vec![0xee; 32]),
+            updated_at: DateTime::from_str("2023-01-01T12:12:12.202889Z").unwrap(),
+        };
+
+        let expected_item_str = "{\"id\":\"1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e\",\"eth_address\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data\":\"0xbbbbbbbbbbbbbbbbbbbb\",\"data_len\":10,\"data_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"max_blob_gas_price\":100000000,\"data_hash_signature\":null,\"inclusion_tx_hash\":\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"updated_at\":\"2023-01-01T12:12:12.202889Z\"}";
+
+        assert_eq!(serde_json::to_string(&item).unwrap(), expected_item_str);
+        let item_recv: DataIntentDbRowFull = serde_json::from_str(expected_item_str).unwrap();
+        // test eq of dedicated serde fiels with Option<Vec<u8>>
+        assert_eq!(item_recv.data_hash_signature, item.data_hash_signature);
+        assert_eq!(item_recv.inclusion_tx_hash, item.inclusion_tx_hash);
     }
 }
