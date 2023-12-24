@@ -85,6 +85,8 @@ jobs:
         # </setup>
       - name: Check
         run: cargo check
+      - name: Ensure sqlx-offline data is synced
+        run: cargo sqlx prepare --check
       - name: Test
         run: cargo test -- --test-threads=1 --nocapture
 
