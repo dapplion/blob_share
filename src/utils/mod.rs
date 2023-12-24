@@ -61,7 +61,7 @@ pub fn address_to_hex_lowercase(addr: Address) -> String {
     format!("0x{}", hex::encode(addr.to_fixed_bytes()))
 }
 
-/// Convert Vec<u8> into ethers Address H160 type. Errors if v.len() != 20.
+/// Convert `Vec<u8>` into ethers Address H160 type. Errors if v.len() != 20.
 pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
     let fixed_vec: [u8; 20] = v
         .try_into()
@@ -69,7 +69,7 @@ pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
     Ok(H160(fixed_vec))
 }
 
-/// Convert Vec<u8> into ethers TxHash H256 type. Errors if v.len() != 32.
+/// Convert `Vec<u8>` into ethers TxHash H256 type. Errors if v.len() != 32.
 pub fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
     let fixed_vec: [u8; 32] = v
         .try_into()
