@@ -9,10 +9,10 @@ pub use crate::data_intent_tracker::{
     DataIntentDbRowFull, DataIntentDbRowSummary, DataIntentSummary,
 };
 pub use crate::eth_provider::EthProvider;
-pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
-use crate::{
-    data_intent::BlobGasPrice, routes::PostDataIntentV1Signed, utils::address_to_hex_lowercase,
+pub use crate::routes::{
+    DataIntentStatus, PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse, SenderDetails,
 };
+use crate::{data_intent::BlobGasPrice, utils::address_to_hex_lowercase};
 pub use crate::{data_intent::DataIntentId, DataIntent};
 use crate::{routes::SyncStatus, utils::unix_timestamps_millis};
 use crate::{utils::is_ok_response, BlockGasSummary};

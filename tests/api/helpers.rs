@@ -21,7 +21,10 @@ use uuid::Uuid;
 
 use blob_share::{
     anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
-    client::{DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataResponse},
+    client::{
+        DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataIntentV1,
+        PostDataResponse,
+    },
     consumer::BlobConsumer,
     App, Args, BlockGasSummary, Client, PushMetricsFormat,
 };
@@ -471,6 +474,8 @@ async fn connect_db_pool(database_url: &str) -> MySqlPool {
 }
 
 async fn configure_database(database_url_without_db: &str, database_name: &str) -> MySqlPool {
+    println!("connecting to MySQL at {database_url_without_db}, creating ephemeral database with name {database_name}");
+
     // Create database
     let mut connection = MySqlConnection::connect(database_url_without_db)
         .await

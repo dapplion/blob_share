@@ -58,6 +58,8 @@ impl DataIntent {
     }
 
     pub fn data_len(&self) -> usize {
+        // TODO: charge and coerce data to at least 31 bytes to prevent too expensive packing
+        // rounds. Add consistency tests for signed data of coerced inputs
         self.data().len()
     }
 

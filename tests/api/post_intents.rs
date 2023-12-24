@@ -5,7 +5,8 @@ use crate::{
     helpers::{retry_with_timeout, unique, Config, TestHarness, TestMode, FINALIZE_DEPTH},
 };
 use blob_share::{
-    client::NoncePreference, MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN,
+    client::{NoncePreference, PostDataIntentV1, PostDataIntentV1Signed},
+    MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN,
 };
 use ethers::signers::{LocalWallet, Signer};
 use log::info;
@@ -120,6 +121,70 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
             .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
             .await;
         assert_eq!(res.unwrap_err().to_string(), "asd");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_nonce() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.nonce += 1;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_max_blob_gas_price() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.intent.max_blob_gas_price += 1;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_data() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.intent.data[0] += 1;
+    })
+    .await;
+}
+
+async fn reject_post_data_request_invalid_signature<F>(mutate: F)
+where
+    F: FnOnce(&mut PostDataIntentV1Signed),
+{
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(Config::default().add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000)),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+        let nonce = 1;
+        let mut intent_signed = PostDataIntentV1Signed::with_signature(
+            wallet.signer(),
+            PostDataIntentV1 {
+                from: wallet.address(),
+                data: vec![0xaa; 1000],
+                max_blob_gas_price: 1,
+            },
+            Some(nonce),
+        )
+        .await
+        .unwrap();
+
+        // Mutate after signing
+        mutate(&mut intent_signed);
+
+        let res = test_harness.client.post_data(&intent_signed).await;
+
+        let err_str = res.unwrap_err().to_string();
+        assert!(
+            err_str.contains("Signature verification failed"),
+            "Expected error 'Signature verification failed' but got '{}'",
+            err_str
+        );
     })
     .await
     .unwrap();

@@ -1,4 +1,6 @@
-use blob_share::packing::{pack_items_brute_force, pack_items_greedy_sorted, pack_items_knapsack};
+use blob_share::packing::{
+    self, pack_items_brute_force, pack_items_greedy_sorted, pack_items_knapsack,
+};
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -17,7 +19,7 @@ fn brute_force_benchmark(c: &mut Criterion) {
                     rng.gen_range(range_cost_per_len.clone()),
                 )
             })
-            .collect::<Vec<(usize, u128)>>();
+            .collect::<Vec<packing::Item>>();
 
         items.sort_by(|a, b| a.0.cmp(&b.0));
 
