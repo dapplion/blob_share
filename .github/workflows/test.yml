@@ -79,9 +79,9 @@ jobs:
       - name: Install sqlx-cli
         run: cargo install --version='~0.7' sqlx-cli --no-default-features --features rustls,mysql
       - name: Migrate database
-        # linux: mysql-shell, macos: mysql
+        # linux: mysql-client, macos: brew install mysql
         run: |
-          sudo apt-get install mysql-shell -y
+          sudo apt-get install mysql-client -y
           ./scripts/init_db.sh
         # </setup>
       - name: Check
