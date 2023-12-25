@@ -7,6 +7,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use futures::future::try_join_all;
 use log::LevelFilter;
+use rand::{distributions::Alphanumeric, Rng};
 use sqlx::{Connection, Executor, MySqlConnection, MySqlPool};
 use std::{
     collections::{HashMap, HashSet},
@@ -127,7 +128,7 @@ impl TestHarness {
         let eth_provider = eth_provider.interval(Duration::from_millis(50));
 
         // Randomise configuration to ensure test isolation
-        let database_name = Uuid::new_v4().to_string().replace("-", "");
+        let database_name = random_alphabetic_string(16);
         let database_url_without_db = "mysql://root:password@localhost:3306";
         // Create and migrate the database
         configure_database(&database_url_without_db, &database_name).await;
@@ -474,14 +475,14 @@ async fn connect_db_pool(database_url: &str) -> MySqlPool {
 }
 
 async fn configure_database(database_url_without_db: &str, database_name: &str) -> MySqlPool {
-    println!("connecting to MySQL at {database_url_without_db}, creating ephemeral database with name {database_name}");
+    println!("connecting to MySQL {database_url_without_db}, creating ephemeral database_name '{database_name}'");
 
     // Create database
     let mut connection = MySqlConnection::connect(database_url_without_db)
         .await
         .expect("Failed to connect to DB");
     connection
-        .execute(&*format!(r#"CREATE DATABASE {};"#, database_name))
+        .execute(&*format!("CREATE DATABASE {};", database_name))
         .await
         .expect("Failed to create database.");
 
@@ -531,4 +532,14 @@ where
 /// Returns unique elements of slice `v`
 pub fn unique<T: Eq + Hash>(v: &[T]) -> Vec<&T> {
     v.iter().collect::<HashSet<&T>>().into_iter().collect()
+}
+
+fn random_alphabetic_string(length: usize) -> String {
+    let mut rng = rand::thread_rng();
+    std::iter::repeat(())
+        .map(|()| rng.sample(Alphanumeric))
+        .filter(|c| c.is_ascii_alphabetic())
+        .take(length)
+        .map(char::from)
+        .collect()
 }
