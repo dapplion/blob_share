@@ -3,9 +3,7 @@ use actix_web::HttpRequest;
 use ethers::types::{Address, Signature, TxHash, H160, H256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
-use std::cmp::PartialEq;
 use std::fmt::{self, Debug, Display};
-use std::ops::{Add, Div, Mul};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod option_hex_vec;
@@ -30,16 +28,8 @@ where
 
 /// Multiplies an integer value by `percent / 100`, if the resulting value is the same, returns the
 /// value + 1.
-pub fn increase_by_min_percent<T>(value: T, percent: T) -> T
-where
-    T: Copy + Mul<Output = T> + Div<Output = T> + Add<Output = T> + PartialEq + From<u8>,
-{
-    let new_value = (percent * value) / T::from(100);
-    if new_value == value {
-        value + T::from(1)
-    } else {
-        value
-    }
+pub fn increase_by_min_percent(value: u64, fraction: f64) -> u64 {
+    ((value as f64) * fraction).ceil() as u64
 }
 
 /// Post-process a reqwest response to handle non 2xx codes gracefully
@@ -137,5 +127,29 @@ where
 {
     fn prefix_err(self, prefix: &str) -> eyre::Result<T> {
         self.map_err(|e| eyre::eyre!("{}: {}", prefix, e.to_string().replace('\n', "; ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::increase_by_min_percent;
+
+    #[test]
+    fn test_increase_by_min_percent() {
+        // Bumps to more than 101% if low resolution
+        assert_eq!(increase_by_min_percent(1, 1.01), 2);
+        // Bump by some percents
+        assert_eq!(increase_by_min_percent(100, 1.01), 101);
+        assert_eq!(increase_by_min_percent(1000000000, 1.01), 1010000000);
+        // Bump close to u64::MAX
+        assert_eq!(
+            increase_by_min_percent(10000000000000000000, 1.8),
+            18000000000000000000
+        );
+        // Don't bump with fraction exactly 1
+        assert_eq!(increase_by_min_percent(1, 1.), 1);
+        assert_eq!(increase_by_min_percent(1000000000, 1.), 1000000000);
+        // Precision loss
+        assert_eq!(increase_by_min_percent(u64::MAX - 512, 1.), u64::MAX);
     }
 }

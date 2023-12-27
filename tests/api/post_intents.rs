@@ -86,6 +86,47 @@ async fn reject_single_data_intent_too_big() {
 }
 
 #[tokio::test]
+async fn reject_posting_too_many_pending_intents_sending_txs() {
+    reject_posting_too_many_pending_intents(true).await
+}
+
+#[tokio::test]
+async fn reject_posting_too_many_pending_intents_without_sending_txs() {
+    reject_posting_too_many_pending_intents(false).await
+}
+
+async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(
+            Config::default()
+                .add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000)
+                // 10 * BLOB_GASPRICE_UPDATE_FRACTION = 22026, so a tx should never be sent
+                .set_initial_excess_blob_gas(if send_blob_txs { 3338477 * 10 } else { 0 }),
+        ),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+
+        for _ in 0..MAX_PENDING_DATA_LEN_PER_USER / MAX_USABLE_BLOB_DATA_LEN {
+            test_harness
+                .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
+                .await
+                .unwrap();
+        }
+
+        // Send data request before funding the sender address
+        let res = test_harness
+            .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
+            .await;
+        assert_eq!(res.unwrap_err().to_string(), "asd");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn reject_post_data_request_invalid_signature_mutate_nonce() {
     reject_post_data_request_invalid_signature(|intent| {
         intent.nonce += 1;

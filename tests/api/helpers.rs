@@ -18,14 +18,10 @@ use std::{
 };
 use tempfile::{tempdir, TempDir};
 use tokio::time::{sleep, timeout};
-use uuid::Uuid;
 
 use blob_share::{
     anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
-    client::{
-        DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataIntentV1,
-        PostDataResponse,
-    },
+    client::{DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataResponse},
     consumer::BlobConsumer,
     App, Args, BlockGasSummary, Client, PushMetricsFormat,
 };

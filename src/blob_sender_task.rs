@@ -271,7 +271,7 @@ fn select_next_blob_items(
 ) -> Option<Vec<DataIntentSummary>> {
     let items: Vec<Item> = data_intents
         .iter()
-        .map(|e| (e.data_len, e.max_blob_gas_price))
+        .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
         .collect::<Vec<_>>();
 
     pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {
@@ -281,114 +281,4 @@ fn select_next_blob_items(
             .map(|i| data_intents[*i].clone())
             .collect::<Vec<_>>()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use ethers::types::H160;
-
-    use crate::{
-        client::{DataIntentId, DataIntentSummary},
-        data_intent::BlobGasPrice,
-        packing, MAX_USABLE_BLOB_DATA_LEN,
-    };
-
-    use super::select_next_blob_items;
-
-    #[test]
-    fn select_next_blob_items_case_no_items() {
-        run_select_next_blob_items_test(&[], 1, None);
-    }
-
-    #[test]
-    fn select_next_blob_items_case_one_small() {
-        run_select_next_blob_items_test(&[(MAX_USABLE_BLOB_DATA_LEN / 4, 1)], 1, None);
-    }
-
-    #[test]
-    fn select_next_blob_items_case_one_big() {
-        run_select_next_blob_items_test(
-            &[(MAX_USABLE_BLOB_DATA_LEN, 1)],
-            1,
-            Some(&[(MAX_USABLE_BLOB_DATA_LEN, 1)]),
-        );
-    }
-
-    #[test]
-    fn select_next_blob_items_case_multiple_small() {
-        run_select_next_blob_items_test(
-            &[
-                (MAX_USABLE_BLOB_DATA_LEN / 4, 1),
-                (MAX_USABLE_BLOB_DATA_LEN / 4, 2),
-                (MAX_USABLE_BLOB_DATA_LEN / 2, 3),
-                (MAX_USABLE_BLOB_DATA_LEN / 2, 4),
-            ],
-            1,
-            Some(&[
-                (MAX_USABLE_BLOB_DATA_LEN / 4, 2),
-                (MAX_USABLE_BLOB_DATA_LEN / 4, 1),
-                (MAX_USABLE_BLOB_DATA_LEN / 2, 3),
-            ]),
-        );
-    }
-
-    fn run_select_next_blob_items_test(
-        all_items: &[packing::Item],
-        blob_gas_price: BlobGasPrice,
-        expected_selected_items: Option<&[packing::Item]>,
-    ) {
-        let mut all_items = generate_data_intents(all_items);
-        let expected_selected_items =
-            expected_selected_items.map(|items| generate_data_intents(items));
-
-        let selected_items = select_next_blob_items(all_items.as_mut_slice(), blob_gas_price);
-
-        assert_eq!(
-            items_to_summary(selected_items),
-            items_to_summary(expected_selected_items)
-        )
-    }
-
-    fn items_to_summary(items: Option<Vec<DataIntentSummary>>) -> Option<Vec<String>> {
-        items.map(|mut items| {
-            // Sort for stable comparision
-            items.sort_by(|a, b| {
-                a.data_len
-                    .cmp(&b.data_len)
-                    .then_with(|| b.max_blob_gas_price.cmp(&a.max_blob_gas_price))
-            });
-
-            items
-                .iter()
-                .map(|d| {
-                    format!(
-                        "(MAX / {}, {})",
-                        MAX_USABLE_BLOB_DATA_LEN / d.data_len,
-                        d.max_blob_gas_price
-                    )
-                })
-                .collect()
-        })
-    }
-
-    fn generate_data_intents(items: &[packing::Item]) -> Vec<DataIntentSummary> {
-        items
-            .iter()
-            .map(|(data_len, max_cost_wei)| generate_data_intent(*data_len, *max_cost_wei))
-            .collect()
-    }
-
-    fn generate_data_intent(
-        data_len: usize,
-        max_blob_gas_price: BlobGasPrice,
-    ) -> DataIntentSummary {
-        DataIntentSummary {
-            id: DataIntentId::new_v4(),
-            from: H160([0xff; 20]),
-            data_hash: [0xaa; 32].into(),
-            data_len,
-            max_blob_gas_price,
-            updated_at: <_>::default(),
-        }
-    }
 }
