@@ -8,9 +8,7 @@ use std::sync::Arc;
 pub mod post_data;
 
 use crate::data_intent::DataIntentId;
-use crate::data_intent_tracker::{
-    fetch_data_intent_db_full, DataIntentDbRowFull, DataIntentSummary,
-};
+use crate::data_intent_tracker::{DataIntentDbRowFull, DataIntentSummary};
 use crate::eth_provider::EthProvider;
 use crate::sync::AnchorBlock;
 use crate::utils::e500;
@@ -68,9 +66,7 @@ pub(crate) async fn get_data_by_id(
     id: web::Path<DataIntentId>,
 ) -> Result<HttpResponse, actix_web::Error> {
     // TODO: Try to unify types, too many `DataIntent*` things
-    let item: DataIntentDbRowFull = fetch_data_intent_db_full(&data.db_pool, &id)
-        .await
-        .map_err(e500)?;
+    let item: DataIntentDbRowFull = data.data_intent_by_id(&id).await.map_err(e500)?;
     Ok(HttpResponse::Ok().json(item))
 }
 

@@ -7,7 +7,7 @@ use crate::{
     blob_tx_data::BlobTxParticipant,
     client::DataIntentSummary,
     data_intent::BlobGasPrice,
-    data_intent_tracker::{fetch_many_data_intent_db_full, DataIntentDbRowFull},
+    data_intent_tracker::DataIntentDbRowFull,
     debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
@@ -100,7 +100,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     );
 
     // TODO: Do this sequence atomic, lock data intent rows here
-    let data_intents = fetch_many_data_intent_db_full(&app_data.db_pool, &data_intent_ids).await?;
+    let data_intents = app_data.data_intents_by_id(&data_intent_ids).await?;
 
     // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
     let (max_fee_per_gas, max_priority_fee_per_gas) =

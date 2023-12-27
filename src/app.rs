@@ -1,31 +1,33 @@
 use ethers::{signers::LocalWallet, types::Address};
-use eyre::{Context, Result};
-use sqlx::MySqlPool;
+use eyre::{bail, eyre, Context, Result};
+use num_traits::cast::{FromPrimitive, ToPrimitive};
+use sqlx::{types::BigDecimal, MySqlPool};
 use tokio::sync::{Notify, RwLock};
 
 use crate::{
-    client::{DataIntentId, DataIntentStatus, DataIntentSummary},
+    client::{DataIntentDbRowFull, DataIntentId, DataIntentStatus, DataIntentSummary},
     data_intent_tracker::{
-        fetch_data_intent_db_summary, update_inclusion_tx_hashes, DataIntentTracker,
+        fetch_data_intent_db_full, fetch_data_intent_db_summary, fetch_many_data_intent_db_full,
+        store_data_intent, update_inclusion_tx_hashes, DataIntentTracker,
     },
     eth_provider::EthProvider,
     routes::SyncStatusBlock,
     sync::{BlockSync, BlockWithTxs, SyncBlockError, SyncBlockOutcome, TxInclusion},
-    utils::txhash_from_vec,
-    AppConfig, BlobTxSummary,
+    utils::{address_to_hex_lowercase, txhash_from_vec},
+    AppConfig, BlobTxSummary, DataIntent,
 };
 
 pub(crate) struct AppData {
     pub config: AppConfig,
     pub kzg_settings: c_kzg::KzgSettings,
-    pub db_pool: MySqlPool,
     pub provider: EthProvider,
     pub sender_wallet: LocalWallet,
     pub notify: Notify,
     pub chain_id: u64,
-    // Private members
+    // Private members, to ensure consistent manipulation
     data_intent_tracker: RwLock<DataIntentTracker>,
     sync: RwLock<BlockSync>,
+    db_pool: MySqlPool,
 }
 
 impl AppData {
@@ -51,6 +53,69 @@ impl AppData {
             data_intent_tracker: data_intent_tracker.into(),
             sync: sync.into(),
         }
+    }
+
+    #[tracing::instrument(skip(self, data_intent))]
+    pub async fn atomic_update_post_data_on_unsafe_channel(
+        &self,
+        data_intent: DataIntent,
+        nonce: u64,
+        onchain_balance: i128,
+    ) -> Result<DataIntentId> {
+        let cost = data_intent.max_cost() as i128;
+        let eth_address = address_to_hex_lowercase(*data_intent.from());
+
+        let mut tx = self.db_pool.begin().await?;
+
+        // Fetch user row, may not have any records yet
+        let user_row = sqlx::query!(
+        "SELECT total_data_intent_cost, post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+        eth_address,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+        // Check user balance
+        let total_data_intent_cost = match &user_row {
+            Some(row) => row
+                .total_data_intent_cost
+                .to_i128()
+                .ok_or_else(|| eyre!("invalid db value total_data_intent_cost"))?,
+            None => 0,
+        };
+        let last_nonce = user_row.and_then(|row| row.post_data_nonce);
+        let balance = onchain_balance - total_data_intent_cost;
+
+        if balance < cost {
+            bail!("Insufficient balance");
+        }
+
+        // Check nonce is higher
+        if let Some(last_nonce) = last_nonce {
+            if nonce <= last_nonce.try_into()? {
+                bail!("Nonce not new, replay protection");
+            }
+        }
+
+        let new_total_data_intent_cost = BigDecimal::from_i128(total_data_intent_cost + cost);
+
+        // Update balance and nonce
+        // TODO: Should assert that 1 row was affected?
+        sqlx::query!(
+        "UPDATE users SET total_data_intent_cost = ?, post_data_nonce = ? WHERE eth_address = ?",
+        new_total_data_intent_cost,
+        Some(nonce),
+        eth_address,
+    )
+        .execute(&mut *tx)
+        .await?;
+
+        let id = store_data_intent(&mut tx, data_intent).await?;
+
+        // Commit transaction
+        tx.commit().await?;
+
+        Ok(id)
     }
 
     pub async fn evict_underpriced_pending_txs(&self) -> Result<usize> {
@@ -188,6 +253,17 @@ impl AppData {
                 }
             },
         )
+    }
+
+    pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentDbRowFull> {
+        fetch_data_intent_db_full(&self.db_pool, id).await
+    }
+
+    pub async fn data_intents_by_id(
+        &self,
+        ids: &[DataIntentId],
+    ) -> Result<Vec<DataIntentDbRowFull>> {
+        fetch_many_data_intent_db_full(&self.db_pool, ids).await
     }
 
     pub async fn get_all_pending(&self) -> Vec<DataIntentSummary> {
