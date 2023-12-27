@@ -106,16 +106,18 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     log::info!("spawn geth with Dockerfile {}", geth_dockerfile_dirpath);
 
     // Make sure image is available
-    run_until_exit(
-        "docker",
-        &[
-            "build",
-            &format!("--build-arg='tag={geth_version}'"),
-            &format!("--tag={GETH_BUILD_TAG}"),
-            &geth_dockerfile_dirpath,
-        ],
-    )
-    .unwrap();
+    if !env::var("SKIP_GETH_BUILD").is_ok() {
+        run_until_exit(
+            "docker",
+            &[
+                "build",
+                &format!("--build-arg='tag={geth_version}'"),
+                &format!("--tag={GETH_BUILD_TAG}"),
+                &geth_dockerfile_dirpath,
+            ],
+        )
+        .unwrap();
+    }
 
     let port_http = unused_port();
     let port_ws = unused_port();
