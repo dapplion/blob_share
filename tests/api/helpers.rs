@@ -137,7 +137,10 @@ impl TestHarness {
                 .await
                 .unwrap();
             anchor_block.finalized_balances = test_config.initial_topups;
-            anchor_block.gas = block_gas_summary_from_excess(test_config.initial_excess_blob_gas);
+            anchor_block.gas = block_gas_summary_from_excess(
+                test_config.initial_excess_blob_gas,
+                &anchor_block.gas,
+            );
 
             let db_pool = connect_db_pool(&database_url).await;
             persist_anchor_block_to_db(&db_pool, anchor_block)
@@ -494,11 +497,14 @@ async fn configure_database(database_url_without_db: &str, database_name: &str) 
 }
 
 /// Test mock BlockGasSummary from `excess_blob_gas` only
-fn block_gas_summary_from_excess(excess_blob_gas: u128) -> BlockGasSummary {
+fn block_gas_summary_from_excess(
+    excess_blob_gas: u128,
+    prev_gas_summary: &BlockGasSummary,
+) -> BlockGasSummary {
     let mut block = Block::<TxHash>::default();
     block.excess_blob_gas = Some(excess_blob_gas.into());
     block.blob_gas_used = Some(0.into());
-    block.base_fee_per_gas = Some(0.into());
+    block.base_fee_per_gas = Some(prev_gas_summary.base_fee_per_gas.into());
     BlockGasSummary::from_block(&block).unwrap()
 }
 

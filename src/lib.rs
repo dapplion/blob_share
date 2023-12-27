@@ -253,6 +253,7 @@ impl App {
         // TODO: choose starting point that's not genesis
         let anchor_block =
             get_anchor_block(&anchor_block_filepath, &db_pool, &provider, starting_point).await?;
+        debug!("retrieved anchor block: {:?}", anchor_block);
 
         let sync = BlockSync::new(
             BlockSyncConfig {

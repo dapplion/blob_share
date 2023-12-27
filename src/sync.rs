@@ -186,13 +186,19 @@ impl BlockSync {
             .copied()
             .unwrap_or(0);
 
-        dbg!((
-            balance_delta_block_inclusions,
-            cost_of_pending_txs,
-            finalized_balance
-        ));
-
         finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
+    }
+
+    pub fn pending_txs_data_len(&self, address: &Address) -> usize {
+        self.pending_transactions
+            .values()
+            .map(|tx| {
+                tx.participants
+                    .iter()
+                    .map(|p| if &p.address == address { p.data_len } else { 0 })
+                    .sum::<usize>()
+            })
+            .sum()
     }
 
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {

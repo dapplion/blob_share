@@ -85,14 +85,17 @@ async fn reject_single_data_intent_too_big() {
     .unwrap();
 }
 
-#[tokio::test]
-async fn reject_posting_too_many_pending_intents_sending_txs() {
-    reject_posting_too_many_pending_intents(true).await
-}
-
+// Without sending transactions all pending data intents are not included in any transaction
 #[tokio::test]
 async fn reject_posting_too_many_pending_intents_without_sending_txs() {
     reject_posting_too_many_pending_intents(false).await
+}
+
+// With sending transactions, pending data intents are both in transactions + the data intent
+// tracker. Because it's using `TestMode::ELOnly`, not blocks are mined, so all tx are pending.
+#[tokio::test]
+async fn reject_posting_too_many_pending_intents_sending_txs() {
+    reject_posting_too_many_pending_intents(true).await
 }
 
 async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
@@ -100,9 +103,9 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
         TestMode::ELOnly,
         Some(
             Config::default()
-                .add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000)
+                .add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000000000) // 0.1 ETH
                 // 10 * BLOB_GASPRICE_UPDATE_FRACTION = 22026, so a tx should never be sent
-                .set_initial_excess_blob_gas(if send_blob_txs { 3338477 * 10 } else { 0 }),
+                .set_initial_excess_blob_gas(if send_blob_txs { 0 } else { 3338477 * 10 }),
         ),
     )
     .await
@@ -120,7 +123,10 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
         let res = test_harness
             .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
             .await;
-        assert_eq!(res.unwrap_err().to_string(), "asd");
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "non-success response status 400 body: pending total data_len 2158592 over max 2031616"
+        );
     })
     .await
     .unwrap();

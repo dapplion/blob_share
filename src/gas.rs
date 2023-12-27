@@ -8,6 +8,7 @@ const MIN_BLOB_GASPRICE: u128 = 1;
 const BLOB_GASPRICE_UPDATE_FRACTION: u128 = 3338477;
 const TARGET_BLOB_GAS_PER_BLOCK: u128 = 393216;
 
+#[derive(Debug)]
 pub struct GasConfig {
     pub max_priority_fee_per_gas: u128,
     pub max_fee_per_gas: u128,

@@ -122,6 +122,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
         max_fee_per_blob_gas,
     };
+    debug!("gas_config {:?}", gas_config);
 
     let sender_address = app_data.sender_wallet.address();
 
