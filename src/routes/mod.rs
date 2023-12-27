@@ -9,11 +9,11 @@ pub mod post_data;
 
 use crate::data_intent::DataIntentId;
 use crate::data_intent_tracker::{
-    fetch_data_intent_db_full, fetch_data_intent_db_summary, DataIntentDbRowFull, DataIntentSummary,
+    fetch_data_intent_db_full, DataIntentDbRowFull, DataIntentSummary,
 };
 use crate::eth_provider::EthProvider;
-use crate::sync::{AnchorBlock, TxInclusion};
-use crate::utils::{e500, txhash_from_vec};
+use crate::sync::AnchorBlock;
+use crate::utils::e500;
 use crate::AppData;
 pub use post_data::{PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse};
 
@@ -42,9 +42,10 @@ pub(crate) async fn get_sender(data: web::Data<Arc<AppData>>) -> impl Responder 
 pub(crate) async fn get_sync(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
+    let (anchor_block, synced_head) = data.get_sync().await;
     Ok(HttpResponse::Ok().json(SyncStatus {
-        anchor_block: data.sync.read().await.get_anchor().into(),
-        synced_head: data.sync.read().await.get_head(),
+        anchor_block,
+        synced_head,
         node_head: get_node_head(&data.provider).await.map_err(e500)?,
     }))
 }
@@ -57,7 +58,7 @@ pub(crate) async fn get_sync(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items: Vec<DataIntentSummary> = data.data_intent_tracker.read().await.get_all_pending();
+    let items: Vec<DataIntentSummary> = data.get_all_pending().await;
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -78,34 +79,7 @@ pub(crate) async fn get_status_by_id(
     data: web::Data<Arc<AppData>>,
     id: web::Path<DataIntentId>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let status = match fetch_data_intent_db_summary(&data.db_pool, &id)
-        .await
-        .map_err(e500)?
-    {
-        None => DataIntentStatus::Unknown,
-        Some(data_intent) => {
-            match data_intent.inclusion_tx_hash {
-                None => DataIntentStatus::Pending,
-                Some(tx_hash) => {
-                    let tx_hash = txhash_from_vec(tx_hash).map_err(e500)?;
-                    match data.sync.read().await.get_tx_status(tx_hash) {
-                        Some(TxInclusion::Pending) => DataIntentStatus::InPendingTx { tx_hash },
-                        Some(TxInclusion::Included(block_hash)) => {
-                            DataIntentStatus::InConfirmedTx {
-                                tx_hash,
-                                block_hash,
-                            }
-                        }
-                        None => {
-                            // Should never happen, review this case
-                            DataIntentStatus::Unknown
-                        }
-                    }
-                }
-            }
-        }
-    };
-
+    let status: DataIntentStatus = data.status_by_id(&id).await.map_err(e500)?;
     Ok(HttpResponse::Ok().json(status))
 }
 
@@ -117,16 +91,6 @@ pub(crate) async fn get_balance_by_address(
 ) -> Result<HttpResponse, actix_web::Error> {
     let balance: i128 = data.balance_of_user(&address).await;
     Ok(HttpResponse::Ok().json(balance))
-}
-
-#[tracing::instrument(skip(data))]
-#[get("/v1/last_seen_nonce/{address}")]
-pub(crate) async fn get_last_seen_nonce_by_address(
-    data: web::Data<Arc<AppData>>,
-    address: web::Path<Address>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let nonce: Option<u128> = data.sign_nonce_tracker.read().await.get(&address).copied();
-    Ok(HttpResponse::Ok().json(nonce))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -208,16 +172,4 @@ async fn get_node_head(provider: &EthProvider) -> Result<SyncStatusBlock> {
             .hash
             .ok_or_else(|| eyre!("block number {} has not hash", node_head_number))?,
     })
-}
-
-impl AppData {
-    #[tracing::instrument(skip(self))]
-    async fn balance_of_user(&self, from: &Address) -> i128 {
-        self.sync.read().await.balance_with_pending(from)
-            - self
-                .data_intent_tracker
-                .read()
-                .await
-                .pending_intents_total_cost(from) as i128
-    }
 }

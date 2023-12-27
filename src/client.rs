@@ -122,18 +122,6 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_last_seen_nonce_by_address(&self, address: Address) -> Result<Option<u128>> {
-        let response = self
-            .client
-            .get(&self.url(&format!(
-                "v1/last_seen_nonce/{}",
-                address_to_hex_lowercase(address)
-            )))
-            .send()
-            .await?;
-        Ok(is_ok_response(response).await?.json().await?)
-    }
-
     /// `path` must not start with /
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)

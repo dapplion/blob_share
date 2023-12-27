@@ -6,7 +6,7 @@ use tokio::fs;
 
 use crate::{
     debug, error, info, metrics,
-    sync::{BlockSync, BlockWithTxs, SyncBlockError, SyncBlockOutcome},
+    sync::{BlockWithTxs, SyncBlockError, SyncBlockOutcome},
     AppData,
 };
 
@@ -69,12 +69,9 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         .ok_or_else(|| eyre!("block with txs not available {}", block_hash))?;
     let block_number = block_with_txs.number;
 
-    let outcome = BlockSync::sync_next_head(
-        &app_data.sync,
-        &app_data.provider,
-        BlockWithTxs::from_ethers_block(block_with_txs)?,
-    )
-    .await?;
+    let outcome = app_data
+        .sync_next_head(BlockWithTxs::from_ethers_block(block_with_txs)?)
+        .await?;
 
     match &outcome {
         SyncBlockOutcome::BlockKnown => metrics::SYNC_BLOCK_KNOWN.inc(),
@@ -102,25 +99,16 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
     );
 
     // Check if any pending transactions need re-pricing
-    let underpriced_txs = { app_data.sync.write().await.evict_underpriced_pending_txs() };
-
-    if !underpriced_txs.is_empty() {
-        {
-            let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
-            for tx in &underpriced_txs {
-                // TODO: should handle each individual error or abort iteration?
-                data_intent_tracker.revert_item_to_pending(tx.tx_hash)?;
-            }
-            metrics::UNDERPRICED_TXS_EVICTED.inc_by(underpriced_txs.len() as f64);
-        }
-
+    let underpriced_txs = app_data.evict_underpriced_pending_txs().await?;
+    if underpriced_txs > 0 {
+        metrics::UNDERPRICED_TXS_EVICTED.inc_by(underpriced_txs as f64);
         // Potentially prepare new blob transactions with correct pricing
         app_data.notify.notify_one();
     }
 
     // Finalize transactions
-    let new_anchor_block_number = if let Some((finalized_txs, new_anchor_block_number)) =
-        app_data.sync.write().await.maybe_advance_anchor_block()?
+    if let Some((finalized_txs, new_anchor_block_number)) =
+        app_data.maybe_advance_anchor_block().await?
     {
         let finalized_tx_hashes = finalized_txs
             .iter()
@@ -133,21 +121,12 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         metrics::SYNC_ANCHOR_NUMBER.set(new_anchor_block_number as f64);
         metrics::FINALIZED_TXS.inc_by(finalized_tx_hashes.len() as f64);
 
-        let mut data_intent_tracker = app_data.data_intent_tracker.write().await;
-        for tx in finalized_txs {
-            data_intent_tracker.finalize_tx(tx.tx_hash);
-        }
-
-        Some(new_anchor_block_number)
-    } else {
-        None
-    };
-
-    // Persist anchor block
-    // TODO: Throttle to not persist every block, not necessary
-    if new_anchor_block_number.is_some() {
+        // Persist anchor block
+        // TODO: Throttle to not persist every block, not necessary
         let anchor_block_str = {
-            serde_json::to_string(app_data.sync.read().await.get_anchor())
+            app_data
+                .serialize_anchor_block()
+                .await
                 .wrap_err("serializing AnchorBlock")?
         };
         fs::write(&app_data.config.anchor_block_filepath, anchor_block_str)

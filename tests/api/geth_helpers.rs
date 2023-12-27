@@ -106,7 +106,7 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     log::info!("spawn geth with Dockerfile {}", geth_dockerfile_dirpath);
 
     // Make sure image is available
-    if !env::var("SKIP_GETH_BUILD").is_ok() {
+    if !env::var("OFFLINE_MODE").is_ok() {
         run_until_exit(
             "docker",
             &[

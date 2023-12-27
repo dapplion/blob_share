@@ -7,9 +7,7 @@ use crate::{
     blob_tx_data::BlobTxParticipant,
     client::DataIntentSummary,
     data_intent::BlobGasPrice,
-    data_intent_tracker::{
-        fetch_many_data_intent_db_full, update_inclusion_tx_hashes, DataIntentDbRowFull,
-    },
+    data_intent_tracker::{fetch_many_data_intent_db_full, DataIntentDbRowFull},
     debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
@@ -68,22 +66,12 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
 
     // Sync available intents
-    app_data
-        .data_intent_tracker
-        .write()
-        .await
-        .sync_with_db(&app_data.db_pool)
-        .await?;
+    app_data.sync_data_intents().await?;
 
-    let max_fee_per_blob_gas = app_data
-        .sync
-        .read()
-        .await
-        .get_head_gas()
-        .blob_gas_price_next_block();
+    let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let items = app_data.data_intent_tracker.read().await.get_all_pending();
+        let items = app_data.get_all_pending().await;
         debug!(
             "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
             max_fee_per_blob_gas,
@@ -128,10 +116,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
     let nonce = if let Some(nonce) = app_data
-        .sync
-        .write()
-        .await
-        .reserve_next_available_nonce(&app_data.provider, sender_address)
+        .reserve_next_available_nonce(sender_address)
         .await?
     {
         nonce
@@ -143,11 +128,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         match construct_and_send_tx(app_data.clone(), nonce, &gas_config, data_intents).await {
             Ok(blob_tx) => blob_tx,
             Err(e) => {
-                app_data
-                    .sync
-                    .write()
-                    .await
-                    .unreserve_nonce(sender_address, nonce);
+                app_data.unreserve_nonce(sender_address, nonce).await;
                 return Err(e);
             }
         };
@@ -159,21 +140,12 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     //
     // Declare items as pending on the computed tx_hash
     {
-        update_inclusion_tx_hashes(&app_data.db_pool, &data_intent_ids, blob_tx.tx_hash).await?;
-
-        // TODO: Review when it's best to re-sync the data_intent_tracker
         app_data
-            .data_intent_tracker
-            .write()
-            .await
-            .sync_with_db(&app_data.db_pool)
+            .register_sent_blob_tx(&data_intent_ids, blob_tx.tx_summary)
             .await?;
 
-        // Grab the lock of both data_intent_tracker and sync at once to ensure data intent status
-        // is consistent in both structs
-        let mut sync = app_data.sync.write().await;
-        sync.register_pending_blob_tx(blob_tx.tx_summary)
-            .wrap_err("consistency error with blob_tx")?;
+        // TODO: Review when it's best to re-sync the data_intent_tracker
+        app_data.sync_data_intents().await?;
     }
 
     Ok(SendResult::SentBlobTx)
@@ -209,7 +181,7 @@ async fn construct_and_send_tx(
 
     let blob_tx = construct_blob_tx(
         &app_data.kzg_settings,
-        &app_data.publish_config,
+        app_data.config.l1_inbox_address,
         gas_config,
         &tx_params,
         &app_data.sender_wallet,

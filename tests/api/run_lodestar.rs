@@ -1,4 +1,5 @@
 use std::{
+    env,
     process::Command,
     time::Duration,
     time::{SystemTime, UNIX_EPOCH},
@@ -35,8 +36,10 @@ pub async fn spawn_lodestar(runner_args: RunLodestarArgs) -> LodestarInstance {
     let lodestar_docker_tag = "chainsafe/lodestar";
 
     // Make sure image is available
-    run_until_exit("docker", &["pull", &lodestar_docker_tag]).unwrap();
-    log::info!("pulled lodestar image {}", lodestar_docker_tag);
+    if !env::var("OFFLINE_MODE").is_ok() {
+        run_until_exit("docker", &["pull", &lodestar_docker_tag]).unwrap();
+        log::info!("pulled lodestar image {}", lodestar_docker_tag);
+    }
 
     let port_rest = unused_port();
 

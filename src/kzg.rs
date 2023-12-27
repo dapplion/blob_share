@@ -17,7 +17,7 @@ use crate::{
         tx_eip4844::TxEip4844,
         tx_sidecar::{BlobTransaction, BlobTransactionSidecar},
     },
-    PublishConfig, MAX_USABLE_BLOB_DATA_LEN,
+    MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -42,7 +42,7 @@ pub fn kzg_to_versioned_hash(commitment: &c_kzg::KzgCommitment) -> B256 {
 
 pub(crate) fn construct_blob_tx(
     kzg_settings: &c_kzg::KzgSettings,
-    publish_config: &PublishConfig,
+    l1_inbox_address: ethers::types::Address,
     gas_config: &GasConfig,
     tx_params: &TxParams,
     wallet: &LocalWallet,
@@ -81,7 +81,7 @@ pub(crate) fn construct_blob_tx(
         max_fee_per_gas: gas_config.max_fee_per_gas,
         // TODO Adjust gas with input
         gas_limit: 100_000_u64,
-        to: Address::from(publish_config.l1_inbox_address.to_fixed_bytes()),
+        to: Address::from(l1_inbox_address.to_fixed_bytes()),
         value: <_>::default(),
         input: input.into(),
         access_list: <_>::default(),
@@ -191,7 +191,7 @@ mod tests {
         kzg::{decode_blob_to_data, TxParams},
         load_kzg_settings,
         reth_fork::tx_sidecar::BlobTransaction,
-        PublishConfig, ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
+        ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
     };
 
     use super::{construct_blob_tx, encode_data_to_blob};
@@ -229,9 +229,7 @@ mod tests {
 
         let blob_tx = construct_blob_tx(
             &load_kzg_settings()?,
-            &PublishConfig {
-                l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
-            },
+            Address::from_str(ADDRESS_ZERO)?,
             &gas_config,
             &TxParams { chain_id, nonce: 0 },
             &wallet,

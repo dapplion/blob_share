@@ -4,30 +4,24 @@ use clap::Parser;
 use data_intent_tracker::DataIntentTracker;
 use eth_provider::EthProvider;
 use ethers::{
-    signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
+    signers::{coins_bip39::English, MnemonicBuilder, Signer},
     types::Address,
 };
 use eyre::{Context, Result};
-use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
-use std::{
-    collections::HashMap, env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
-    time::Duration,
-};
-use tokio::{
-    fs,
-    sync::{Notify, RwLock},
-};
+use sqlx::mysql::MySqlPoolOptions;
+use std::{env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use tokio::fs;
 use url::Url;
 
 use crate::{
     anchor_block::get_anchor_block,
+    app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     metrics::{get_metrics, push_metrics_task},
     routes::{
-        get_balance_by_address, get_data, get_data_by_id, get_health, get_home,
-        get_last_seen_nonce_by_address, get_sender, get_status_by_id, get_sync,
-        post_data::post_data,
+        get_balance_by_address, get_data, get_data_by_id, get_health, get_home, get_sender,
+        get_status_by_id, get_sync, post_data::post_data,
     },
     sync::{BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
@@ -35,6 +29,7 @@ use crate::{
 };
 
 pub mod anchor_block;
+mod app;
 pub mod beacon_api_client;
 mod blob_sender_task;
 mod blob_tx_data;
@@ -162,37 +157,12 @@ impl Args {
     }
 }
 
-struct PublishConfig {
-    pub(crate) l1_inbox_address: Address,
-}
-
 struct AppConfig {
+    l1_inbox_address: Address,
     panic_on_background_task_errors: bool,
     anchor_block_filepath: PathBuf,
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
-}
-
-struct AppData {
-    kzg_settings: c_kzg::KzgSettings,
-    data_intent_tracker: RwLock<DataIntentTracker>,
-    // TODO: Store in remote DB persisting
-    sign_nonce_tracker: RwLock<HashMap<Address, u128>>,
-    sync: RwLock<BlockSync>,
-    db_pool: MySqlPool,
-    provider: EthProvider,
-    sender_wallet: LocalWallet,
-    publish_config: PublishConfig,
-    notify: Notify,
-    chain_id: u64,
-    config: AppConfig,
-}
-
-impl AppData {
-    async fn collect_metrics(&self) {
-        self.sync.read().await.collect_metrics();
-        self.data_intent_tracker.read().await.collect_metrics();
-    }
 }
 
 pub struct App {
@@ -270,43 +240,38 @@ impl App {
         data_intent_tracker.sync_with_db(&db_pool).await?;
         info!("synced data intent track");
 
-        let app_data = Arc::new(AppData {
-            kzg_settings: load_kzg_settings()?,
-            notify: <_>::default(),
-            data_intent_tracker: data_intent_tracker.into(),
-            sign_nonce_tracker: <_>::default(),
-            sync: sync.into(),
+        let config = AppConfig {
+            l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
+            panic_on_background_task_errors: args.panic_on_background_task_errors,
+            anchor_block_filepath,
+            metrics_server_bearer_token: args.metrics_bearer_token.clone(),
+            metrics_push: if let Some(url) = &args.metrics_push_url {
+                Some(PushMetricsConfig {
+                    url: Url::parse(url)
+                        .wrap_err_with(|| format!("invalid push gateway URL {url}"))?,
+                    basic_auth: if let Some(auth) = &args.metrics_push_basic_auth {
+                        Some(parse_basic_auth(auth).wrap_err_with(|| "invalid push gateway auth")?)
+                    } else {
+                        None
+                    },
+                    interval: Duration::from_secs(args.metrics_push_interval_sec),
+                    format: args.metrics_push_format,
+                })
+            } else {
+                None
+            },
+        };
+
+        let app_data = Arc::new(AppData::new(
+            config,
+            load_kzg_settings()?,
             db_pool,
-            publish_config: PublishConfig {
-                l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
-            },
             provider,
-            sender_wallet: wallet,
+            wallet,
             chain_id,
-            config: AppConfig {
-                panic_on_background_task_errors: args.panic_on_background_task_errors,
-                anchor_block_filepath,
-                metrics_server_bearer_token: args.metrics_bearer_token.clone(),
-                metrics_push: if let Some(url) = &args.metrics_push_url {
-                    Some(PushMetricsConfig {
-                        url: Url::parse(url)
-                            .wrap_err_with(|| format!("invalid push gateway URL {url}"))?,
-                        basic_auth: if let Some(auth) = &args.metrics_push_basic_auth {
-                            Some(
-                                parse_basic_auth(auth)
-                                    .wrap_err_with(|| "invalid push gateway auth")?,
-                            )
-                        } else {
-                            None
-                        },
-                        interval: Duration::from_secs(args.metrics_push_interval_sec),
-                        format: args.metrics_push_format,
-                    })
-                } else {
-                    None
-                },
-            },
-        });
+            data_intent_tracker,
+            sync,
+        ));
 
         info!(
             "connected to eth node at {} chain {}",
@@ -331,8 +296,7 @@ impl App {
                 .service(get_data)
                 .service(get_data_by_id)
                 .service(get_status_by_id)
-                .service(get_balance_by_address)
-                .service(get_last_seen_nonce_by_address);
+                .service(get_balance_by_address);
 
             // Conditionally register the metrics route
             if args.metrics && args.metrics_port == args.port {

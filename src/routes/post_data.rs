@@ -40,12 +40,7 @@ pub(crate) async fn post_data(
     }
 
     // TODO: Is this limitation necessary?
-    let pending_total_data_len = data
-        .data_intent_tracker
-        .read()
-        .await
-        .pending_intents_total_data_len(&from)
-        + data.sync.read().await.pending_txs_data_len(&from);
+    let pending_total_data_len = data.pending_total_data_len(&from).await;
     if pending_total_data_len + data_len > MAX_PENDING_DATA_LEN_PER_USER {
         return Err(e400(eyre!(
             "pending total data_len {} over max {}",
