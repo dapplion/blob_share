@@ -43,10 +43,18 @@ pub(crate) async fn post_data(
         )));
     }
 
-    let onchain_balance = data.balance_of_user(&from).await;
+    // TODO: Review the cost of sync here time
+    data.sync_data_intents().await.map_err(e500)?;
+    let balance = data.balance_of_user(&from).await;
+    let cost = data_intent.max_cost() as i128;
+    if balance < cost {
+        return Err(e400(eyre!(
+            "Insufficient balance {balance} for intent with cost {cost}"
+        )));
+    }
 
     let id = data
-        .atomic_update_post_data_on_unsafe_channel(data_intent, nonce, onchain_balance)
+        .atomic_update_post_data_on_unsafe_channel(data_intent, nonce)
         .await
         .map_err(e500)?;
 

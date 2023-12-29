@@ -1,3 +1,7 @@
+-- Stores single data intents from a user.
+-- - User may submit the same data twice
+-- - Economically bounded, only accepts data intents that the user can afford
+-- - Never pruned, data intents remain in the DB forever after finalization
 CREATE TABLE data_intents (
     id BINARY(16) PRIMARY KEY, -- UUID as binary
     -- sender address

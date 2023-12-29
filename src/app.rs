@@ -60,35 +60,21 @@ impl AppData {
         &self,
         data_intent: DataIntent,
         nonce: u64,
-        onchain_balance: i128,
     ) -> Result<DataIntentId> {
-        let cost = data_intent.max_cost() as i128;
         let eth_address = address_to_hex_lowercase(*data_intent.from());
 
         let mut tx = self.db_pool.begin().await?;
 
         // Fetch user row, may not have any records yet
         let user_row = sqlx::query!(
-        "SELECT total_data_intent_cost, post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
-        eth_address,
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+            "SELECT post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+            eth_address,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
 
         // Check user balance
-        let total_data_intent_cost = match &user_row {
-            Some(row) => row
-                .total_data_intent_cost
-                .to_i128()
-                .ok_or_else(|| eyre!("invalid db value total_data_intent_cost"))?,
-            None => 0,
-        };
         let last_nonce = user_row.and_then(|row| row.post_data_nonce);
-        let balance = onchain_balance - total_data_intent_cost;
-
-        if balance < cost {
-            bail!("Insufficient balance");
-        }
 
         // Check nonce is higher
         if let Some(last_nonce) = last_nonce {
@@ -97,16 +83,13 @@ impl AppData {
             }
         }
 
-        let new_total_data_intent_cost = BigDecimal::from_i128(total_data_intent_cost + cost);
-
         // Update balance and nonce
         // TODO: Should assert that 1 row was affected?
         sqlx::query!(
-        "UPDATE users SET total_data_intent_cost = ?, post_data_nonce = ? WHERE eth_address = ?",
-        new_total_data_intent_cost,
-        Some(nonce),
-        eth_address,
-    )
+            "UPDATE users SET post_data_nonce = ? WHERE eth_address = ?",
+            Some(nonce),
+            eth_address,
+        )
         .execute(&mut *tx)
         .await?;
 
