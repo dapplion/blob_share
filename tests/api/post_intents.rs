@@ -28,7 +28,7 @@ async fn reject_post_data_before_any_topup() {
 
             assert_eq!(
                 res.unwrap_err().to_string(),
-                "non-success response status 500 body: Insufficient balance"
+                "non-success response status 400 body: Insufficient balance 0 for intent with cost 69"
             );
         })
         .await
@@ -55,7 +55,7 @@ async fn reject_post_data_after_insufficient_balance() {
 
         assert_eq!(
             res.unwrap_err().to_string(),
-            "non-success response status 500 body: Insufficient balance"
+            "non-success response status 400 body: Insufficient balance 0 for intent with cost 1000"
         );
     })
     .await
