@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "post_data_nonce",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "",
+          "char_set": 63,
+          "max_size": 20
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "1f880a26afcee6a90f9320f58fd91f1663c23cfd81d1942caa53365b4c7e2859"
+}
