@@ -33,6 +33,7 @@ jobs:
           components: rustfmt
         # </setup>
       - run: cargo fmt -- --check
+      - run: cargo check --all-targets
       - run: cargo clippy -- --deny warnings
 
   tests:

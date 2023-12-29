@@ -14,14 +14,14 @@ fn brute_force_benchmark(c: &mut Criterion) {
         let range_cost_per_len = cost_per_len..2 * cost_per_len;
         let mut items = (0..n)
             .map(|_| {
-                (
+                packing::Item::new(
                     rng.gen_range(range_len.clone()),
                     rng.gen_range(range_cost_per_len.clone()),
                 )
             })
             .collect::<Vec<packing::Item>>();
 
-        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items.sort_by(|a, b| a.len.cmp(&b.len));
 
         c.bench_function(&format!("greedy sorted n={n}"), |b| {
             b.iter(|| pack_items_greedy_sorted(&items, max_len, cost_per_len).unwrap());
@@ -36,7 +36,7 @@ fn brute_force_benchmark(c: &mut Criterion) {
         (1000, 4096),
         (10000, 4096),
     ] {
-        let items = vec![(1, 10); n];
+        let items = vec![packing::Item::new(1, 10); n];
         let cost_per_len = 1;
 
         c.bench_function(&format!("knapsack n={n} max_len={max_len}"), |b| {
@@ -45,7 +45,7 @@ fn brute_force_benchmark(c: &mut Criterion) {
     }
 
     for n in [8, 16, 31] {
-        let items = vec![(1, 10); n];
+        let items = vec![packing::Item::new(1, 10); n];
         // performance is only dependant on n, values or irrelevant
         let max_len = 2 * n;
         let cost_per_len = 1;

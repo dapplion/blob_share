@@ -1,7 +1,6 @@
 use ethers::{signers::LocalWallet, types::Address};
-use eyre::{bail, eyre, Context, Result};
-use num_traits::cast::{FromPrimitive, ToPrimitive};
-use sqlx::{types::BigDecimal, MySqlPool};
+use eyre::{bail, Context, Result};
+use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
 use crate::{

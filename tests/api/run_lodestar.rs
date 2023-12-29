@@ -13,7 +13,7 @@ use crate::{
     helpers::retry_with_timeout,
 };
 
-const STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
+const STARTUP_TIMEOUT_MILLIS: u64 = 30_000;
 const SECONDS_PER_SLOT: usize = 2;
 
 pub struct LodestarInstance {
