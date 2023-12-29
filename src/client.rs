@@ -5,11 +5,16 @@ use ethers::{
 use eyre::{eyre, Result};
 use url::Url;
 
+pub use crate::data_intent_tracker::{
+    DataIntentDbRowFull, DataIntentDbRowSummary, DataIntentSummary,
+};
 pub use crate::eth_provider::EthProvider;
-pub use crate::routes::{DataIntentStatus, PostDataIntentV1, PostDataResponse, SenderDetails};
+pub use crate::routes::{
+    DataIntentStatus, PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse, SenderDetails,
+};
+use crate::{data_intent::BlobGasPrice, utils::address_to_hex_lowercase};
 pub use crate::{data_intent::DataIntentId, DataIntent};
-use crate::{data_intent::DataIntentSummary, routes::SyncStatus, utils::unix_timestamps_millis};
-use crate::{routes::PostDataIntentV1Signed, utils::address_to_hex};
+use crate::{routes::SyncStatus, utils::unix_timestamps_millis};
 use crate::{utils::is_ok_response, BlockGasSummary};
 
 pub struct Client {
@@ -90,7 +95,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntent> {
+    pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntentDbRowFull> {
         let response = self
             .client
             .get(&self.url(&format!("v1/data/{}", id)))
@@ -111,16 +116,7 @@ impl Client {
     pub async fn get_balance_by_address(&self, address: Address) -> Result<i128> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/balance/{}", address_to_hex(address))))
-            .send()
-            .await?;
-        Ok(is_ok_response(response).await?.json().await?)
-    }
-
-    pub async fn get_last_seen_nonce_by_address(&self, address: Address) -> Result<Option<u128>> {
-        let response = self
-            .client
-            .get(&self.url(&format!("v1/last_seen_nonce/{}", address_to_hex(address))))
+            .get(&self.url(&format!("v1/balance/{}", address_to_hex_lowercase(address))))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -134,12 +130,13 @@ impl Client {
 
 pub enum GasPreference {
     RelativeToHead(EthProvider, f64),
+    Value(BlobGasPrice),
 }
 
 const FACTOR_RESOLUTION: u128 = 1000;
 
 impl GasPreference {
-    pub async fn max_blob_gas_price(&self) -> Result<u128> {
+    pub async fn max_blob_gas_price(&self) -> Result<BlobGasPrice> {
         match self {
             GasPreference::RelativeToHead(provider, factor_to_next_block) => {
                 // Choose data pricing correctly
@@ -152,18 +149,19 @@ impl GasPreference {
                     BlockGasSummary::from_block(&head_block)?.blob_gas_price_next_block();
 
                 Ok(if *factor_to_next_block == 1.0 {
-                    blob_gas_price_next_block
+                    blob_gas_price_next_block as BlobGasPrice
                 } else {
-                    ((FACTOR_RESOLUTION as f64 * factor_to_next_block) as u128
+                    (((FACTOR_RESOLUTION as f64 * factor_to_next_block) as u128
                         * blob_gas_price_next_block)
-                        / FACTOR_RESOLUTION
+                        / FACTOR_RESOLUTION) as BlobGasPrice
                 })
             }
+            GasPreference::Value(blob_gas_price) => Ok(*blob_gas_price),
         }
     }
 }
 
 pub enum NoncePreference {
     Timebased,
-    Value(u128),
+    Value(u64),
 }

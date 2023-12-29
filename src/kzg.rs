@@ -17,7 +17,7 @@ use crate::{
         tx_eip4844::TxEip4844,
         tx_sidecar::{BlobTransaction, BlobTransactionSidecar},
     },
-    DataIntent, PublishConfig, MAX_USABLE_BLOB_DATA_LEN,
+    MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -42,24 +42,17 @@ pub fn kzg_to_versioned_hash(commitment: &c_kzg::KzgCommitment) -> B256 {
 
 pub(crate) fn construct_blob_tx(
     kzg_settings: &c_kzg::KzgSettings,
-    publish_config: &PublishConfig,
+    l1_inbox_address: ethers::types::Address,
     gas_config: &GasConfig,
     tx_params: &TxParams,
     wallet: &LocalWallet,
-    next_blob_items: Vec<DataIntent>,
+    participants: Vec<BlobTxParticipant>,
+    datas: Vec<Vec<u8>>,
 ) -> Result<BlobTx> {
-    let participants = next_blob_items
-        .iter()
-        .map(|item| BlobTxParticipant {
-            address: *item.from(),
-            data_len: item.data().len(),
-        })
-        .collect::<Vec<_>>();
-
     let mut data = vec![];
-    for item in next_blob_items.into_iter() {
+    for item in datas.into_iter() {
         // TODO: do less copying
-        data.extend_from_slice(item.data());
+        data.extend_from_slice(&item);
     }
 
     // TODO: should chunk data in 31 bytes to ensure each field element if < BLS_MODULUS
@@ -88,7 +81,7 @@ pub(crate) fn construct_blob_tx(
         max_fee_per_gas: gas_config.max_fee_per_gas,
         // TODO Adjust gas with input
         gas_limit: 100_000_u64,
-        to: Address::from(publish_config.l1_inbox_address.to_fixed_bytes()),
+        to: Address::from(l1_inbox_address.to_fixed_bytes()),
         value: <_>::default(),
         input: input.into(),
         access_list: <_>::default(),
@@ -193,11 +186,12 @@ mod tests {
     use eyre::Result;
 
     use crate::{
+        blob_tx_data::BlobTxParticipant,
         gas::GasConfig,
         kzg::{decode_blob_to_data, TxParams},
         load_kzg_settings,
         reth_fork::tx_sidecar::BlobTransaction,
-        DataIntent, PublishConfig, ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
+        ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
     };
 
     use super::{construct_blob_tx, encode_data_to_blob};
@@ -221,26 +215,26 @@ mod tests {
             max_priority_fee_per_gas: 1u128.into(),
         };
 
-        let mut data_intents: Vec<DataIntent> = vec![];
+        let mut participants: Vec<BlobTxParticipant> = vec![];
+        let mut datas: Vec<Vec<u8>> = vec![];
         for i in 0..2 {
             let wallet = LocalWallet::from_bytes(&[i + 1; 32])?;
-            data_intents.push(
-                DataIntent::with_signature(&wallet, vec![i + 0x10; 1000 * i as usize], 1)
-                    .await
-                    .unwrap(),
-            );
+            let data = vec![i + 0x10; 1000 * i as usize];
+            participants.push(BlobTxParticipant {
+                address: wallet.address(),
+                data_len: data.len(),
+            });
+            datas.push(data);
         }
-        let participants = data_intents.iter().map(|p| *p.from()).collect::<Vec<_>>();
 
         let blob_tx = construct_blob_tx(
             &load_kzg_settings()?,
-            &PublishConfig {
-                l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
-            },
+            Address::from_str(ADDRESS_ZERO)?,
             &gas_config,
             &TxParams { chain_id, nonce: 0 },
             &wallet,
-            data_intents,
+            participants.clone(),
+            datas,
         )?;
 
         // EIP-2718 TransactionPayload
@@ -275,15 +269,7 @@ mod tests {
         );
 
         // Assert participants
-        assert_eq!(
-            blob_tx
-                .tx_summary
-                .participants
-                .iter()
-                .map(|p| p.address)
-                .collect::<Vec<_>>(),
-            participants,
-        );
+        assert_eq!(blob_tx.tx_summary.participants, participants);
 
         Ok(())
     }

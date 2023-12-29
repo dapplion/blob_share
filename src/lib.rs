@@ -4,34 +4,32 @@ use clap::Parser;
 use data_intent_tracker::DataIntentTracker;
 use eth_provider::EthProvider;
 use ethers::{
-    signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer},
+    signers::{coins_bip39::English, MnemonicBuilder, Signer},
     types::Address,
 };
-use eyre::{bail, eyre, Context, Result};
-use std::{
-    collections::HashMap, env, io, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
-    time::Duration,
-};
-use tokio::{
-    fs,
-    sync::{Notify, RwLock},
-};
+use eyre::{Context, Result};
+use sqlx::mysql::MySqlPoolOptions;
+use std::{env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use tokio::fs;
 use url::Url;
 
 use crate::{
+    anchor_block::get_anchor_block,
+    app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     metrics::{get_metrics, push_metrics_task},
     routes::{
-        get_balance_by_address, get_data, get_data_by_id, get_health, get_home,
-        get_last_seen_nonce_by_address, get_sender, get_status_by_id, get_sync,
-        post_data::post_data,
+        get_balance_by_address, get_data, get_data_by_id, get_health, get_home, get_sender,
+        get_status_by_id, get_sync, post_data::post_data,
     },
-    sync::{AnchorBlock, BlockSync, BlockSyncConfig},
+    sync::{BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
     utils::parse_basic_auth,
 };
 
+pub mod anchor_block;
+mod app;
 pub mod beacon_api_client;
 mod blob_sender_task;
 mod blob_tx_data;
@@ -53,7 +51,7 @@ mod utils;
 
 pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
-pub use data_intent::DataIntent;
+pub use data_intent::{BlobGasPrice, DataIntent};
 pub use gas::BlockGasSummary;
 pub use metrics::{PushMetricsConfig, PushMetricsFormat};
 pub use utils::increase_by_min_percent;
@@ -70,6 +68,9 @@ pub(crate) use std::{println as error, println as warn, println as info, println
 
 /// Current encoding needs one byte per field element
 pub const MAX_USABLE_BLOB_DATA_LEN: usize = 31 * FIELD_ELEMENTS_PER_BLOB;
+/// Max data allowed per user as pending data intents before inclusion
+pub const MAX_PENDING_DATA_LEN_PER_USER: usize = MAX_USABLE_BLOB_DATA_LEN * 16;
+/// Default target address
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
@@ -122,6 +123,10 @@ pub struct Args {
     #[arg(env, long, default_value_t = 6)]
     pub max_pending_transactions: u64,
 
+    /// Database URL to mysql DB with format `mysql://user:password@localhost/test`
+    #[arg(env, long)]
+    pub database_url: String,
+
     /// Enable serving metrics
     #[arg(env, long)]
     pub metrics: bool,
@@ -152,36 +157,12 @@ impl Args {
     }
 }
 
-struct PublishConfig {
-    pub(crate) l1_inbox_address: Address,
-}
-
 struct AppConfig {
+    l1_inbox_address: Address,
     panic_on_background_task_errors: bool,
     anchor_block_filepath: PathBuf,
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
-}
-
-struct AppData {
-    kzg_settings: c_kzg::KzgSettings,
-    data_intent_tracker: RwLock<DataIntentTracker>,
-    // TODO: Store in remote DB persisting
-    sign_nonce_tracker: RwLock<HashMap<Address, u128>>,
-    sync: RwLock<BlockSync>,
-    provider: EthProvider,
-    sender_wallet: LocalWallet,
-    publish_config: PublishConfig,
-    notify: Notify,
-    chain_id: u64,
-    config: AppConfig,
-}
-
-impl AppData {
-    async fn collect_metrics(&self) {
-        self.sync.read().await.collect_metrics();
-        self.data_intent_tracker.read().await.collect_metrics();
-    }
 }
 
 pub struct App {
@@ -231,28 +212,18 @@ impl App {
             .await
             .wrap_err_with(|| "creating data dir")?;
 
+        // TODO: Should use connect_lazy_with
+        let db_pool = MySqlPoolOptions::new()
+            .max_connections(5)
+            .connect(&args.database_url)
+            .await?;
+
         let anchor_block_filepath = data_dir.join("anchor_block.json");
 
         // TODO: choose starting point that's not genesis
-        let anchor_block = {
-            // Attempt to read persisted file first if exists
-            match fs::read_to_string(&anchor_block_filepath).await {
-                Ok(str) => {
-                    serde_json::from_str(&str).wrap_err_with(|| "parsing anchor block file")?
-                }
-                Err(e) => match e.kind() {
-                    io::ErrorKind::NotFound => match starting_point {
-                        StartingPoint::StartingBlock(starting_block) => {
-                            anchor_block_from_starting_block(&provider, starting_block).await?
-                        }
-                    },
-                    _ => bail!(
-                        "error opening anchor_block file {}: {e:?}",
-                        anchor_block_filepath.to_string_lossy()
-                    ),
-                },
-            }
-        };
+        let anchor_block =
+            get_anchor_block(&anchor_block_filepath, &db_pool, &provider, starting_point).await?;
+        debug!("retrieved anchor block: {:?}", anchor_block);
 
         let sync = BlockSync::new(
             BlockSyncConfig {
@@ -262,43 +233,45 @@ impl App {
             },
             anchor_block,
         );
+        // TODO: handle initial sync here with a nice progress bar
 
-        let app_data = Arc::new(AppData {
-            kzg_settings: load_kzg_settings()?,
-            notify: <_>::default(),
-            data_intent_tracker: <_>::default(),
-            sign_nonce_tracker: <_>::default(),
-            sync: sync.into(),
-            publish_config: PublishConfig {
-                l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
+        let mut data_intent_tracker = DataIntentTracker::default();
+        info!("syncing data intent track");
+        data_intent_tracker.sync_with_db(&db_pool).await?;
+        info!("synced data intent track");
+
+        let config = AppConfig {
+            l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
+            panic_on_background_task_errors: args.panic_on_background_task_errors,
+            anchor_block_filepath,
+            metrics_server_bearer_token: args.metrics_bearer_token.clone(),
+            metrics_push: if let Some(url) = &args.metrics_push_url {
+                Some(PushMetricsConfig {
+                    url: Url::parse(url)
+                        .wrap_err_with(|| format!("invalid push gateway URL {url}"))?,
+                    basic_auth: if let Some(auth) = &args.metrics_push_basic_auth {
+                        Some(parse_basic_auth(auth).wrap_err_with(|| "invalid push gateway auth")?)
+                    } else {
+                        None
+                    },
+                    interval: Duration::from_secs(args.metrics_push_interval_sec),
+                    format: args.metrics_push_format,
+                })
+            } else {
+                None
             },
+        };
+
+        let app_data = Arc::new(AppData::new(
+            config,
+            load_kzg_settings()?,
+            db_pool,
             provider,
-            sender_wallet: wallet,
+            wallet,
             chain_id,
-            config: AppConfig {
-                panic_on_background_task_errors: args.panic_on_background_task_errors,
-                anchor_block_filepath,
-                metrics_server_bearer_token: args.metrics_bearer_token.clone(),
-                metrics_push: if let Some(url) = &args.metrics_push_url {
-                    Some(PushMetricsConfig {
-                        url: Url::parse(url)
-                            .wrap_err_with(|| format!("invalid push gateway URL {url}"))?,
-                        basic_auth: if let Some(auth) = &args.metrics_push_basic_auth {
-                            Some(
-                                parse_basic_auth(auth)
-                                    .wrap_err_with(|| "invalid push gateway auth")?,
-                            )
-                        } else {
-                            None
-                        },
-                        interval: Duration::from_secs(args.metrics_push_interval_sec),
-                        format: args.metrics_push_format,
-                    })
-                } else {
-                    None
-                },
-            },
-        });
+            data_intent_tracker,
+            sync,
+        ));
 
         info!(
             "connected to eth node at {} chain {}",
@@ -323,8 +296,7 @@ impl App {
                 .service(get_data)
                 .service(get_data_by_id)
                 .service(get_status_by_id)
-                .service(get_balance_by_address)
-                .service(get_last_seen_nonce_by_address);
+                .service(get_balance_by_address);
 
             // Conditionally register the metrics route
             if args.metrics && args.metrics_port == args.port {
@@ -382,29 +354,4 @@ pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
         &trusted_setup.g1_points(),
         &trusted_setup.g2_points(),
     )?)
-}
-
-/// Initialize empty anchor block state from a network block
-async fn anchor_block_from_starting_block(
-    provider: &EthProvider,
-    starting_block: u64,
-) -> Result<AnchorBlock> {
-    let anchor_block = provider
-        .get_block(starting_block)
-        .await?
-        .ok_or_else(|| eyre!("genesis block not available"))?;
-    let hash = anchor_block
-        .hash
-        .ok_or_else(|| eyre!("block has no hash property"))?;
-    let number = anchor_block
-        .number
-        .ok_or_else(|| eyre!("block has no number property"))?
-        .as_u64();
-    Ok(AnchorBlock {
-        hash,
-        number,
-        gas: BlockGasSummary::from_block(&anchor_block)?,
-        // At genesis all balances are zero
-        finalized_balances: <_>::default(),
-    })
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO anchor_block (anchor_block_json, block_number) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1c988e58e1a28c631098f070e75230d0b595dafc7fac2ea2f16144749220539f"
+}

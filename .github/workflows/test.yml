@@ -16,6 +16,8 @@ jobs:
   style:
     name: Check Style
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v2
@@ -31,6 +33,7 @@ jobs:
           components: rustfmt
         # </setup>
       - run: cargo fmt -- --check
+      - run: cargo check --all-targets
       - run: cargo clippy -- --deny warnings
 
   tests:
@@ -74,9 +77,19 @@ jobs:
           brew install docker-buildx
       - name: Test docker
         run: docker run hello-world
+      - name: Install sqlx-cli
+        run: cargo install --version='~0.7' sqlx-cli --no-default-features --features rustls,mysql
+      - name: Migrate database
+        # linux: mysql-client, macos: brew install mysql
+        run: |
+          sudo apt-get install mysql-client -y
+          ./scripts/init_db.sh
         # </setup>
       - name: Check
         run: cargo check
+        # To re-sync run `cargo sqlx prepare` ref: https://github.com/launchbadge/sqlx/blob/main/sqlx-cli/README.md#enable-building-in-offline-mode-with-query
+      - name: Ensure sqlx-offline data is synced
+        run: cargo sqlx prepare --check
       - name: Test
         run: cargo test -- --test-threads=1 --nocapture
 
@@ -119,6 +132,8 @@ jobs:
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: true
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v2

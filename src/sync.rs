@@ -33,11 +33,27 @@ type Nonce = u64;
 /// 2. Wait for next block, tx included?
 ///   2.1. Tx included => Ok
 ///   2.2. Tx not included, blob gas price increase?
-///     2.2.1. Increase => cancel tx
+///     2.2.1. Increase => allow to replace
 ///     2.2.2. Same or decrease => Ok
 /// 3. Wait for re-org
 ///   3.1. Tx included in new head chain => Ok
 ///   3.2. Tx dropped => jump to 2.2.
+///
+/// # Tx cancellation
+///
+/// If a transaction is underpriced, there are multiple intents tied to that transaction that
+/// should be packed into a new transaction. When an underpriced transaction is replaced with
+/// another transaction of higher gas price, when can the previous transaction be forgotten?
+/// How to handle the intermediary state of the intents still participant in an old under-priced
+/// transaction
+///
+/// 1. Add new pending data intent   DataIntent(tx_hash = None)
+/// 2. Data intent included in tx    DataIntent(tx_hash = TxHash)
+/// 3. Tx becomes underpriced
+/// 4. Attempt to include in Tx
+/// 5a. New transaction gets included
+/// 5b. Previous transaction gets included
+/// 5c. Re-org an included transaction changes
 ///
 pub struct BlockSync {
     anchor_block: AnchorBlock,
@@ -171,6 +187,18 @@ impl BlockSync {
             .unwrap_or(0);
 
         finalized_balance + balance_delta_block_inclusions - cost_of_pending_txs as i128
+    }
+
+    pub fn pending_txs_data_len(&self, address: &Address) -> usize {
+        self.pending_transactions
+            .values()
+            .map(|tx| {
+                tx.participants
+                    .iter()
+                    .map(|p| if &p.address == address { p.data_len } else { 0 })
+                    .sum::<usize>()
+            })
+            .sum()
     }
 
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {

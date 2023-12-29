@@ -1,4 +1,5 @@
-use blob_share::packing::{pack_items_brute_force, pack_items_greedy_sorted};
+use blob_share::packing::{pack_items_brute_force, pack_items_greedy_sorted, Item};
+use blob_share::BlobGasPrice;
 use eyre::Result;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -10,7 +11,9 @@ use std::{env, fs};
 
 const SEED: u64 = 0;
 const BLOB_MAX_SIZE: usize = 131072;
-const ONE_GWEI: u128 = 1000000000;
+const ONE_GWEI: BlobGasPrice = 1000000000;
+
+type ItemTuple = (usize, BlobGasPrice);
 
 #[test]
 fn test_greedy() -> Result<()> {
@@ -18,6 +21,7 @@ fn test_greedy() -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
+            println!("running test {}", path.to_string_lossy());
             let mut file = fs::File::open(path)?;
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
@@ -50,7 +54,7 @@ fn test_greedy() -> Result<()> {
             test_vector.items.sort_by(|a, b| a.0.cmp(&b.0));
 
             let selected_indexes = pack_items_greedy_sorted(
-                test_vector.items.as_mut_slice(),
+                &from_tuples(&test_vector.items),
                 test_vector.max_len,
                 test_vector.cost_per_len,
             );
@@ -88,7 +92,7 @@ fn generate_test_vectors() {
             max_len: BLOB_MAX_SIZE,
         });
         for price_mult in [1.1, 1.2, 1.5, 2.0] {
-            let upper_p = ((price_mult * 100.0) as u128 * ONE_GWEI) / 100;
+            let upper_p = ((price_mult * 100.0) as BlobGasPrice * ONE_GWEI) / 100;
             test_vectors_rand.push(TestVectorDef {
                 name: format!("price_range_{price_mult}x_{n}_"),
                 items: ItemsType::Rand((1..BLOB_MAX_SIZE, ONE_GWEI..upper_p, n)),
@@ -101,11 +105,15 @@ fn generate_test_vectors() {
     for test_vector in test_vectors_rand {
         let file_path = format!("tests/packing_test_vectors/{}.json", test_vector.name);
         if !Path::new(&file_path).exists() {
+            println!("generating test vector {file_path}");
             let items = test_vector.items.generate(test_vector.max_len);
 
             let brute_force_solution = if items.len() < 20 {
-                match pack_items_brute_force(&items, test_vector.max_len, test_vector.cost_per_len)
-                {
+                match pack_items_brute_force(
+                    &from_tuples(&items),
+                    test_vector.max_len,
+                    test_vector.cost_per_len,
+                ) {
                     Some(indexes) => SolutionResult::Ok(indexes),
                     None => SolutionResult::NoSolution,
                 }
@@ -127,14 +135,18 @@ fn generate_test_vectors() {
     }
 }
 
+fn from_tuples(items: &[ItemTuple]) -> Vec<Item> {
+    items.iter().map(|(l, m)| Item::new(*l, *m)).collect()
+}
+
 struct TestVectorDef {
     name: String,
     items: ItemsType,
-    cost_per_len: u128,
+    cost_per_len: BlobGasPrice,
     max_len: usize,
 }
 
-type ItemRanges = (Range<usize>, Range<u128>, usize);
+type ItemRanges = (Range<usize>, Range<BlobGasPrice>, usize);
 
 enum ItemsType {
     Rand(ItemRanges),
@@ -142,7 +154,7 @@ enum ItemsType {
 }
 
 impl ItemsType {
-    pub fn generate(&self, max_len: usize) -> Vec<(usize, u128)> {
+    pub fn generate(&self, max_len: usize) -> Vec<ItemTuple> {
         match self {
             ItemsType::Rand(ranges) => ItemsType::generate_from_ranges(ranges),
 
@@ -170,7 +182,7 @@ impl ItemsType {
         }
     }
 
-    fn generate_from_ranges((range_len, range_cost_per_len, n): &ItemRanges) -> Vec<(usize, u128)> {
+    fn generate_from_ranges((range_len, range_cost_per_len, n): &ItemRanges) -> Vec<ItemTuple> {
         let mut rng = StdRng::seed_from_u64(SEED);
         (0..*n)
             .map(|_| {
@@ -182,8 +194,6 @@ impl ItemsType {
     }
 }
 
-type Item = (usize, u128);
-
 #[allow(dead_code)]
 #[derive(Debug)]
 struct SolutionSummary {
@@ -194,10 +204,10 @@ struct SolutionSummary {
 
 impl SolutionSummary {
     fn from_solution(
-        items: &[Item],
+        items: &[ItemTuple],
         selected_indexes: &[usize],
         max_len: usize,
-        cost_per_len: u128,
+        cost_per_len: BlobGasPrice,
     ) -> Self {
         let selected_items = selected_indexes
             .iter()
@@ -241,8 +251,8 @@ impl SolutionResult {
 #[derive(Serialize, Deserialize, Debug)]
 struct TestVector {
     name: String,
-    items: Vec<Item>,
-    cost_per_len: u128,
+    items: Vec<ItemTuple>,
+    cost_per_len: BlobGasPrice,
     max_len: usize,
     brute_force_solution: SolutionResult,
 }

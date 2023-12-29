@@ -1,0 +1,25 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT anchor_block_json FROM anchor_block ORDER BY block_number DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "anchor_block_json",
+        "type_info": {
+          "type": "Blob",
+          "flags": "NOT_NULL | BLOB | NO_DEFAULT_VALUE",
+          "char_set": 224,
+          "max_size": 4294967295
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "518dfce8e564b0cbe8a1bcff9fc8ffd5137de07da32a969f5a89bc64b305c8e6"
+}

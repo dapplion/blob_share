@@ -1,12 +1,12 @@
 use actix_web::http::header::AUTHORIZATION;
 use actix_web::HttpRequest;
-use ethers::types::{Address, Signature};
+use ethers::types::{Address, Signature, TxHash, H160, H256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
-use std::cmp::PartialEq;
-use std::fmt::{Debug, Display};
-use std::ops::{Add, Div, Mul};
+use std::fmt::{self, Debug, Display};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub mod option_hex_vec;
 
 // Return an opaque 500 while preserving the error root's cause for logging.
 #[allow(dead_code)]
@@ -28,16 +28,8 @@ where
 
 /// Multiplies an integer value by `percent / 100`, if the resulting value is the same, returns the
 /// value + 1.
-pub fn increase_by_min_percent<T>(value: T, percent: T) -> T
-where
-    T: Copy + Mul<Output = T> + Div<Output = T> + Add<Output = T> + PartialEq + From<u8>,
-{
-    let new_value = (percent * value) / T::from(100);
-    if new_value == value {
-        value + T::from(1)
-    } else {
-        value
-    }
+pub fn increase_by_min_percent(value: u64, fraction: f64) -> u64 {
+    ((value as f64) * fraction).ceil() as u64
 }
 
 /// Post-process a reqwest response to handle non 2xx codes gracefully
@@ -54,9 +46,25 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
     }
 }
 
-/// Return 0x prefixed hex representation of address (not checksum)
-pub fn address_to_hex(addr: Address) -> String {
+/// Return 0x prefixed hex representation of address (lowercase, not checksum)
+pub fn address_to_hex_lowercase(addr: Address) -> String {
     format!("0x{}", hex::encode(addr.to_fixed_bytes()))
+}
+
+/// Convert `Vec<u8>` into ethers Address H160 type. Errors if v.len() != 20.
+pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
+    let fixed_vec: [u8; 20] = v
+        .try_into()
+        .map_err(|_| eyre!("address as vec not 20 bytes in len"))?;
+    Ok(H160(fixed_vec))
+}
+
+/// Convert `Vec<u8>` into ethers TxHash H256 type. Errors if v.len() != 32.
+pub fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
+    let fixed_vec: [u8; 32] = v
+        .try_into()
+        .map_err(|_| eyre!("txhash as vec not 32 bytes in len"))?;
+    Ok(H256(fixed_vec))
 }
 
 /// Deserialize ethers' Signature
@@ -65,11 +73,11 @@ pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
 }
 
 /// Return unix timestamp in milliseconds
-pub fn unix_timestamps_millis() -> u128 {
+pub fn unix_timestamps_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
-        .as_millis()
+        .as_millis() as u64
 }
 
 /// Extract Bearer token from actix_web request, or return an error
@@ -103,5 +111,45 @@ pub fn parse_basic_auth(auth: &str) -> Result<BasicAuthentication> {
         })
     } else {
         bail!("Invalid auth format. Use 'username:password'")
+    }
+}
+
+trait ResultExt<T, E>
+where
+    E: fmt::Display,
+{
+    fn prefix_err(self, prefix: &str) -> eyre::Result<T>;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E>
+where
+    E: fmt::Display,
+{
+    fn prefix_err(self, prefix: &str) -> eyre::Result<T> {
+        self.map_err(|e| eyre::eyre!("{}: {}", prefix, e.to_string().replace('\n', "; ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::increase_by_min_percent;
+
+    #[test]
+    fn test_increase_by_min_percent() {
+        // Bumps to more than 101% if low resolution
+        assert_eq!(increase_by_min_percent(1, 1.01), 2);
+        // Bump by some percents
+        assert_eq!(increase_by_min_percent(100, 1.01), 101);
+        assert_eq!(increase_by_min_percent(1000000000, 1.01), 1010000000);
+        // Bump close to u64::MAX
+        assert_eq!(
+            increase_by_min_percent(10000000000000000000, 1.8),
+            18000000000000000000
+        );
+        // Don't bump with fraction exactly 1
+        assert_eq!(increase_by_min_percent(1, 1.), 1);
+        assert_eq!(increase_by_min_percent(1000000000, 1.), 1000000000);
+        // Precision loss
+        assert_eq!(increase_by_min_percent(u64::MAX - 512, 1.), u64::MAX);
     }
 }

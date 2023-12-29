@@ -1,7 +1,13 @@
 use std::time::Duration;
 
-use crate::helpers::{retry_with_timeout, unique, TestHarness, TestMode, FINALIZE_DEPTH};
-use blob_share::{client::NoncePreference, MAX_USABLE_BLOB_DATA_LEN};
+use crate::{
+    geth_helpers::GENESIS_FUNDS_ADDR,
+    helpers::{retry_with_timeout, unique, Config, TestHarness, TestMode, FINALIZE_DEPTH},
+};
+use blob_share::{
+    client::{NoncePreference, PostDataIntentV1, PostDataIntentV1Signed},
+    MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN,
+};
 use ethers::signers::{LocalWallet, Signer};
 use log::info;
 
@@ -12,8 +18,187 @@ async fn health_check_works() {
 }
 
 #[tokio::test]
+async fn reject_post_data_before_any_topup() {
+    TestHarness::build(TestMode::ELOnly, None)
+        .await
+        .spawn_with_fn(|test_harness| async move {
+            let wallet = test_harness.get_signer_genesis_funds();
+            // Send data request before funding the sender address
+            let res = test_harness.post_data_of_len(&wallet.signer(), 69).await;
+
+            assert_eq!(
+                res.unwrap_err().to_string(),
+                "non-success response status 400 body: Insufficient balance 0 for intent with cost 69"
+            );
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reject_post_data_after_insufficient_balance() {
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(Config::default().add_initial_topup(*GENESIS_FUNDS_ADDR, 1000)),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+
+        // First request should be ok
+        test_harness
+            .post_data_of_len(wallet.signer(), 1000)
+            .await
+            .unwrap();
+        // Second request must be rejected
+        let res = test_harness.post_data_of_len(wallet.signer(), 1000).await;
+
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "non-success response status 400 body: Insufficient balance 0 for intent with cost 1000"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn reject_single_data_intent_too_big() {
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(Config::default().add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000)),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+        // Send data request before funding the sender address
+        let res = test_harness
+            .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN + 1)
+            .await;
+
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "non-success response status 400 body: data length 126977 over max usable blob data 126976"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+// Without sending transactions all pending data intents are not included in any transaction
+#[tokio::test]
+async fn reject_posting_too_many_pending_intents_without_sending_txs() {
+    reject_posting_too_many_pending_intents(false).await
+}
+
+// With sending transactions, pending data intents are both in transactions + the data intent
+// tracker. Because it's using `TestMode::ELOnly`, not blocks are mined, so all tx are pending.
+#[tokio::test]
+async fn reject_posting_too_many_pending_intents_sending_txs() {
+    reject_posting_too_many_pending_intents(true).await
+}
+
+async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(
+            Config::default()
+                .add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000000000) // 0.1 ETH
+                // 10 * BLOB_GASPRICE_UPDATE_FRACTION = 22026, so a tx should never be sent
+                .set_initial_excess_blob_gas(if send_blob_txs { 0 } else { 3338477 * 10 }),
+        ),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+
+        for _ in 0..MAX_PENDING_DATA_LEN_PER_USER / MAX_USABLE_BLOB_DATA_LEN {
+            test_harness
+                .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
+                .await
+                .unwrap();
+        }
+
+        // Send data request before funding the sender address
+        let res = test_harness
+            .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
+            .await;
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "non-success response status 400 body: pending total data_len 2158592 over max 2031616"
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_nonce() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.nonce += 1;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_max_blob_gas_price() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.intent.max_blob_gas_price += 1;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn reject_post_data_request_invalid_signature_mutate_data() {
+    reject_post_data_request_invalid_signature(|intent| {
+        intent.intent.data[0] += 1;
+    })
+    .await;
+}
+
+async fn reject_post_data_request_invalid_signature<F>(mutate: F)
+where
+    F: FnOnce(&mut PostDataIntentV1Signed),
+{
+    TestHarness::build(
+        TestMode::ELOnly,
+        Some(Config::default().add_initial_topup(*GENESIS_FUNDS_ADDR, 100000000000)),
+    )
+    .await
+    .spawn_with_fn(|test_harness| async move {
+        let wallet = test_harness.get_signer_genesis_funds();
+        let nonce = 1;
+        let mut intent_signed = PostDataIntentV1Signed::with_signature(
+            wallet.signer(),
+            PostDataIntentV1 {
+                from: wallet.address(),
+                data: vec![0xaa; 1000],
+                max_blob_gas_price: 1,
+            },
+            Some(nonce),
+        )
+        .await
+        .unwrap();
+
+        // Mutate after signing
+        mutate(&mut intent_signed);
+
+        let res = test_harness.client.post_data(&intent_signed).await;
+
+        let err_str = res.unwrap_err().to_string();
+        assert!(
+            err_str.contains("Signature verification failed"),
+            "Expected error 'Signature verification failed' but got '{}'",
+            err_str
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn post_two_intents_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain)
+    TestHarness::build(TestMode::WithChain, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
@@ -21,12 +206,10 @@ async fn post_two_intents_and_expect_blob_tx() {
                 test_harness.wait_for_app_health().await;
 
                 // Fund account
-                let wallet = test_harness.get_wallet_genesis_funds();
-                test_harness.fund_sender_account(&wallet).await;
+                let wallet = test_harness.get_signer_genesis_funds();
+                test_harness.fund_sender_account(&wallet, None).await;
 
                 test_post_two_data_intents_up_to_inclusion(&test_harness, wallet.signer(), 0).await;
-
-                Ok(())
             }
         })
         .await
@@ -35,7 +218,7 @@ async fn post_two_intents_and_expect_blob_tx() {
 
 #[tokio::test]
 async fn post_many_intents_series_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain)
+    TestHarness::build(TestMode::WithChain, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
@@ -43,8 +226,8 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                 test_harness.wait_for_app_health().await;
 
                 // Fund account
-                let wallet = test_harness.get_wallet_genesis_funds();
-                test_harness.fund_sender_account(&wallet).await;
+                let wallet = test_harness.get_signer_genesis_funds();
+                test_harness.fund_sender_account(&wallet, None).await;
 
                 // +4 for the time it takes the fund transaction to go through
                 let n = 4 + 2 * FINALIZE_DEPTH;
@@ -57,8 +240,6 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                     .await;
                     info!("test-progress: completed step {i}/{n}");
                 }
-
-                Ok(())
             }
         })
         .await
@@ -101,7 +282,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
         .get_data_by_id(&intent_1_id)
         .await
         .unwrap();
-    assert_eq!(intent_1.data(), data_1);
+    assert_eq!(intent_1.data, data_1);
 
     // Check balance has decreased
     let balance_after_intent_1 = test_harness
@@ -182,7 +363,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
 
 #[tokio::test]
 async fn post_many_intents_parallel_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain)
+    TestHarness::build(TestMode::WithChain, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
@@ -190,8 +371,8 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                 test_harness.wait_for_app_health().await;
 
                 // Fund account
-                let wallet = test_harness.get_wallet_genesis_funds();
-                test_harness.fund_sender_account(&wallet).await;
+                let wallet = test_harness.get_signer_genesis_funds();
+                test_harness.fund_sender_account(&wallet, None).await;
 
                 // Num of intents to send at once
                 const N: u64 = 32;
@@ -210,7 +391,7 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                             .post_data(
                                 &wallet.signer(),
                                 data.to_vec(),
-                                Some(NoncePreference::Value(i as u128)),
+                                Some(NoncePreference::Value(i as u64)),
                             )
                             .await,
                     )
@@ -263,8 +444,6 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     unique_intents_block_hash.len(),
                     unique_intents_txhash.len(),
                 );
-
-                Ok(())
             }
         })
         .await

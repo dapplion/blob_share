@@ -7,11 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_utils::hex_vec;
 use std::sync::Arc;
 
-use crate::data_intent::{DataHash, DataIntent, DataIntentNoSignature};
+use crate::client::DataIntentId;
+use crate::data_intent::{BlobGasPrice, DataHash, DataIntent, DataIntentNoSignature};
 use crate::utils::{deserialize_signature, e400, e500, unix_timestamps_millis};
-use crate::AppData;
+use crate::{AppData, MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN};
 
-#[tracing::instrument(skip(body, data))]
+#[tracing::instrument(skip(body, data), err)]
 #[post("/v1/data")]
 pub(crate) async fn post_data(
     body: web::Json<PostDataIntentV1Signed>,
@@ -20,56 +21,54 @@ pub(crate) async fn post_data(
     // .try_into() verifies the signature
     let nonce = body.nonce;
     let data_intent: DataIntent = body.into_inner().try_into().map_err(e400)?;
+    let from = *data_intent.from();
+    let data_len = data_intent.data_len();
 
-    // Check user has enough balance to cover the max cost allowed
-    let balance = data.balance_of_user(data_intent.from()).await;
-    if balance < data_intent.max_cost() as i128 {
+    // TODO: Consider support for splitting data over mutliple blobs
+    if data_intent.data_len() > MAX_USABLE_BLOB_DATA_LEN {
         return Err(e400(eyre!(
-            "Insufficient balance, current balance {} requested {}",
-            balance,
-            data_intent.max_cost()
+            "data length {} over max usable blob data {}",
+            data_intent.data_len(),
+            MAX_USABLE_BLOB_DATA_LEN
         )));
     }
 
-    // Check that the nonce is the next expected
-    // Unsafe channel, check that this message is new and not replayed
-    {
-        if let Some(last_seen_nonce) = data.sign_nonce_tracker.read().await.get(data_intent.from())
-        {
-            if nonce <= *last_seen_nonce {
-                return Err(e400(eyre!(
-                    "nonce {nonce} less than last seen {last_seen_nonce}"
-                )));
-            }
-        }
+    // TODO: Is this limitation necessary?
+    let pending_total_data_len = data.pending_total_data_len(&from).await;
+    if pending_total_data_len + data_len > MAX_PENDING_DATA_LEN_PER_USER {
+        return Err(e400(eyre!(
+            "pending total data_len {} over max {}",
+            pending_total_data_len + data_len,
+            MAX_PENDING_DATA_LEN_PER_USER
+        )));
     }
 
-    debug!(
-        "accepted data intent from {} nonce {} data_len {} id {}",
-        data_intent.from(),
-        nonce,
-        data_intent.data_len(),
-        data_intent.id(),
-    );
+    // TODO: Review the cost of sync here time
+    data.sync_data_intents().await.map_err(e500)?;
+    let balance = data.balance_of_user(&from).await;
+    let cost = data_intent.max_cost() as i128;
+    if balance < cost {
+        return Err(e400(eyre!(
+            "Insufficient balance {balance} for intent with cost {cost}"
+        )));
+    }
 
-    // data_intent_tracker ensures no duplicates at this point, everything before this statement
-    // must be immmutable checks
-    let id = data_intent.id();
-    data.data_intent_tracker
-        .write()
+    let id = data
+        .atomic_update_post_data_on_unsafe_channel(data_intent, nonce)
         .await
-        .add(data_intent)
         .map_err(e500)?;
+
+    debug!("accepted data intent from {from} nonce {nonce} data_len {data_len} id {id}");
 
     // Potentially send a blob transaction including this new participation
     data.notify.notify_one();
 
-    Ok(HttpResponse::Ok().json(PostDataResponse { id: id.to_string() }))
+    Ok(HttpResponse::Ok().json(PostDataResponse { id }))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataResponse {
-    pub id: String,
+    pub id: DataIntentId,
 }
 
 /// TODO: Expose a "login with Ethereum" function an expose the non-signed variant
@@ -81,7 +80,7 @@ pub struct PostDataIntentV1 {
     #[serde(with = "hex_vec")]
     pub data: Vec<u8>,
     /// Max price user is willing to pay in wei
-    pub max_blob_gas_price: u128,
+    pub max_blob_gas_price: BlobGasPrice,
 }
 
 /// PostDataIntent message for non authenticated channels
@@ -91,7 +90,10 @@ pub struct PostDataIntentV1Signed {
     /// DataIntent nonce, to allow replay protection. Each new intent must have a nonce higher than
     /// the last known nonce from this `from` sender. Re-pricings will be done with a different
     /// nonce. For simplicity just pick the current UNIX timestemp in miliseconds.
-    pub nonce: u128,
+    ///
+    /// u64::MAX is 18446744073709551616, able to represent unix timestamps in miliseconds way into
+    /// the future.
+    pub nonce: u64,
     /// Signature over := data | nonce | max_blob_gas_price
     #[serde(with = "hex_vec")]
     pub signature: Vec<u8>,
@@ -101,7 +103,7 @@ impl PostDataIntentV1Signed {
     pub async fn with_signature(
         wallet: &LocalWallet,
         intent: PostDataIntentV1,
-        nonce: Option<u128>,
+        nonce: Option<u64>,
     ) -> Result<Self> {
         if wallet.address() != intent.from {
             bail!(
@@ -121,7 +123,7 @@ impl PostDataIntentV1Signed {
         })
     }
 
-    fn sign_hash(intent: &PostDataIntentV1, nonce: u128) -> Vec<u8> {
+    fn sign_hash(intent: &PostDataIntentV1, nonce: u64) -> Vec<u8> {
         let data_hash = DataHash::from_data(&intent.data);
 
         // Concat: data_hash | nonce | max_blob_gas_price

@@ -5,6 +5,7 @@ use ethers::{
     types::{Address, H256},
 };
 use eyre::{bail, Result};
+use lazy_static::lazy_static;
 use rand::{distributions::Alphanumeric, Rng};
 use serde_json::json;
 use std::{
@@ -24,6 +25,10 @@ const GETH_BUILD_TAG: &str = "geth-dev-cancun:local";
 const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
 
+lazy_static! {
+    pub static ref GENESIS_FUNDS_ADDR: Address = Address::from_str(DEV_PUBKEY).unwrap();
+}
+
 pub fn get_jwtsecret_filepath() -> String {
     path_from_cwd(&["tests", "artifacts", "jwtsecret"])
 }
@@ -35,12 +40,16 @@ const IS_MACOS: bool = false;
 
 pub type WalletWithProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
 
-pub fn get_wallet_genesis_funds(
+pub fn get_wallet_genesis_funds() -> LocalWallet {
+    LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY).unwrap()).unwrap()
+}
+
+pub fn get_signer_genesis_funds(
     eth_provider_url: &str,
     chain_id: u64,
 ) -> Result<WalletWithProvider> {
-    let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?;
-    assert_eq!(wallet.address(), Address::from_str(DEV_PUBKEY)?);
+    let wallet = get_wallet_genesis_funds();
+    assert_eq!(wallet.address(), *GENESIS_FUNDS_ADDR);
     let provider = Provider::<Http>::try_from(eth_provider_url)?;
 
     Ok(SignerMiddleware::new(
@@ -77,7 +86,7 @@ impl GethInstance {
     }
 
     pub fn http_provider(&self) -> Result<WalletWithProvider> {
-        get_wallet_genesis_funds(self.http_url(), self.chain_id)
+        get_signer_genesis_funds(self.http_url(), self.chain_id)
     }
 
     pub fn genesis_block_hash_hex(&self) -> String {
@@ -97,16 +106,18 @@ pub async fn spawn_geth(mode: GethMode) -> GethInstance {
     log::info!("spawn geth with Dockerfile {}", geth_dockerfile_dirpath);
 
     // Make sure image is available
-    run_until_exit(
-        "docker",
-        &[
-            "build",
-            &format!("--build-arg='tag={geth_version}'"),
-            &format!("--tag={GETH_BUILD_TAG}"),
-            &geth_dockerfile_dirpath,
-        ],
-    )
-    .unwrap();
+    if !env::var("OFFLINE_MODE").is_ok() {
+        run_until_exit(
+            "docker",
+            &[
+                "build",
+                &format!("--build-arg='tag={geth_version}'"),
+                &format!("--tag={GETH_BUILD_TAG}"),
+                &geth_dockerfile_dirpath,
+            ],
+        )
+        .unwrap();
+    }
 
     let port_http = unused_port();
     let port_ws = unused_port();
