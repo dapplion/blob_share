@@ -2,13 +2,12 @@ use std::{str::FromStr, time::Duration};
 
 use crate::{
     geth_helpers::GethMode,
+    helpers::get_signer_genesis_funds,
     run_lodestar::{spawn_lodestar, RunLodestarArgs},
     spawn_geth,
 };
-use ethers::{
-    providers::Middleware,
-    types::{Address, TransactionRequest},
-};
+use ethers::providers::Middleware;
+use ethers::types::{Address, TransactionRequest};
 use eyre::Result;
 use tokio::time::timeout;
 
@@ -25,7 +24,7 @@ async fn geth_test_spawn_interop() {
 #[tokio::test]
 async fn geth_send_regular_transaction_no_inclusion() -> Result<()> {
     let geth = spawn_geth(GethMode::Interop).await;
-    let client = geth.http_provider().unwrap();
+    let client = get_signer_genesis_funds(geth.http_url(), geth.get_chain_id()).unwrap();
 
     let from = client.address();
     let to = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();
@@ -54,7 +53,7 @@ async fn geth_send_regular_transaction_with_inclusion() -> Result<()> {
     })
     .await;
 
-    let client = geth.http_provider().unwrap();
+    let client = get_signer_genesis_funds(geth.http_url(), geth.get_chain_id()).unwrap();
 
     let from = client.address();
     let to = Address::from_str("0x0000000000000000000000000000000000000000").unwrap();

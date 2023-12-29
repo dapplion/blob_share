@@ -1,11 +1,13 @@
 use ethers::{
+    middleware::SignerMiddleware,
     providers::{Http, Middleware, Provider},
-    signers::LocalWallet,
+    signers::{LocalWallet, Signer},
     types::{Address, Block, Transaction, TransactionRequest, TxHash, H256, U256},
     utils::parse_ether,
 };
 use eyre::{bail, eyre, Result};
 use futures::future::try_join_all;
+use lazy_static::lazy_static;
 use log::LevelFilter;
 use rand::{distributions::Alphanumeric, Rng};
 use sqlx::{Connection, Executor, MySqlConnection, MySqlPool};
@@ -14,6 +16,7 @@ use std::{
     future::Future,
     hash::Hash,
     mem,
+    str::FromStr,
     time::{Duration, Instant},
 };
 use tempfile::{tempdir, TempDir};
@@ -27,7 +30,8 @@ use blob_share::{
 };
 
 use crate::{
-    geth_helpers::{GethMode, WalletWithProvider},
+    geth_helpers::GethMode,
+    mock_el_server::MockEthereumServer,
     run_lodestar::{spawn_lodestar, LodestarInstance, RunLodestarArgs},
     spawn_geth, GethInstance,
 };
@@ -36,12 +40,19 @@ use crate::{
 pub const FINALIZE_DEPTH: u64 = 8;
 pub const ONE_HUNDRED_MS: Duration = Duration::from_millis(100);
 
+const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
+const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
+
+lazy_static! {
+    pub static ref GENESIS_FUNDS_ADDR: Address = Address::from_str(DEV_PUBKEY).unwrap();
+}
+
 #[allow(dead_code)]
 pub struct TestHarness {
     pub client: Client,
     base_url: String,
-    pub eth_provider: Provider<Http>,
-    geth_instance: GethInstance,
+    mock_ethereum_server: Option<MockEthereumServer>,
+    geth_instance: Option<GethInstance>,
     lodestar_instance: Option<LodestarInstance>,
     pub temp_data_dir: TempDir,
     pub sender_address: Address,
@@ -49,8 +60,9 @@ pub struct TestHarness {
 }
 
 pub enum TestMode {
+    ELMock,
     ELOnly,
-    WithChain,
+    ELAndCL,
 }
 
 pub enum AppStatus {
@@ -85,7 +97,7 @@ impl TestHarness {
 
     #[allow(dead_code)]
     pub async fn spawn_with_chain() -> Self {
-        TestHarness::build(TestMode::WithChain, None)
+        TestHarness::build(TestMode::ELAndCL, None)
             .await
             .spawn_app_in_background()
     }
@@ -104,24 +116,33 @@ impl TestHarness {
             .is_test(true)
             .try_init();
 
-        let (geth_instance, lodestar_instance) = match test_mode {
+        let (geth_instance, lodestar_instance, mock_ethereum_server) = match test_mode {
+            TestMode::ELMock => (
+                None,
+                None,
+                Some(
+                    MockEthereumServer::build()
+                        .await
+                        .spawn_app_in_background()
+                        .with_genesis_block(),
+                ),
+            ),
             TestMode::ELOnly => {
                 let geth = spawn_geth(GethMode::Dev).await;
-                (geth, None)
+                (Some(geth), None, None)
             }
-            TestMode::WithChain => {
+            TestMode::ELAndCL => {
                 let geth = spawn_geth(GethMode::Interop).await;
                 let lodestar = spawn_lodestar(RunLodestarArgs {
                     execution_url: geth.authrpc_url(),
                     genesis_eth1_hash: geth.genesis_block_hash_hex(),
                 })
                 .await;
-                (geth, Some(lodestar))
+                (Some(geth), Some(lodestar), None)
             }
         };
 
-        let eth_provider = Provider::<Http>::try_from(geth_instance.http_url()).unwrap();
-        let eth_provider = eth_provider.interval(Duration::from_millis(50));
+        let eth_provider_urls = get_eth_provider_urls(&geth_instance, &mock_ethereum_server);
 
         // Randomise configuration to ensure test isolation
         let database_name = random_alphabetic_string(16);
@@ -132,7 +153,8 @@ impl TestHarness {
 
         // Apply test config to anchor block
         if let Some(test_config) = test_config {
-            let provider = EthProvider::Http(eth_provider.clone());
+            let provider = Provider::<Http>::try_from(&eth_provider_urls.http).unwrap();
+            let provider = EthProvider::Http(provider.clone());
             let mut anchor_block = anchor_block_from_starting_block(&provider, 0)
                 .await
                 .unwrap();
@@ -153,7 +175,8 @@ impl TestHarness {
         let args = Args {
             port: 0,
             bind_address: "127.0.0.1".to_string(),
-            eth_provider: geth_instance.ws_url().to_string(),
+            // Use websockets when using actual Geth to test that path
+            eth_provider: eth_provider_urls.ws.unwrap_or(eth_provider_urls.http),
             // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
             eth_provider_interval: Some(1),
             starting_block: 0,
@@ -186,7 +209,7 @@ impl TestHarness {
         Self {
             client,
             base_url,
-            eth_provider,
+            mock_ethereum_server,
             geth_instance,
             lodestar_instance,
             temp_data_dir,
@@ -234,6 +257,22 @@ impl TestHarness {
         }
     }
 
+    pub fn eth_provider_http(&self) -> Provider<Http> {
+        Provider::<Http>::try_from(self.eth_provider_urls().http)
+            .unwrap()
+            .interval(Duration::from_millis(50))
+    }
+
+    pub fn geth(&self) -> &GethInstance {
+        self.geth_instance
+            .as_ref()
+            .expect("not using geth instance")
+    }
+
+    fn eth_provider_urls(&self) -> EthProviderURLs {
+        get_eth_provider_urls(&self.geth_instance, &self.mock_ethereum_server)
+    }
+
     pub fn get_blob_consumer(&self, participant_address: Address) -> BlobConsumer {
         let beacon_api_base_url = match &self.lodestar_instance {
             Some(lodestar_instance) => lodestar_instance.http_url(),
@@ -242,7 +281,7 @@ impl TestHarness {
 
         BlobConsumer::new(
             beacon_api_base_url,
-            self.geth_instance.http_url(),
+            &self.eth_provider_urls().http,
             self.sender_address,
             participant_address,
         )
@@ -259,7 +298,7 @@ impl TestHarness {
             .post_data_with_wallet(
                 wallet,
                 vec![0xff; data_len],
-                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
+                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0),
                 &NoncePreference::Timebased,
             )
             .await
@@ -277,7 +316,7 @@ impl TestHarness {
             .post_data_with_wallet(
                 wallet,
                 data,
-                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider.clone()), 1.0),
+                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0),
                 &nonce.unwrap_or(NoncePreference::Timebased),
             )
             .await
@@ -304,6 +343,8 @@ impl TestHarness {
         expected_tx_hash: Option<H256>,
         timeout: Duration,
     ) -> Result<(H256, H256)> {
+        let eth_provider = self.eth_provider_http();
+
         match retry_with_timeout(
             || async {
                 let status = self.client.get_status_by_id(*id).await?;
@@ -318,8 +359,7 @@ impl TestHarness {
         {
             Ok(result) => Ok(result),
             Err(e) => {
-                let sender_nonce = self
-                    .eth_provider
+                let sender_nonce = eth_provider
                     .get_transaction_count(self.sender_address, None)
                     .await?
                     .as_usize();
@@ -427,11 +467,11 @@ impl TestHarness {
     }
 
     pub async fn get_all_past_sender_txs(&self) -> Result<Vec<Transaction>> {
+        let eth_provider = self.eth_provider_http();
         let mut txs = vec![];
-        let head_number = self.eth_provider.get_block_number().await?.as_u64();
+        let head_number = eth_provider.get_block_number().await?.as_u64();
         for block_number in (1..=head_number).rev() {
-            let block = self
-                .eth_provider
+            let block = eth_provider
                 .get_block_with_txs(block_number)
                 .await?
                 .expect(&format!("no block at number {block_number}"));
@@ -463,8 +503,62 @@ impl TestHarness {
     }
 
     pub fn get_signer_genesis_funds(&self) -> WalletWithProvider {
-        self.geth_instance.http_provider().unwrap()
+        get_signer_genesis_funds(&self.eth_provider_urls().http, self.chain_id()).unwrap()
     }
+
+    pub fn chain_id(&self) -> u64 {
+        if let Some(mock_el) = &self.mock_ethereum_server {
+            mock_el.get_chain_id()
+        } else if let Some(geth) = &self.geth_instance {
+            geth.get_chain_id()
+        } else {
+            unreachable!("no EL")
+        }
+    }
+}
+
+struct EthProviderURLs {
+    http: String,
+    ws: Option<String>,
+}
+
+fn get_eth_provider_urls(
+    geth_instance: &Option<GethInstance>,
+    mock_el: &Option<MockEthereumServer>,
+) -> EthProviderURLs {
+    if let Some(mock_el) = &mock_el {
+        EthProviderURLs {
+            http: mock_el.http_url(),
+            ws: None,
+        }
+    } else if let Some(geth_instance) = &geth_instance {
+        EthProviderURLs {
+            http: geth_instance.http_url().to_string(),
+            ws: Some(geth_instance.ws_url().to_string()),
+        }
+    } else {
+        unreachable!("no EL")
+    }
+}
+
+pub type WalletWithProvider = SignerMiddleware<Provider<Http>, LocalWallet>;
+
+pub fn get_wallet_genesis_funds() -> LocalWallet {
+    LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY).unwrap()).unwrap()
+}
+
+pub fn get_signer_genesis_funds(
+    eth_provider_url: &str,
+    chain_id: u64,
+) -> Result<WalletWithProvider> {
+    let wallet = get_wallet_genesis_funds();
+    assert_eq!(wallet.address(), *GENESIS_FUNDS_ADDR);
+    let provider = Provider::<Http>::try_from(eth_provider_url)?;
+
+    Ok(SignerMiddleware::new(
+        provider,
+        wallet.with_chain_id(chain_id),
+    ))
 }
 
 async fn connect_db_pool(database_url: &str) -> MySqlPool {

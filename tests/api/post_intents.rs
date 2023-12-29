@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use crate::{
-    geth_helpers::GENESIS_FUNDS_ADDR,
-    helpers::{retry_with_timeout, unique, Config, TestHarness, TestMode, FINALIZE_DEPTH},
+use crate::helpers::{
+    retry_with_timeout, unique, Config, TestHarness, TestMode, FINALIZE_DEPTH, GENESIS_FUNDS_ADDR,
 };
 use blob_share::{
     client::{NoncePreference, PostDataIntentV1, PostDataIntentV1Signed},
@@ -19,7 +18,7 @@ async fn health_check_works() {
 
 #[tokio::test]
 async fn reject_post_data_before_any_topup() {
-    TestHarness::build(TestMode::ELOnly, None)
+    TestHarness::build(TestMode::ELMock, None)
         .await
         .spawn_with_fn(|test_harness| async move {
             let wallet = test_harness.get_signer_genesis_funds();
@@ -198,7 +197,7 @@ where
 
 #[tokio::test]
 async fn post_two_intents_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain, None)
+    TestHarness::build(TestMode::ELAndCL, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
@@ -218,7 +217,7 @@ async fn post_two_intents_and_expect_blob_tx() {
 
 #[tokio::test]
 async fn post_many_intents_series_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain, None)
+    TestHarness::build(TestMode::ELAndCL, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
@@ -363,7 +362,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
 
 #[tokio::test]
 async fn post_many_intents_parallel_and_expect_blob_tx() {
-    TestHarness::build(TestMode::WithChain, None)
+    TestHarness::build(TestMode::ELAndCL, None)
         .await
         .spawn_with_fn(|test_harness| {
             async move {
