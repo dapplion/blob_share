@@ -47,14 +47,14 @@ mod reth_fork;
 mod routes;
 mod sync;
 mod trusted_setup;
-mod utils;
+pub mod utils;
 
 pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
 pub use data_intent::{BlobGasPrice, DataIntent};
 pub use gas::BlockGasSummary;
+pub use kzg::compute_blob_tx_hash;
 pub use metrics::{PushMetricsConfig, PushMetricsFormat};
-pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
 #[cfg(not(test))]

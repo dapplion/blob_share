@@ -1,10 +1,10 @@
 use std::io::{Cursor, Read, Write};
 
 use c_kzg::BYTES_PER_BLOB;
-use ethers::types::{Address, Transaction, H256, U256};
+use ethers::types::{Address, Transaction, H256};
 use eyre::{bail, eyre, Context, Result};
 
-use crate::BlockGasSummary;
+use crate::{utils::get_max_fee_per_blob_gas, BlockGasSummary};
 
 pub const BLOB_TX_TYPE: u8 = 0x03;
 const PARTICIPANT_DATA_SIZE: usize = 20 + 4;
@@ -101,11 +101,7 @@ impl BlobTxSummary {
             .max_priority_fee_per_gas
             .ok_or_else(|| eyre!("not a type 2 tx, no max_priority_fee_per_gas"))?
             .as_u128();
-        let max_fee_per_blob_gas: U256 = tx
-            .other
-            .get_deserialized("maxFeePerBlobGas")
-            .ok_or_else(|| eyre!("not a type 3 tx, no max_fee_per_blob_gas"))??;
-        let max_fee_per_blob_gas = max_fee_per_blob_gas.as_u128();
+        let max_fee_per_blob_gas = get_max_fee_per_blob_gas(tx)?;
 
         let used_bytes = participants.iter().map(|p| p.data_len).sum::<usize>();
 

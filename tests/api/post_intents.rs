@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use crate::helpers::{
-    retry_with_timeout, unique, Config, TestHarness, TestMode, FINALIZE_DEPTH, GENESIS_FUNDS_ADDR,
+    retry_with_timeout, unique, Config, DataReq, TestHarness, TestMode, FINALIZE_DEPTH,
+    GENESIS_FUNDS_ADDR,
 };
 use blob_share::{
-    client::{NoncePreference, PostDataIntentV1, PostDataIntentV1Signed},
+    client::{PostDataIntentV1, PostDataIntentV1Signed},
     MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN,
 };
 use ethers::signers::{LocalWallet, Signer};
@@ -23,15 +24,14 @@ async fn reject_post_data_before_any_topup() {
         .spawn_with_fn(|test_harness| async move {
             let wallet = test_harness.get_signer_genesis_funds();
             // Send data request before funding the sender address
-            let res = test_harness.post_data_of_len(&wallet.signer(), 69).await;
+            let res = test_harness.post_data(&wallet.signer(), DataReq::new().with_data_len(69)).await;
 
             assert_eq!(
                 res.unwrap_err().to_string(),
                 "non-success response status 400 body: Insufficient balance 0 for intent with cost 69"
             );
         })
-        .await
-        .unwrap();
+        .await;
 }
 
 #[tokio::test]
@@ -46,19 +46,19 @@ async fn reject_post_data_after_insufficient_balance() {
 
         // First request should be ok
         test_harness
-            .post_data_of_len(wallet.signer(), 1000)
-            .await
-            .unwrap();
+            .post_data_ok(wallet.signer(), DataReq::new().with_data_len(1000))
+            .await;
         // Second request must be rejected
-        let res = test_harness.post_data_of_len(wallet.signer(), 1000).await;
+        let res = test_harness
+            .post_data(wallet.signer(), DataReq::new().with_data_len(1000))
+            .await;
 
         assert_eq!(
             res.unwrap_err().to_string(),
             "non-success response status 400 body: Insufficient balance 0 for intent with cost 1000"
         );
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -72,7 +72,7 @@ async fn reject_single_data_intent_too_big() {
         let wallet = test_harness.get_signer_genesis_funds();
         // Send data request before funding the sender address
         let res = test_harness
-            .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN + 1)
+            .post_data(&wallet.signer(), DataReq::new().with_data_len( MAX_USABLE_BLOB_DATA_LEN + 1))
             .await;
 
         assert_eq!(
@@ -80,8 +80,7 @@ async fn reject_single_data_intent_too_big() {
             "non-success response status 400 body: data length 126977 over max usable blob data 126976"
         );
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 // Without sending transactions all pending data intents are not included in any transaction
@@ -113,22 +112,26 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
 
         for _ in 0..MAX_PENDING_DATA_LEN_PER_USER / MAX_USABLE_BLOB_DATA_LEN {
             test_harness
-                .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
-                .await
-                .unwrap();
+                .post_data_ok(
+                    &wallet.signer(),
+                    DataReq::new().with_data_len(MAX_USABLE_BLOB_DATA_LEN),
+                )
+                .await;
         }
 
         // Send data request before funding the sender address
         let res = test_harness
-            .post_data_of_len(&wallet.signer(), MAX_USABLE_BLOB_DATA_LEN)
+            .post_data(
+                &wallet.signer(),
+                DataReq::new().with_data_len(MAX_USABLE_BLOB_DATA_LEN),
+            )
             .await;
         assert_eq!(
             res.unwrap_err().to_string(),
             "non-success response status 400 body: pending total data_len 2158592 over max 2031616"
         );
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -191,8 +194,7 @@ where
             err_str
         );
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -211,8 +213,7 @@ async fn post_two_intents_and_expect_blob_tx() {
                 test_post_two_data_intents_up_to_inclusion(&test_harness, wallet.signer(), 0).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
 }
 
 #[tokio::test]
@@ -241,8 +242,7 @@ async fn post_many_intents_series_and_expect_blob_tx() {
                 }
             }
         })
-        .await
-        .unwrap();
+        .await;
 }
 
 async fn test_post_two_data_intents_up_to_inclusion(
@@ -270,7 +270,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
         .unwrap();
 
     let intent_1_id = test_harness
-        .post_data_and_wait_for_pending(wallet, data_1.clone())
+        .post_data_and_wait_for_pending(wallet, DataReq::new().with_data(data_1.clone()))
         .await;
 
     // Check data intent is stored
@@ -295,13 +295,12 @@ async fn test_post_two_data_intents_up_to_inclusion(
     );
 
     let intent_2_id = test_harness
-        .post_data_and_wait_for_pending(wallet, data_2.clone())
+        .post_data_and_wait_for_pending(wallet, DataReq::new().with_data(data_2.clone()))
         .await;
 
     let intents_txhash = test_harness
         .wait_for_intent_inclusion_in_any_tx(&[intent_1_id, intent_2_id], Duration::from_secs(1))
-        .await
-        .unwrap();
+        .await;
     assert_eq!(
         intents_txhash[0], intents_txhash[1],
         "two intents should be in the same tx"
@@ -387,10 +386,9 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                     info!("sending data intent with nonce {}", i);
                     intent_ids.push(
                         test_harness
-                            .post_data(
+                            .post_data_ok(
                                 &wallet.signer(),
-                                data.to_vec(),
-                                Some(NoncePreference::Value(i as u64)),
+                                DataReq::new().with_data(data.to_vec()).with_nonce(i as u64),
                             )
                             .await,
                     )
@@ -409,8 +407,7 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                         &intent_ids,
                         Duration::from_millis(200 * N),
                     )
-                    .await
-                    .unwrap();
+                    .await;
                 let unique_intents_txhash = unique(&intents_txhash);
                 if unique_intents_txhash.len() as u64 != N / 2 {
                     panic!(
@@ -445,6 +442,5 @@ async fn post_many_intents_parallel_and_expect_blob_tx() {
                 );
             }
         })
-        .await
-        .unwrap();
+        .await;
 }

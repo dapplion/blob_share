@@ -1,6 +1,6 @@
 use std::cmp;
 
-use crate::increase_by_min_percent;
+use crate::utils::increase_by_min_percent;
 
 /// (len, max_len_price)
 #[derive(Copy, Clone)]

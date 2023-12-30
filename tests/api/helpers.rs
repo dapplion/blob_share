@@ -8,7 +8,7 @@ use ethers::{
 use eyre::{bail, eyre, Result};
 use futures::future::try_join_all;
 use lazy_static::lazy_static;
-use log::LevelFilter;
+use log::{info, LevelFilter};
 use rand::{distributions::Alphanumeric, Rng};
 use sqlx::{Connection, Executor, MySqlConnection, MySqlPool};
 use std::{
@@ -39,6 +39,8 @@ use crate::{
 /// TODO: Shorter finalize depth to trigger functionality faster
 pub const FINALIZE_DEPTH: u64 = 8;
 pub const ONE_HUNDRED_MS: Duration = Duration::from_millis(100);
+pub const GWEI_TO_WEI: u64 = 1_000_000_000;
+pub const ETH_TO_WEI: u64 = 1_000_000_000 * GWEI_TO_WEI;
 
 const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 const DEV_PUBKEY: &str = "0xdbD48e742FF3Ecd3Cb2D557956f541b6669b3277";
@@ -229,7 +231,7 @@ impl TestHarness {
         self
     }
 
-    pub async fn spawn_with_fn<F, Fut>(mut self, f: F) -> Result<()>
+    pub async fn spawn_with_fn<F, Fut>(mut self, f: F)
     where
         F: FnOnce(Self) -> Fut,
         Fut: Future<Output = ()>,
@@ -247,12 +249,13 @@ impl TestHarness {
                 // This branch is executed if app.run() finishes first
                 // this should never happen as the app future never stop unless in case of an error
                 // return the result to propagate the error early
-                return result;
+                result.expect("app running in background error");
+                return;
             }
-            result = f_future => {
+            _ = f_future => {
                 // This branch is executed if f() finishes first
                 // f() can finish by completing the test successfully, or by encountering some error
-                return Ok(result);
+                return;
             }
         }
     }
@@ -267,6 +270,12 @@ impl TestHarness {
         self.geth_instance
             .as_ref()
             .expect("not using geth instance")
+    }
+
+    pub fn mock_el(&self) -> &MockEthereumServer {
+        self.mock_ethereum_server
+            .as_ref()
+            .expect("not using mock EL")
     }
 
     fn eth_provider_urls(&self) -> EthProviderURLs {
@@ -289,48 +298,53 @@ impl TestHarness {
     }
 
     /// Post data with default preferences for random data, may return errors
-    pub async fn post_data_of_len(
+    pub async fn post_data(
         &self,
         wallet: &LocalWallet,
-        data_len: usize,
+        data_req: DataReq,
     ) -> Result<PostDataResponse> {
+        let data = if let Some(data) = data_req.data {
+            data
+        } else {
+            let data_len = data_req.data_len.unwrap_or(1000);
+            vec![0xff; data_len]
+        };
+
+        let gas_preference = if let Some(max_blob_gas) = data_req.max_blob_gas {
+            GasPreference::Value(max_blob_gas)
+        } else {
+            GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0)
+        };
+
+        let nonce_preference = if let Some(nonce) = data_req.nonce {
+            NoncePreference::Value(nonce)
+        } else {
+            NoncePreference::Timebased
+        };
+
+        info!(
+            "posting data of len {} {:?} {:?}",
+            data.len(),
+            gas_preference,
+            nonce_preference
+        );
+
         self.client
-            .post_data_with_wallet(
-                wallet,
-                vec![0xff; data_len],
-                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0),
-                &NoncePreference::Timebased,
-            )
+            .post_data_with_wallet(wallet, data, &gas_preference, &nonce_preference)
             .await
     }
 
     /// Post data with default preferences, expecting no errors
-    pub async fn post_data(
-        &self,
-        wallet: &LocalWallet,
-        data: Vec<u8>,
-        nonce: Option<NoncePreference>,
-    ) -> DataIntentId {
-        let res = self
-            .client
-            .post_data_with_wallet(
-                wallet,
-                data,
-                &GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0),
-                &nonce.unwrap_or(NoncePreference::Timebased),
-            )
-            .await
-            .unwrap();
-
-        res.id
+    pub async fn post_data_ok(&self, wallet: &LocalWallet, data_req: DataReq) -> DataIntentId {
+        self.post_data(wallet, data_req).await.unwrap().id
     }
 
     pub async fn post_data_and_wait_for_pending(
         &self,
         wallet: &LocalWallet,
-        data: Vec<u8>,
+        data_req: DataReq,
     ) -> DataIntentId {
-        let intent_id = self.post_data(wallet, data, None).await;
+        let intent_id = self.post_data_ok(wallet, data_req).await;
         self.wait_for_known_intents(&[intent_id], ONE_HUNDRED_MS)
             .await
             .unwrap();
@@ -385,13 +399,30 @@ impl TestHarness {
         &self,
         ids: &[DataIntentId],
         timeout: Duration,
-    ) -> Result<Vec<H256>> {
+    ) -> Vec<H256> {
+        self.wait_for_intent_inclusion_in_any_tx_with_filter(ids, timeout, &None)
+            .await
+    }
+
+    pub async fn wait_for_intent_inclusion_in_any_tx_with_filter(
+        &self,
+        ids: &[DataIntentId],
+        timeout: Duration,
+        exclude_transaction_ids: &Option<Vec<H256>>,
+    ) -> Vec<H256> {
         match retry_with_timeout(
             || async {
                 let mut tx_hashes = vec![];
                 for id in ids {
                     match self.client.get_status_by_id(*id).await?.is_in_tx() {
-                        Some(tx_hash) => tx_hashes.push(tx_hash),
+                        Some(tx_hash) => {
+                            if let Some(exclude_transaction_ids) = exclude_transaction_ids {
+                                if exclude_transaction_ids.contains(&tx_hash) {
+                                    continue;
+                                }
+                            }
+                            tx_hashes.push(tx_hash);
+                        }
                         None => bail!("still pending"),
                     }
                 }
@@ -402,15 +433,16 @@ impl TestHarness {
         )
         .await
         {
-            Ok(result) => Ok(result),
+            Ok(result) => result,
             Err(e) => {
                 let statuses = try_join_all(
                     ids.iter()
                         .map(|id| self.client.get_status_by_id(*id))
                         .collect::<Vec<_>>(),
                 )
-                .await?;
-                bail!(
+                .await
+                .unwrap();
+                panic!(
                     "timeout {timeout:?}: waiting for inclusion of intents {ids:?}: {e:?}\ncurrent status: {statuses:?}",
                 );
             }
@@ -538,6 +570,40 @@ fn get_eth_provider_urls(
         }
     } else {
         unreachable!("no EL")
+    }
+}
+
+#[derive(Default)]
+pub struct DataReq {
+    data: Option<Vec<u8>>,
+    data_len: Option<usize>,
+    max_blob_gas: Option<u64>,
+    nonce: Option<u64>,
+}
+
+impl DataReq {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_data(mut self, data: Vec<u8>) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    pub fn with_data_len(mut self, data_len: usize) -> Self {
+        self.data_len = Some(data_len);
+        self
+    }
+
+    pub fn with_max_blob_gas(mut self, max_blob_gas: u64) -> Self {
+        self.max_blob_gas = Some(max_blob_gas);
+        self
+    }
+
+    pub fn with_nonce(mut self, nonce: u64) -> Self {
+        self.nonce = Some(nonce);
+        self
     }
 }
 

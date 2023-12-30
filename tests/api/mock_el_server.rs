@@ -1,8 +1,14 @@
 use actix_web::dev::Server;
 use actix_web::{web, App, HttpResponse, HttpServer};
+use blob_share::{
+    compute_blob_tx_hash,
+    utils::{deserialize_blob_tx_pooled, hex_0x_prefix_to_vec, vec_to_hex_0x_prefix},
+};
 use ethers::providers::{Http, Provider};
-use ethers::types::{Block, Transaction, H256};
+use ethers::types::{Address, Block, Transaction, H256};
 use eyre::{bail, eyre, Result};
+use log::{error, info};
+use rand::{thread_rng, Rng};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,11 +30,15 @@ enum ServerStatus {
     Running,
 }
 
+type Hash = [u8; 32];
+
 #[derive(Default)]
 struct ServerData {
     head_number: u64,
     blocks_by_hash: HashMap<String, Block<Transaction>>,
     blocks_by_number: HashMap<u64, Block<Transaction>>,
+    nonce_per_address: HashMap<Address, u64>,
+    tx_pool: HashMap<Hash, serde_json::Value>,
     next_filter_id: usize,
     chain_id: u64,
 }
@@ -44,6 +54,8 @@ impl MockEthereumServer {
             head_number: 0,
             blocks_by_hash: <_>::default(),
             blocks_by_number: <_>::default(),
+            nonce_per_address: <_>::default(),
+            tx_pool: <_>::default(),
             next_filter_id: 0,
             chain_id: 69420,
         }));
@@ -95,16 +107,62 @@ impl MockEthereumServer {
     }
 
     pub fn add_block(&self, block: Block<Transaction>) {
+        info!(
+            "added block {:?} {:?}, with {} txs",
+            block.number,
+            block.hash,
+            block.transactions.len()
+        );
+
         let mut data = self.data.lock().unwrap();
         data.blocks_by_hash
             .insert(tx_hash_to_hex(block.hash.unwrap()), block.clone());
         data.blocks_by_number
             .insert(block.number.unwrap().as_u64(), block);
     }
+
+    pub fn mine_block_with<F: FnOnce(&mut Block<Transaction>)>(&self, f_mut_block: F) {
+        // Drop data lock before calling `self.add_block()`
+        let block = {
+            let data = self.data.lock().unwrap();
+            let head = data
+                .blocks_by_number
+                .get(&data.head_number)
+                .expect("no block for head_number");
+
+            info!("mined block on head {:?} {:?}", head.number, head.hash);
+
+            let mut block =
+                get_block_with_txs(head.number.unwrap().as_u64() + 1, generate_random_hash());
+
+            block.parent_hash = head.hash.unwrap();
+            f_mut_block(&mut block);
+            block
+        };
+
+        self.add_block(block);
+    }
+
+    pub fn get_submitted_tx(&self, tx_hash: H256) -> Transaction {
+        let data = self.data.lock().unwrap();
+        let tx = data.tx_pool.get(&tx_hash.to_fixed_bytes()).expect(&format!(
+            "no transaction knonw for hash {}",
+            hex::encode(tx_hash)
+        ));
+        // panic!("{:?}", serde_json::to_string(tx));
+        serde_json::from_value(tx.clone()).expect("invalid transaction JSON")
+    }
 }
 
 fn tx_hash_to_hex(tx_hash: H256) -> String {
     format!("0x{}", hex::encode(tx_hash.to_fixed_bytes()))
+}
+
+fn generate_random_hash() -> H256 {
+    let mut rng = thread_rng();
+    let mut arr = [0u8; 32];
+    rng.fill(&mut arr);
+    H256(arr)
 }
 
 // Define a structure for the JSON RPC request
@@ -162,6 +220,15 @@ fn handle_ethereum_rpc(data: &mut ServerData, req: &JsonRpcRequest) -> Result<se
         }
 
         "eth_getBlockByNumber" => {
+            if let Ok(block_tag) = req.get_param::<String>(0) {
+                if block_tag == "latest" {
+                    let block = data
+                        .blocks_by_number
+                        .get(&data.head_number)
+                        .ok_or_else(|| eyre!(format!("no head block")))?;
+                    return Ok(serde_json::to_value(block)?);
+                }
+            }
             let number = req.get_param_hex_u64(0)?;
             let block = data
                 .blocks_by_number
@@ -170,14 +237,49 @@ fn handle_ethereum_rpc(data: &mut ServerData, req: &JsonRpcRequest) -> Result<se
             serde_json::to_value(block)?
         }
 
+        "eth_sendRawTransaction" => {
+            let blob_tx_rlp = req.get_param::<String>(0)?;
+            let blob_tx_rlp = hex_0x_prefix_to_vec(&blob_tx_rlp)?;
+            let blob_tx = deserialize_blob_tx_pooled(&blob_tx_rlp)?;
+            let (tx_hash, _) = compute_blob_tx_hash(&blob_tx.transaction, &blob_tx.signature);
+
+            // TODO: Note ethers does not support type 3 transactions, persist transactions as JSON
+            data.tx_pool
+                .insert(tx_hash, serde_json::to_value(&blob_tx.transaction)?);
+
+            serde_json::to_value(vec_to_hex_0x_prefix(&tx_hash))?
+        }
+
+        "eth_getTransactionCount" => {
+            let address: Address = req.get_param(0)?;
+            let nonce = data.nonce_per_address.get(&address).copied().unwrap_or(0);
+            serde_json::to_value(value_to_hex(nonce))?
+        }
+
         "eth_newBlockFilter" => {
             let id = data.next_filter_id;
             data.next_filter_id = id + 1;
             serde_json::to_value(value_to_hex(id as u64))?
         }
 
+        // Returns a valid but empty response, can cause estimators to return bad results
+        // Ref: https://docs.alchemy.com/reference/eth-feehistory
+        "eth_feeHistory" => serde_json::to_value(FeeHistory {
+            oldestBlock: "0x0".to_string(),
+            baseFeePerGas: vec![],
+            gasUsedRatio: vec![],
+        })?,
+
         _ => bail!("unknown route {}", req.method.as_str()),
     })
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize)]
+struct FeeHistory {
+    oldestBlock: String,
+    baseFeePerGas: Vec<String>,
+    gasUsedRatio: Vec<f64>,
 }
 
 async fn post_root(
@@ -186,8 +288,10 @@ async fn post_root(
 ) -> Result<HttpResponse, actix_web::Error> {
     Ok(HttpResponse::Ok().json(JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
-        result: handle_ethereum_rpc(&mut data.lock().unwrap(), &req)
-            .map_err(actix_web::error::ErrorInternalServerError)?,
+        result: handle_ethereum_rpc(&mut data.lock().unwrap(), &req).map_err(|e| {
+            error!("error handling JSON RPC response: {:?}", e);
+            actix_web::error::ErrorInternalServerError(e)
+        })?,
         id: req.id,
     }))
 }

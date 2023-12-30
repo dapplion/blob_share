@@ -1,12 +1,14 @@
 use actix_web::http::header::AUTHORIZATION;
 use actix_web::HttpRequest;
-use ethers::types::{Address, Signature, TxHash, H160, H256};
+use ethers::types::{Address, Signature, Transaction, TxHash, H160, H256, U256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
 use std::fmt::{self, Debug, Display};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub mod option_hex_vec;
+use crate::reth_fork::tx_sidecar::BlobTransaction;
+
+pub(crate) mod option_hex_vec;
 
 // Return an opaque 500 while preserving the error root's cause for logging.
 #[allow(dead_code)]
@@ -33,7 +35,7 @@ pub fn increase_by_min_percent(value: u64, fraction: f64) -> u64 {
 }
 
 /// Post-process a reqwest response to handle non 2xx codes gracefully
-pub async fn is_ok_response(response: Response) -> Result<Response> {
+pub(crate) async fn is_ok_response(response: Response) -> Result<Response> {
     if response.status().is_success() {
         Ok(response)
     } else {
@@ -46,13 +48,32 @@ pub async fn is_ok_response(response: Response) -> Result<Response> {
     }
 }
 
+/// Retrieves 'maxFeePerBlobGas' field from ethers transaction
+pub fn get_max_fee_per_blob_gas(tx: &Transaction) -> Result<u128> {
+    let max_fee_per_blob_gas: U256 = tx
+        .other
+        .get_deserialized("maxFeePerBlobGas")
+        .ok_or_else(|| eyre!("not a type 3 tx, no max_fee_per_blob_gas"))??;
+    Ok(max_fee_per_blob_gas.as_u128())
+}
+
 /// Return 0x prefixed hex representation of address (lowercase, not checksum)
-pub fn address_to_hex_lowercase(addr: Address) -> String {
-    format!("0x{}", hex::encode(addr.to_fixed_bytes()))
+pub(crate) fn address_to_hex_lowercase(addr: Address) -> String {
+    vec_to_hex_0x_prefix(&addr.to_fixed_bytes())
+}
+
+/// Encode binary data to 0x prefixed hex
+pub fn vec_to_hex_0x_prefix(v: &[u8]) -> String {
+    format!("0x{}", hex::encode(v))
+}
+
+/// Decode 0x prefixed hex encoded string to Vec<u8>
+pub fn hex_0x_prefix_to_vec(hex: &str) -> Result<Vec<u8>> {
+    Ok(hex::decode(hex.trim_start_matches("0x"))?)
 }
 
 /// Convert `Vec<u8>` into ethers Address H160 type. Errors if v.len() != 20.
-pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
+pub(crate) fn address_from_vec(v: Vec<u8>) -> Result<Address> {
     let fixed_vec: [u8; 20] = v
         .try_into()
         .map_err(|_| eyre!("address as vec not 20 bytes in len"))?;
@@ -60,7 +81,7 @@ pub fn address_from_vec(v: Vec<u8>) -> Result<Address> {
 }
 
 /// Convert `Vec<u8>` into ethers TxHash H256 type. Errors if v.len() != 32.
-pub fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
+pub(crate) fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
     let fixed_vec: [u8; 32] = v
         .try_into()
         .map_err(|_| eyre!("txhash as vec not 32 bytes in len"))?;
@@ -68,12 +89,18 @@ pub fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
 }
 
 /// Deserialize ethers' Signature
-pub fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
+pub(crate) fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
     Ok(signature.try_into()?)
 }
 
+/// Compute the transaction hash from a serialized networking blob tx (pooled tx)
+pub fn deserialize_blob_tx_pooled(serialized_networking_blob_tx: &[u8]) -> Result<BlobTransaction> {
+    let mut blob_tx_networking = &serialized_networking_blob_tx[1..];
+    Ok(BlobTransaction::decode_inner(&mut blob_tx_networking)?)
+}
+
 /// Return unix timestamp in milliseconds
-pub fn unix_timestamps_millis() -> u64 {
+pub(crate) fn unix_timestamps_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
@@ -81,7 +108,7 @@ pub fn unix_timestamps_millis() -> u64 {
 }
 
 /// Extract Bearer token from actix_web request, or return an error
-pub fn extract_bearer_token(req: &HttpRequest) -> Result<String> {
+pub(crate) fn extract_bearer_token(req: &HttpRequest) -> Result<String> {
     let auth = req
         .headers()
         .get(AUTHORIZATION)
@@ -102,7 +129,7 @@ pub struct BasicAuthentication {
     pub password: String,
 }
 
-pub fn parse_basic_auth(auth: &str) -> Result<BasicAuthentication> {
+pub(crate) fn parse_basic_auth(auth: &str) -> Result<BasicAuthentication> {
     let parts: Vec<&str> = auth.splitn(2, ':').collect();
     if parts.len() == 2 {
         Ok(BasicAuthentication {
@@ -132,7 +159,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::increase_by_min_percent;
+    use super::increase_by_min_percent;
 
     #[test]
     fn test_increase_by_min_percent() {
