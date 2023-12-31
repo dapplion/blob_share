@@ -8,6 +8,11 @@ const MIN_BLOB_GASPRICE: u128 = 1;
 const BLOB_GASPRICE_UPDATE_FRACTION: u128 = 3338477;
 const TARGET_BLOB_GAS_PER_BLOCK: u128 = 393216;
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum FeeEstimator {
+    Default,
+}
+
 #[derive(Debug)]
 pub struct GasConfig {
     pub max_priority_fee_per_gas: u128,
@@ -63,7 +68,7 @@ fn calc_excess_blob_gas(parent_excess_blob_gas: u128, parent_blob_gas_used: u128
 
 /// All transactions in a block must satisfy that
 /// assert tx.max_fee_per_blob_gas >= get_blob_gasprice(block.header)
-pub(crate) fn get_blob_gasprice(excess_blob_gas: u128) -> u128 {
+pub fn get_blob_gasprice(excess_blob_gas: u128) -> u128 {
     fake_exponential(
         MIN_BLOB_GASPRICE,
         excess_blob_gas,
@@ -98,8 +103,6 @@ impl From<BlockWithTxs> for BlockGasSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TARGET_BLOB_GAS_PER_BLOCK: u128 = 393216;
 
     #[test]
     fn test_calc_excess_blob_gas() {

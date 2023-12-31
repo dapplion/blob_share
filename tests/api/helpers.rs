@@ -26,7 +26,7 @@ use blob_share::{
     anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
     client::{DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataResponse},
     consumer::BlobConsumer,
-    App, Args, BlockGasSummary, Client, PushMetricsFormat,
+    get_blob_gasprice, App, Args, BlockGasSummary, Client, PushMetricsFormat,
 };
 
 use crate::{
@@ -190,6 +190,7 @@ impl TestHarness {
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
             max_pending_transactions: 6,
+            fee_estimator: blob_share::FeeEstimator::Default,
             // TODO: De-duplicate of configure properly
             database_url: format!("{database_url_without_db}/{database_name}"),
             metrics: false,
@@ -547,6 +548,35 @@ impl TestHarness {
             unreachable!("no EL")
         }
     }
+
+    pub async fn mine_block_and_wait_for_sync<F: FnOnce(&mut Block<Transaction>)>(
+        &self,
+        f_mut_block: F,
+    ) {
+        let block = self.mock_el().mine_block_with(f_mut_block);
+        let block_number = block.number.expect("block has no hash");
+        let block_hash = block.hash.expect("block has no hash");
+
+        retry_with_timeout(
+            || async {
+                let sync = self.client.get_sync().await.unwrap();
+                if sync.synced_head.hash == block_hash {
+                    Ok(())
+                } else {
+                    bail!(
+                        "synced head {:?} expected {block_number} {block_hash}",
+                        sync.synced_head
+                    )
+                }
+            },
+            Duration::from_secs(2),
+            Duration::from_millis(100),
+        )
+        .await
+        .expect(&format!(
+            "timeout waiting to sync mined block {block_number} {block_hash}"
+        ))
+    }
 }
 
 struct EthProviderURLs {
@@ -704,4 +734,23 @@ fn random_alphabetic_string(length: usize) -> String {
         .take(length)
         .map(char::from)
         .collect()
+}
+
+const MIN_BLOB_GASPRICE: u128 = 1;
+const BLOB_GASPRICE_UPDATE_FRACTION: u128 = 3338477;
+
+pub fn find_excess_blob_gas(blob_gas_price: u128) -> u128 {
+    let denominator = BLOB_GASPRICE_UPDATE_FRACTION;
+    let factor = MIN_BLOB_GASPRICE;
+    let result = blob_gas_price;
+
+    // numerator = (ln(result) - ln(factor)) * denominator
+    (((result as f64).ln() - (factor as f64).ln()) * denominator as f64) as u128
+}
+
+#[test]
+fn test_find_excess_blob_gas() {
+    assert_eq!(find_excess_blob_gas(1_000_000_000), 69184146);
+    assert_eq!(get_blob_gasprice(69184146), 999999890);
+    assert_eq!(get_blob_gasprice(69184147), 1000000190);
 }

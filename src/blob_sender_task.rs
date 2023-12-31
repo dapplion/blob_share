@@ -103,8 +103,13 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let data_intents = app_data.data_intents_by_id(&data_intent_ids).await?;
 
     // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
+    //
+    // ### EIP-1559 refresher:
+    // - assert tx.max_fee_per_gas >= tx.max_priority_fee_per_gas
+    // - priority_fee_per_gas = min(tx.max_priority_fee_per_gas, tx.max_fee_per_gas - block.base_fee_per_gas)
     let (max_fee_per_gas, max_priority_fee_per_gas) =
         app_data.provider.estimate_eip1559_fees().await?;
+
     let gas_config = GasConfig {
         max_fee_per_gas: max_fee_per_gas.as_u128(),
         max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),

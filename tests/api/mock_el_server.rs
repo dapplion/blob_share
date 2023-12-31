@@ -1,5 +1,6 @@
 use actix_web::dev::Server;
 use actix_web::{web, App, HttpResponse, HttpServer};
+use blob_share::utils::tx_reth_to_ethers;
 use blob_share::{
     compute_blob_tx_hash,
     utils::{deserialize_blob_tx_pooled, hex_0x_prefix_to_vec, vec_to_hex_0x_prefix},
@@ -38,7 +39,7 @@ struct ServerData {
     blocks_by_hash: HashMap<String, Block<Transaction>>,
     blocks_by_number: HashMap<u64, Block<Transaction>>,
     nonce_per_address: HashMap<Address, u64>,
-    tx_pool: HashMap<Hash, serde_json::Value>,
+    tx_pool: HashMap<Hash, Transaction>,
     next_filter_id: usize,
     chain_id: u64,
 }
@@ -121,7 +122,10 @@ impl MockEthereumServer {
             .insert(block.number.unwrap().as_u64(), block);
     }
 
-    pub fn mine_block_with<F: FnOnce(&mut Block<Transaction>)>(&self, f_mut_block: F) {
+    pub fn mine_block_with<F: FnOnce(&mut Block<Transaction>)>(
+        &self,
+        f_mut_block: F,
+    ) -> Block<Transaction> {
         // Drop data lock before calling `self.add_block()`
         let block = {
             let data = self.data.lock().unwrap();
@@ -140,17 +144,20 @@ impl MockEthereumServer {
             block
         };
 
-        self.add_block(block);
+        self.add_block(block.clone());
+
+        block
     }
 
     pub fn get_submitted_tx(&self, tx_hash: H256) -> Transaction {
         let data = self.data.lock().unwrap();
-        let tx = data.tx_pool.get(&tx_hash.to_fixed_bytes()).expect(&format!(
-            "no transaction knonw for hash {}",
-            hex::encode(tx_hash)
-        ));
-        // panic!("{:?}", serde_json::to_string(tx));
-        serde_json::from_value(tx.clone()).expect("invalid transaction JSON")
+        data.tx_pool
+            .get(&tx_hash.to_fixed_bytes())
+            .expect(&format!(
+                "no transaction knonw for hash {}",
+                hex::encode(tx_hash)
+            ))
+            .clone()
     }
 }
 
@@ -243,9 +250,9 @@ fn handle_ethereum_rpc(data: &mut ServerData, req: &JsonRpcRequest) -> Result<se
             let blob_tx = deserialize_blob_tx_pooled(&blob_tx_rlp)?;
             let (tx_hash, _) = compute_blob_tx_hash(&blob_tx.transaction, &blob_tx.signature);
 
-            // TODO: Note ethers does not support type 3 transactions, persist transactions as JSON
-            data.tx_pool
-                .insert(tx_hash, serde_json::to_value(&blob_tx.transaction)?);
+            // TODO: Silly conversions..
+            let tx = tx_reth_to_ethers(&blob_tx.transaction).unwrap();
+            data.tx_pool.insert(tx_hash, tx);
 
             serde_json::to_value(vec_to_hex_0x_prefix(&tx_hash))?
         }

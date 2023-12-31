@@ -52,7 +52,7 @@ pub mod utils;
 pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
 pub use data_intent::{BlobGasPrice, DataIntent};
-pub use gas::BlockGasSummary;
+pub use gas::{get_blob_gasprice, BlockGasSummary, FeeEstimator};
 pub use kzg::compute_blob_tx_hash;
 pub use metrics::{PushMetricsConfig, PushMetricsFormat};
 
@@ -122,6 +122,10 @@ pub struct Args {
     /// underpriced in volatile network conditions.
     #[arg(env, long, default_value_t = 6)]
     pub max_pending_transactions: u64,
+
+    /// Choose strategy to decide eip1559 style fees
+    #[arg(env, long, value_enum, default_value_t = FeeEstimator::Default)]
+    pub fee_estimator: FeeEstimator,
 
     /// Database URL to mysql DB with format `mysql://user:password@localhost/test`
     #[arg(env, long)]

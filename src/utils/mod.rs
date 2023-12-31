@@ -6,6 +6,7 @@ use reqwest::Response;
 use std::fmt::{self, Debug, Display};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::reth_fork::tx_eip4844::TxEip4844;
 use crate::reth_fork::tx_sidecar::BlobTransaction;
 
 pub(crate) mod option_hex_vec;
@@ -99,6 +100,24 @@ pub fn deserialize_blob_tx_pooled(serialized_networking_blob_tx: &[u8]) -> Resul
     Ok(BlobTransaction::decode_inner(&mut blob_tx_networking)?)
 }
 
+/// Convert a reth transaction to ethers
+pub fn tx_reth_to_ethers(txr: &TxEip4844) -> Result<Transaction> {
+    let mut tx = Transaction::default();
+    tx.chain_id = Some(txr.chain_id.into());
+    tx.nonce = txr.nonce.into();
+    tx.gas = txr.gas_limit.into();
+    tx.max_fee_per_gas = Some(txr.max_fee_per_gas.into());
+    tx.max_priority_fee_per_gas = Some(txr.max_priority_fee_per_gas.into());
+    tx.to = Some(H160(txr.to.into()));
+    tx.input = txr.input.to_vec().into();
+    tx.value = serde_json::from_value(serde_json::to_value(txr.value)?)?;
+    tx.other.insert(
+        "maxFeePerBlobGas".to_string(),
+        serde_json::to_value(Into::<U256>::into(txr.max_fee_per_blob_gas))?,
+    );
+    Ok(tx)
+}
+
 /// Return unix timestamp in milliseconds
 pub(crate) fn unix_timestamps_millis() -> u64 {
     SystemTime::now()
@@ -159,7 +178,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::increase_by_min_percent;
+    use ethers::types::Transaction;
+
+    use crate::reth_fork::tx_eip4844::TxEip4844;
+
+    use super::{increase_by_min_percent, tx_reth_to_ethers};
 
     #[test]
     fn test_increase_by_min_percent() {
@@ -178,5 +201,24 @@ mod tests {
         assert_eq!(increase_by_min_percent(1000000000, 1.), 1000000000);
         // Precision loss
         assert_eq!(increase_by_min_percent(u64::MAX - 512, 1.), u64::MAX);
+    }
+
+    #[test]
+    fn serde_ethers_transaction() {
+        // ethers Transaction serde encodes all integers as quoted hex form
+        let mut tx = Transaction::default();
+        tx.chain_id = Some(69420.into());
+        tx.nonce = 11.into();
+        assert_eq!(
+            serde_json::to_string(&tx).unwrap(),
+            r#"{"hash":"0x0000000000000000000000000000000000000000000000000000000000000000","nonce":"0xb","blockHash":null,"blockNumber":null,"transactionIndex":null,"from":"0x0000000000000000000000000000000000000000","to":null,"value":"0x0","gasPrice":null,"gas":"0x0","input":"0x","v":"0x0","r":"0x0","s":"0x0","chainId":"0x10f2c"}"#
+        );
+    }
+
+    #[test]
+    fn test_tx_reth_to_ethers() {
+        let mut txr = TxEip4844::default();
+        txr.max_priority_fee_per_gas = 3000000000;
+        tx_reth_to_ethers(&txr).unwrap();
     }
 }
