@@ -41,6 +41,7 @@ struct ServerData {
     nonce_per_address: HashMap<Address, u64>,
     tx_pool: HashMap<Hash, Transaction>,
     next_filter_id: usize,
+    block_filters: HashMap<usize, Vec<H256>>,
     chain_id: u64,
 }
 
@@ -58,6 +59,7 @@ impl MockEthereumServer {
             nonce_per_address: <_>::default(),
             tx_pool: <_>::default(),
             next_filter_id: 0,
+            block_filters: <_>::default(),
             chain_id: 69420,
         }));
         let data_clone = data.clone();
@@ -108,18 +110,21 @@ impl MockEthereumServer {
     }
 
     pub fn add_block(&self, block: Block<Transaction>) {
+        let block_hash = block.hash.unwrap();
+        let block_number = block.number.unwrap();
         info!(
-            "added block {:?} {:?}, with {} txs",
-            block.number,
-            block.hash,
+            "added block {block_number} {block_hash}, with {} txs",
             block.transactions.len()
         );
 
         let mut data = self.data.lock().unwrap();
         data.blocks_by_hash
-            .insert(tx_hash_to_hex(block.hash.unwrap()), block.clone());
-        data.blocks_by_number
-            .insert(block.number.unwrap().as_u64(), block);
+            .insert(tx_hash_to_hex(block_hash), block.clone());
+        data.blocks_by_number.insert(block_number.as_u64(), block);
+
+        for filter in data.block_filters.values_mut() {
+            filter.push(block_hash)
+        }
     }
 
     pub fn mine_block_with<F: FnOnce(&mut Block<Transaction>)>(
@@ -158,6 +163,10 @@ impl MockEthereumServer {
                 hex::encode(tx_hash)
             ))
             .clone()
+    }
+
+    pub fn get_block_subscription_count(&self) -> usize {
+        self.data.lock().unwrap().block_filters.len()
     }
 }
 
@@ -266,7 +275,19 @@ fn handle_ethereum_rpc(data: &mut ServerData, req: &JsonRpcRequest) -> Result<se
         "eth_newBlockFilter" => {
             let id = data.next_filter_id;
             data.next_filter_id = id + 1;
+            data.block_filters.insert(id, vec![]);
             serde_json::to_value(value_to_hex(id as u64))?
+        }
+
+        "eth_getFilterChanges" => {
+            let id = req.get_param_hex_u64(0)? as usize;
+            let filter = data
+                .block_filters
+                .get_mut(&id)
+                .ok_or_else(|| eyre!("unknown filter id {id}"))?;
+            // get the new hashes and clear the array
+            let new_hashes = filter.drain(..).collect::<Vec<_>>();
+            serde_json::to_value(new_hashes)?
         }
 
         // Returns a valid but empty response, can cause estimators to return bad results

@@ -185,7 +185,12 @@ impl App {
     pub async fn build(args: Args) -> Result<Self> {
         let starting_point = StartingPoint::StartingBlock(args.starting_block);
 
-        let provider = EthProvider::new(&args.eth_provider).await?;
+        let mut provider = EthProvider::new(&args.eth_provider).await?;
+
+        if let Some(eth_provider_interval) = args.eth_provider_interval {
+            provider.set_interval(Duration::from_millis(eth_provider_interval));
+        }
+
         let chain_id = provider.get_chainid().await?.as_u64();
 
         // TODO: read as param

@@ -5,8 +5,6 @@ use eyre::{Context, Result};
 
 use crate::{
     blob_tx_data::BlobTxParticipant,
-    client::DataIntentSummary,
-    data_intent::BlobGasPrice,
     data_intent_tracker::DataIntentDbRowFull,
     debug,
     gas::GasConfig,
@@ -71,18 +69,29 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let items = app_data.get_all_pending().await;
+        let pending_data_intents = app_data.get_all_pending().await;
+
+        let items: Vec<Item> = pending_data_intents
+            .iter()
+            .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
+            .collect::<Vec<_>>();
+
         debug!(
-            "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
-            max_fee_per_blob_gas,
-            items.len()
+            "attempting to pack valid blob, max_fee_per_blob_gas {} items {:?}",
+            max_fee_per_blob_gas, items
         );
+
         let _timer_pck = metrics::PACKING_TIMES.start_timer();
 
-        if let Some(next_blob_items) =
-            select_next_blob_items(&items, max_fee_per_blob_gas.try_into()?)
-        {
-            next_blob_items
+        if let Some(selected_indexes) = pack_items(
+            &items,
+            MAX_USABLE_BLOB_DATA_LEN,
+            max_fee_per_blob_gas.try_into()?,
+        ) {
+            selected_indexes
+                .iter()
+                .map(|i| pending_data_intents[*i].clone())
+                .collect::<Vec<_>>()
         } else {
             return Ok(SendResult::NoViableSet);
         }
@@ -238,25 +247,4 @@ async fn construct_and_send_tx(
     }
 
     Ok(blob_tx)
-}
-
-// TODO: write optimizer algo to find a better distribution
-// TODO: is ok to represent wei units as usize?
-#[tracing::instrument(skip(data_intents))]
-fn select_next_blob_items(
-    data_intents: &[DataIntentSummary],
-    blob_gas_price: BlobGasPrice,
-) -> Option<Vec<DataIntentSummary>> {
-    let items: Vec<Item> = data_intents
-        .iter()
-        .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
-        .collect::<Vec<_>>();
-
-    pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {
-        selected_indexes
-            .iter()
-            // TODO: do not copy data
-            .map(|i| data_intents[*i].clone())
-            .collect::<Vec<_>>()
-    })
 }

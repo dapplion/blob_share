@@ -1,10 +1,11 @@
 use std::time::Duration;
 
-use blob_share::utils::get_max_fee_per_blob_gas;
+use blob_share::{utils::get_max_fee_per_blob_gas, MAX_USABLE_BLOB_DATA_LEN};
+use reth_primitives::revm_primitives::TARGET_BLOB_GAS_PER_BLOCK;
 
 use crate::helpers::{
-    find_excess_blob_gas, Config, DataReq, TestHarness, TestMode, ETH_TO_WEI, GENESIS_FUNDS_ADDR,
-    GWEI_TO_WEI,
+    assert_close_enough, find_excess_blob_gas, Config, DataReq, TestHarness, TestMode, ETH_TO_WEI,
+    GENESIS_FUNDS_ADDR, GWEI_TO_WEI,
 };
 
 #[tokio::test]
@@ -25,6 +26,8 @@ async fn reprice_single_transaction_after_gas_spike() {
                 .mine_block_and_wait_for_sync(|b| {
                     b.base_fee_per_gas = Some(INITIAL_GAS.into());
                     b.excess_blob_gas = Some(find_excess_blob_gas(INITIAL_BLOB_GAS as u128).into());
+                    // Fill the block's blob space so the calculated blob gas is the same for  the next block
+                    b.blob_gas_used = Some(TARGET_BLOB_GAS_PER_BLOCK.into());
                 })
                 .await;
 
@@ -33,7 +36,9 @@ async fn reprice_single_transaction_after_gas_spike() {
             let data_intent_id = test_harness
                 .post_data_ok(
                     &wallet.signer(),
-                    DataReq::new().with_max_blob_gas(HIGHER_BLOB_GAS),
+                    DataReq::new()
+                        .with_data_len(MAX_USABLE_BLOB_DATA_LEN)
+                        .with_max_blob_gas(HIGHER_BLOB_GAS),
                 )
                 .await;
             let tx_hash_first = test_harness
@@ -42,9 +47,11 @@ async fn reprice_single_transaction_after_gas_spike() {
 
             // Expect blob tx priced at 1 GWei
             let tx_first = test_harness.mock_el().get_submitted_tx(tx_hash_first);
-            assert_eq!(
+            // NOTE: math to compute the inverse fake exponential is not exact, so the actual blob gas is 999999890
+            assert_close_enough(
                 get_max_fee_per_blob_gas(&tx_first).unwrap() as u64,
-                1 * GWEI_TO_WEI
+                1 * GWEI_TO_WEI,
+                GWEI_TO_WEI / 10000,
             );
 
             // Do not include and bump gas to 1.25 GWei
@@ -52,6 +59,8 @@ async fn reprice_single_transaction_after_gas_spike() {
                 .mine_block_and_wait_for_sync(|b| {
                     b.base_fee_per_gas = Some(INITIAL_GAS.into());
                     b.excess_blob_gas = Some(find_excess_blob_gas(HIGHER_BLOB_GAS as u128).into());
+                    // Fill the block's blob space so the calculated blob gas is the same for  the next block
+                    b.blob_gas_used = Some(TARGET_BLOB_GAS_PER_BLOCK.into());
                 })
                 .await;
 

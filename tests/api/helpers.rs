@@ -179,8 +179,8 @@ impl TestHarness {
             bind_address: "127.0.0.1".to_string(),
             // Use websockets when using actual Geth to test that path
             eth_provider: eth_provider_urls.ws.unwrap_or(eth_provider_urls.http),
-            // Set polling interval to 1 milisecond since anvil auto-mines on each transaction
-            eth_provider_interval: Some(1),
+            // Set polling interval to 10 milisecond since anvil auto-mines on each transaction
+            eth_provider_interval: Some(10),
             starting_block: 0,
             data_dir: temp_data_dir.path().to_str().unwrap().to_string(),
             mnemonic: Some(
@@ -553,6 +553,9 @@ impl TestHarness {
         &self,
         f_mut_block: F,
     ) {
+        // Ensure app is subscribed to blocks before mining first block
+        self.wait_for_block_subscription().await;
+
         let block = self.mock_el().mine_block_with(f_mut_block);
         let block_number = block.number.expect("block has no hash");
         let block_hash = block.hash.expect("block has no hash");
@@ -576,6 +579,24 @@ impl TestHarness {
         .expect(&format!(
             "timeout waiting to sync mined block {block_number} {block_hash}"
         ))
+    }
+
+    /// Use to resolve race condition where the test mines a block before the app runner has
+    /// subscribed to blocks, missing the event of the newly mined block
+    pub async fn wait_for_block_subscription(&self) {
+        retry_with_timeout(
+            || async {
+                if self.mock_el().get_block_subscription_count() > 0 {
+                    Ok(())
+                } else {
+                    bail!("no block subscriptions")
+                }
+            },
+            Duration::from_secs(2),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("timeout waiting for app to subscribe to mock EL block filter");
     }
 }
 
@@ -746,6 +767,18 @@ pub fn find_excess_blob_gas(blob_gas_price: u128) -> u128 {
 
     // numerator = (ln(result) - ln(factor)) * denominator
     (((result as f64).ln() - (factor as f64).ln()) * denominator as f64) as u128
+}
+
+pub fn assert_close_enough(a: u64, b: u64, epsilon: u64) {
+    let max = a.max(b);
+    let min = a.min(b);
+
+    if max - min > epsilon {
+        panic!(
+            "Assertion failed: {} and {} are not close enough (epsilon: {})",
+            a, b, epsilon
+        );
+    }
 }
 
 #[test]

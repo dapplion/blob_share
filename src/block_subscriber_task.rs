@@ -22,6 +22,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     loop {
         tokio::select! {
             block_hash = s.next() => {
+                // block_hash type := Option<Result<H256>>
                 let block_hash = block_hash.ok_or_else(|| eyre!("block stream closed"))??;
 
                 // Run sync routine, may involve long network requests if there's a re-org

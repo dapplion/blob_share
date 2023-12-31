@@ -4,8 +4,11 @@ use ethers::{
 };
 use eyre::{Context, Result};
 use futures::stream::Stream;
-use std::pin::Pin;
+use std::{pin::Pin, time::Duration};
 use url::Url;
+
+pub type SubscribeBlocksFuture<'a> =
+    Pin<Box<dyn Stream<Item = Result<H256, ProviderError>> + Send + 'a>>;
 
 pub enum EthProvider {
     Http(Provider<Http>),
@@ -35,6 +38,17 @@ impl EthProvider {
 
     pub async fn new_ws(ws_url: &str) -> Result<Self> {
         Ok(Self::Ws(Provider::<Ws>::connect(ws_url).await?))
+    }
+
+    pub fn set_interval(&mut self, interval: Duration) {
+        match self {
+            EthProvider::Http(provider) => {
+                provider.set_interval(interval);
+            }
+            EthProvider::Ws(provider) => {
+                provider.set_interval(interval);
+            }
+        }
     }
 
     pub async fn get_chainid(&self) -> Result<U256, ProviderError> {
@@ -98,8 +112,7 @@ impl EthProvider {
 
     pub async fn subscribe_blocks<'a>(
         &'a self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<H256, ProviderError>> + Send + 'a>>, ProviderError>
-    {
+    ) -> Result<SubscribeBlocksFuture<'a>, ProviderError> {
         match self {
             EthProvider::Http(provider) => {
                 let stream = provider.watch_blocks().await?.stream();
