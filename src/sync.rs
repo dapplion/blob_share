@@ -108,10 +108,7 @@ impl BlockSync {
 
     pub fn get_head(&self) -> SyncStatusBlock {
         if let Some(head) = self.unfinalized_head_chain.last() {
-            SyncStatusBlock {
-                number: head.number,
-                hash: head.hash,
-            }
+            head.into()
         } else {
             SyncStatusBlock {
                 number: self.anchor_block.number,
@@ -362,11 +359,13 @@ impl BlockSync {
             // Block already known
             Ok(SyncBlockOutcome::BlockKnown)
         } else if let Some(new_head_index) = self.block_position_plus_one(block.parent_hash) {
-            let reorg = if new_head_index < self.unfinalized_head_chain.len() {
+            let current_head_index = self.unfinalized_head_chain.len();
+            let reorg = if new_head_index < current_head_index {
                 // Next unknown block is not descendant of head: re-org
-                self.drop_reorged_blocks(new_head_index);
+                let reorged_blocks = self.drop_reorged_blocks(new_head_index);
                 Some(Reorg {
-                    depth: self.unfinalized_head_chain.len() - new_head_index,
+                    depth: current_head_index - new_head_index,
+                    reorged_blocks: reorged_blocks.iter().map(|b| b.into()).collect(),
                 })
             } else {
                 None
@@ -416,16 +415,18 @@ impl BlockSync {
         self.anchor_block.number
     }
 
-    fn drop_reorged_blocks(&mut self, new_head_index: usize) {
-        for reorged_block in self.unfinalized_head_chain.iter().skip(new_head_index) {
+    fn drop_reorged_blocks(&mut self, new_head_index: usize) -> Vec<BlockSummary> {
+        // All blocks in current chain after the pivot must be dropped
+        let reorged_blocks = self.unfinalized_head_chain.split_off(new_head_index);
+
+        for reorged_block in &reorged_blocks {
             // TODO: do accounting on the balances cache
             for tx in &reorged_block.blob_txs {
                 self.pending_transactions.insert(tx.nonce, tx.clone());
             }
         }
 
-        // All blocks in current chain after the pivot must be dropped
-        self.unfinalized_head_chain.truncate(new_head_index);
+        reorged_blocks
     }
 
     fn sync_block(&mut self, block: BlockSummary) {
@@ -514,6 +515,7 @@ impl SyncBlockOutcome {
 #[derive(Debug, Clone)]
 pub struct Reorg {
     pub depth: usize,
+    pub reorged_blocks: Vec<SyncStatusBlock>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -622,6 +624,15 @@ impl BlockSummary {
                     .flat_map(|tx| tx.participants.iter().map(|p| p.address)),
             )
             .collect()
+    }
+}
+
+impl Into<SyncStatusBlock> for &BlockSummary {
+    fn into(self) -> SyncStatusBlock {
+        SyncStatusBlock {
+            hash: self.hash,
+            number: self.number,
+        }
     }
 }
 

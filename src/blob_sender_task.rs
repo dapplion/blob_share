@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ethers::signers::Signer;
+use ethers::{signers::Signer, types::TxHash};
 use eyre::{Context, Result};
 
 use crate::{
@@ -32,7 +32,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                 Ok(outcome) => {
                     match outcome {
                         // Loop again to try to create another blob transaction
-                        SendResult::SentBlobTx => continue,
+                        SendResult::SentBlobTx(_) => continue,
                         // Break out of inner loop and wait for new notification
                         SendResult::NoViableSet | SendResult::NoNonceAvailable => break,
                     }
@@ -54,7 +54,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 #[derive(Debug)]
 pub(crate) enum SendResult {
     NoViableSet,
-    SentBlobTx,
+    SentBlobTx(TxHash),
     NoNonceAvailable,
 }
 
@@ -162,7 +162,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         app_data.sync_data_intents().await?;
     }
 
-    Ok(SendResult::SentBlobTx)
+    Ok(SendResult::SentBlobTx(blob_tx.tx_hash))
 }
 
 #[tracing::instrument(skip(app_data, gas_config, next_blob_items))]

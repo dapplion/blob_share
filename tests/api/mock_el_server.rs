@@ -132,24 +132,27 @@ impl MockEthereumServer {
         f_mut_block: F,
     ) -> Block<Transaction> {
         // Drop data lock before calling `self.add_block()`
-        let block = {
+        let head = {
             let data = self.data.lock().unwrap();
-            let head = data
-                .blocks_by_number
+            data.blocks_by_number
                 .get(&data.head_number)
-                .expect("no block for head_number");
-
-            info!("mined block on head {:?} {:?}", head.number, head.hash);
-
-            let mut block =
-                get_block_with_txs(head.number.unwrap().as_u64() + 1, generate_random_hash());
-
-            block.parent_hash = head.hash.unwrap();
-            f_mut_block(&mut block);
-            block
+                .expect("no block for head_number")
+                .clone()
         };
 
+        let head_number = head.number.unwrap().as_u64();
+        info!("mined block on head {} {:?}", head_number, head.hash);
+
+        let new_head_number = head_number + 1;
+        let mut block = get_block_with_txs(new_head_number, generate_random_hash());
+
+        block.parent_hash = head.hash.unwrap();
+        f_mut_block(&mut block);
+
         self.add_block(block.clone());
+
+        // Set new block as head
+        self.data.lock().unwrap().head_number = new_head_number;
 
         block
     }
