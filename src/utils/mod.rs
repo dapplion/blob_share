@@ -68,7 +68,7 @@ pub fn vec_to_hex_0x_prefix(v: &[u8]) -> String {
     format!("0x{}", hex::encode(v))
 }
 
-/// Decode 0x prefixed hex encoded string to Vec<u8>
+/// Decode 0x prefixed hex encoded string to `Vec<u8>`
 pub fn hex_0x_prefix_to_vec(hex: &str) -> Result<Vec<u8>> {
     Ok(hex::decode(hex.trim_start_matches("0x"))?)
 }
