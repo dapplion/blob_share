@@ -102,15 +102,17 @@ pub fn deserialize_blob_tx_pooled(serialized_networking_blob_tx: &[u8]) -> Resul
 
 /// Convert a reth transaction to ethers
 pub fn tx_reth_to_ethers(txr: &TxEip4844) -> Result<Transaction> {
-    let mut tx = Transaction::default();
-    tx.chain_id = Some(txr.chain_id.into());
-    tx.nonce = txr.nonce.into();
-    tx.gas = txr.gas_limit.into();
-    tx.max_fee_per_gas = Some(txr.max_fee_per_gas.into());
-    tx.max_priority_fee_per_gas = Some(txr.max_priority_fee_per_gas.into());
-    tx.to = Some(H160(txr.to.into()));
-    tx.input = txr.input.to_vec().into();
-    tx.value = serde_json::from_value(serde_json::to_value(txr.value)?)?;
+    let mut tx = Transaction {
+        chain_id: Some(txr.chain_id.into()),
+        nonce: txr.nonce.into(),
+        gas: txr.gas_limit.into(),
+        max_fee_per_gas: Some(txr.max_fee_per_gas.into()),
+        max_priority_fee_per_gas: Some(txr.max_priority_fee_per_gas.into()),
+        to: Some(H160(txr.to.into())),
+        input: txr.input.to_vec().into(),
+        value: serde_json::from_value(serde_json::to_value(txr.value)?)?,
+        ..Default::default()
+    };
     tx.other.insert(
         "maxFeePerBlobGas".to_string(),
         serde_json::to_value(Into::<U256>::into(txr.max_fee_per_blob_gas))?,

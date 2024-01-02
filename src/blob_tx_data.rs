@@ -126,12 +126,6 @@ impl BlobTxSummary {
     }
 }
 
-impl Into<GasConfig> for &BlobTxSummary {
-    fn into(self) -> GasConfig {
-        self.gas
-    }
-}
-
 const PARTICIPANT_VERSION_1: u8 = 0x01;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -204,9 +198,11 @@ mod tests {
             from: Address::default(),
             nonce: 0,
             used_bytes: participants.iter().map(|(_, data_len)| data_len).sum(),
-            max_priority_fee_per_gas: 1,
-            max_fee_per_gas: 1,
-            max_fee_per_blob_gas: 1,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 1,
+                max_fee_per_gas: 1,
+                max_fee_per_blob_gas: 1,
+            },
         }
     }
 
@@ -216,11 +212,7 @@ mod tests {
 
     fn test_cost_to_participant(address: u8, participants: &[(u8, usize)], expected_cost: usize) {
         assert_eq!(
-            generate_blob_tx_summary(&participants).cost_to_participant(
-                &gen_addr(address),
-                None,
-                None
-            ),
+            generate_blob_tx_summary(&participants).cost_to_participant(&gen_addr(address), None,),
             expected_cost as u128
         );
     }
@@ -304,9 +296,11 @@ mod tests {
             from: target_address,
             nonce,
             used_bytes,
-            max_fee_per_gas: 1,
-            max_priority_fee_per_gas: 2,
-            max_fee_per_blob_gas: 3,
+            gas: GasConfig {
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 2,
+                max_fee_per_blob_gas: 3,
+            },
         };
 
         assert_eq!(blob_tx_summary, expected_blob_tx_summary);

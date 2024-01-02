@@ -103,23 +103,24 @@ impl AppData {
     }
 
     pub async fn maybe_advance_anchor_block(&self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
-        if let Some((finalized_included_txs, finalized_excluded_txs, new_anchor_block_number)) =
-            self.sync.write().await.maybe_advance_anchor_block()?
-        {
+        if let Some(finalized_result) = self.sync.write().await.maybe_advance_anchor_block()? {
             let mut data_intent_tracker = self.data_intent_tracker.write().await;
-            for tx in &finalized_included_txs {
+            for tx in &finalized_result.finalized_included_txs {
                 data_intent_tracker.finalize_tx(tx.tx_hash);
             }
 
             // TODO: Mark intents as finalzed
 
             // Forget about excluded transactions
-            for _excluded_tx in finalized_excluded_txs {
+            for _excluded_tx in finalized_result.finalized_excluded_txs {
                 // TODO: Drop inclusions for excluded transactions
                 // data_intent_tracker.drop_excluded_tx(excluded_tx.tx_hash);
             }
 
-            Ok(Some((finalized_included_txs, new_anchor_block_number)))
+            Ok(Some((
+                finalized_result.finalized_included_txs,
+                finalized_result.new_anchor_block_number,
+            )))
         } else {
             Ok(None)
         }

@@ -120,9 +120,7 @@ impl EthProvider {
         }
     }
 
-    pub async fn subscribe_blocks<'a>(
-        &'a self,
-    ) -> Result<SubscribeBlocksFuture<'a>, ProviderError> {
+    pub async fn subscribe_blocks(&self) -> Result<SubscribeBlocksFuture<'_>, ProviderError> {
         match self {
             EthProvider::Http(provider) => {
                 let stream = provider.watch_blocks().await?.stream();

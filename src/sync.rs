@@ -153,7 +153,7 @@ impl BlockSync {
                 None => return Ok(NonceStatus::Available(next_nonce)),
                 Some(tx) => {
                     if tx.is_underpriced(head_gas) {
-                        return Ok(NonceStatus::Repriced(next_nonce, tx.into()));
+                        return Ok(NonceStatus::Repriced(next_nonce, tx.gas));
                     } else {
                         continue;
                     }
@@ -223,7 +223,7 @@ impl BlockSync {
         if let Some(tx) = self.pending_transactions.remove(&tx.nonce) {
             self.repriced_transactions
                 .entry(tx.nonce)
-                .or_insert_with(|| vec![])
+                .or_default()
                 .push(tx);
         }
 
@@ -236,9 +236,7 @@ impl BlockSync {
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
     #[tracing::instrument(skip(self), fields(new_anchor_index))]
-    pub fn maybe_advance_anchor_block(
-        &mut self,
-    ) -> Result<Option<(Vec<BlobTxSummary>, Vec<BlobTxSummary>, u64)>> {
+    pub(crate) fn maybe_advance_anchor_block(&mut self) -> Result<Option<FinalizeResult>> {
         let head_number = self.get_head().number;
         let new_anchor_index =
             if self.anchor_block_number() + self.config.finalize_depth < head_number {
@@ -277,14 +275,14 @@ impl BlockSync {
             }
         }
 
-        Ok(Some((
-            finalized_chain
+        Ok(Some(FinalizeResult {
+            finalized_included_txs: finalized_chain
                 .into_iter()
                 .flat_map(|b| b.blob_txs.into_iter())
                 .collect(),
-            repriced_transactions,
-            self.anchor_block.number,
-        )))
+            finalized_excluded_txs: repriced_transactions,
+            new_anchor_block_number: self.anchor_block.number,
+        }))
     }
 
     /// Register a new head block with sync. The new head's parent can be unknown. This function
@@ -438,6 +436,12 @@ impl BlockSync {
     }
 }
 
+pub(crate) struct FinalizeResult {
+    pub finalized_included_txs: Vec<BlobTxSummary>,
+    pub finalized_excluded_txs: Vec<BlobTxSummary>,
+    pub new_anchor_block_number: u64,
+}
+
 #[derive(Debug)]
 pub enum NonceStatus {
     Available(u64),
@@ -537,7 +541,7 @@ impl AnchorBlock {
 
         self.hash = block.hash;
         self.number = block.number;
-        self.gas = block.gas.clone();
+        self.gas = block.gas;
     }
 }
 
@@ -626,11 +630,11 @@ impl BlockSummary {
     }
 }
 
-impl Into<SyncStatusBlock> for &BlockSummary {
-    fn into(self) -> SyncStatusBlock {
+impl From<&BlockSummary> for SyncStatusBlock {
+    fn from(value: &BlockSummary) -> Self {
         SyncStatusBlock {
-            hash: self.hash,
-            number: self.number,
+            hash: value.hash,
+            number: value.number,
         }
     }
 }
@@ -771,8 +775,7 @@ mod tests {
         // Register pending tx for user
         sync.write()
             .await
-            .register_pending_blob_tx(generate_pending_blob_tx(NONCE0, user))
-            .unwrap();
+            .register_sent_blob_tx(generate_pending_blob_tx(NONCE0, user));
         assert_eq!(
             sync.read().await.balance_with_pending(&user),
             TOP_UP - TXCOST
@@ -895,9 +898,11 @@ mod tests {
             nonce,
             participants: vec![participant],
             used_bytes: BYTES_PER_BLOB,
-            max_priority_fee_per_gas: 0, // set to 0 to make effective gas fee always 1
-            max_fee_per_gas: 1,
-            max_fee_per_blob_gas: 1,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 0, // set to 0 to make effective gas fee always 1
+                max_fee_per_gas: 1,
+                max_fee_per_blob_gas: 1,
+            },
         }
     }
 

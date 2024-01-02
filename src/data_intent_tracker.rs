@@ -315,10 +315,9 @@ WHERE data_intents.inclusion_finalized = FALSE;
     .fetch_all(db_pool)
     .await?;
 
-    Ok(rows
-        .iter()
+    rows.iter()
         .map(|row| Ok((Uuid::from_slice(&row.id)?, txhash_from_vec(&row.tx_hash)?)))
-        .collect::<Result<Vec<_>>>()?)
+        .collect::<Result<Vec<_>>>()
 }
 
 pub(crate) async fn mark_data_intents_as_inclusion_finalized(

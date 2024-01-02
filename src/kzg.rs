@@ -123,7 +123,7 @@ pub(crate) fn construct_blob_tx(
 
     Ok(BlobTx {
         blob_tx_payload_body: tx_rlp_with_sig.into(),
-        tx_hash: H256(tx_hash.into()),
+        tx_hash: H256(tx_hash),
         blob_tx_networking: tx_rlp_networking.into(),
         tx_summary: BlobTxSummary {
             participants,
@@ -258,18 +258,7 @@ mod tests {
         );
 
         // Assert gas
-        assert_eq!(
-            blob_tx.tx_summary.max_fee_per_gas,
-            gas_config.max_fee_per_gas
-        );
-        assert_eq!(
-            blob_tx.tx_summary.max_fee_per_blob_gas,
-            gas_config.max_fee_per_blob_gas
-        );
-        assert_eq!(
-            blob_tx.tx_summary.max_priority_fee_per_gas,
-            gas_config.max_priority_fee_per_gas
-        );
+        assert_eq!(blob_tx.tx_summary.gas, gas_config);
 
         // Assert participants
         assert_eq!(blob_tx.tx_summary.participants, participants);
