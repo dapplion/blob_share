@@ -250,6 +250,7 @@ WHERE id = ?
     Ok(row.is_some())
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct IntentInclusion {
     pub tx_hash: TxHash,

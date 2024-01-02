@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "\nSELECT id, tx_hash, sender_address, nonce\nFROM intent_inclusions\nWHERE id = ?\n        ",
+  "query": "\nSELECT id, tx_hash, sender_address, nonce, updated_at\nFROM intent_inclusions\nWHERE id = ?\nORDER BY nonce ASC, updated_at ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,16 @@
           "char_set": 63,
           "max_size": 11
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_at",
+        "type_info": {
+          "type": "Timestamp",
+          "flags": "BINARY | TIMESTAMP | ON_UPDATE_NOW",
+          "char_set": 63,
+          "max_size": 23
+        }
       }
     ],
     "parameters": {
@@ -51,8 +61,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "42ac4b902bad22b6226cf2b08958db505d36fc6deb025f176fc37aba4df57efe"
+  "hash": "a6ccf35f6bd2d265828b86c39a1e5a5a2674554f7b2256832ea4a8b9e7fe5d72"
 }
