@@ -56,7 +56,10 @@ pub(crate) async fn get_sync(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items: Vec<DataIntentSummary> = data.get_all_intents_available_for_packing().await;
+    let items: Vec<DataIntentSummary> = data
+        .get_all_intents_available_for_packing(usize::MAX)
+        .await
+        .0;
     Ok(HttpResponse::Ok().json(items))
 }
 

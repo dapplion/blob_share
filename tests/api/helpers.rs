@@ -415,17 +415,18 @@ impl TestHarness {
             || async {
                 let mut tx_hashes = vec![];
                 for id in ids {
-                    match self.client.get_status_by_id(*id).await?.is_in_tx() {
-                        Some(tx_hash) => {
-                            if let Some(exclude_transaction_ids) = exclude_transaction_ids {
-                                if exclude_transaction_ids.contains(&tx_hash) {
-                                    continue;
-                                }
-                            }
-                            tx_hashes.push(tx_hash);
+                    let tx_hash = self
+                        .client
+                        .get_status_by_id(*id)
+                        .await?
+                        .is_in_tx()
+                        .ok_or_else(|| eyre!("still pending"))?;
+                    if let Some(exclude_transaction_ids) = exclude_transaction_ids {
+                        if exclude_transaction_ids.contains(&tx_hash) {
+                            bail!("still included in an excluded transaction {tx_hash}")
                         }
-                        None => bail!("still pending"),
                     }
+                    tx_hashes.push(tx_hash);
                 }
                 Ok(tx_hashes)
             },

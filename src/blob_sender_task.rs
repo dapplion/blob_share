@@ -16,6 +16,10 @@ use crate::{
     warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
 
+/// Limit the maximum number of times a data intent included in a previous transaction can be
+/// included again in a new transaction.
+const MAX_PREVIOUS_INCLUSIONS: usize = 2;
+
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
 
@@ -70,7 +74,9 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let pending_data_intents = app_data.get_all_intents_available_for_packing().await;
+        let (pending_data_intents, items_from_previous_inclusions) = app_data
+            .get_all_intents_available_for_packing(MAX_PREVIOUS_INCLUSIONS)
+            .await;
 
         let items: Vec<Item> = pending_data_intents
             .iter()
@@ -78,8 +84,8 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
             .collect::<Vec<_>>();
 
         debug!(
-            "attempting to pack valid blob, max_fee_per_blob_gas {} items {:?}",
-            max_fee_per_blob_gas, items
+            "attempting to pack valid blob, max_fee_per_blob_gas {} items_from_previous_inclusions {} items {:?}",
+            max_fee_per_blob_gas, items_from_previous_inclusions, items
         );
 
         let _timer_pck = metrics::PACKING_TIMES.start_timer();
@@ -184,7 +190,7 @@ async fn construct_and_send_tx(
         .iter()
         .map(|item| {
             Ok(BlobTxParticipant {
-                address: address_from_vec(item.eth_address.clone())?,
+                address: address_from_vec(&item.eth_address)?,
                 data_len: item.data.len(),
             })
         })

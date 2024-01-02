@@ -1,6 +1,6 @@
 use actix_web::dev::Server;
 use actix_web::{web, App, HttpResponse, HttpServer};
-use blob_share::utils::tx_reth_to_ethers;
+use blob_share::utils::{tx_reth_to_ethers, txhash_from_vec};
 use blob_share::{
     compute_blob_tx_hash,
     utils::{deserialize_blob_tx_pooled, hex_0x_prefix_to_vec, vec_to_hex_0x_prefix},
@@ -273,6 +273,16 @@ fn handle_ethereum_rpc(data: &mut ServerData, req: &JsonRpcRequest) -> Result<se
             let address: Address = req.get_param(0)?;
             let nonce = data.nonce_per_address.get(&address).copied().unwrap_or(0);
             serde_json::to_value(value_to_hex(nonce))?
+        }
+
+        "eth_getTransactionByHash" => {
+            let tx_hash_str = req.get_param::<String>(0)?;
+            let tx_hash: Hash = txhash_from_vec(&hex_0x_prefix_to_vec(&tx_hash_str)?)?.0;
+            let tx = data
+                .tx_pool
+                .get(&tx_hash)
+                .ok_or_else(|| eyre!(format!("unknown tx {tx_hash_str}")))?;
+            serde_json::to_value(tx)?
         }
 
         "eth_newBlockFilter" => {

@@ -8,8 +8,7 @@ use crate::{
     data_intent_tracker::{
         fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
         fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_many_data_intent_db_full,
-        mark_data_intents_as_inclusion_finalized, store_data_intent, update_inclusion_tx_hashes,
-        DataIntentTracker,
+        mark_data_intents_as_inclusion_finalized, store_data_intent, DataIntentTracker,
     },
     eth_provider::EthProvider,
     routes::SyncStatusBlock,
@@ -169,7 +168,12 @@ impl AppData {
         data_intent_ids: &[DataIntentId],
         blob_tx: BlobTxSummary,
     ) -> Result<()> {
-        update_inclusion_tx_hashes(&self.db_pool, data_intent_ids, blob_tx.tx_hash).await?;
+        // TODO: do not grab the data_intent_tracker lock for so long here
+        self.data_intent_tracker
+            .write()
+            .await
+            .insert_many_intent_tx_inclusions(&self.db_pool, data_intent_ids, &blob_tx)
+            .await?;
 
         self.sync.write().await.register_sent_blob_tx(blob_tx);
 
@@ -222,9 +226,10 @@ impl AppData {
 
     #[tracing::instrument(skip(self))]
     pub async fn status_by_id(&self, id: &DataIntentId) -> Result<DataIntentStatus> {
-        let status = if let Some((tx_hash, _sender_address, _nonce)) =
-            fetch_data_intent_inclusion(&self.db_pool, id).await?
-        {
+        let inclusions = fetch_data_intent_inclusion(&self.db_pool, id).await?;
+
+        let status = if let Some(inclusion) = inclusions.last().copied() {
+            let tx_hash = inclusion.tx_hash;
             // Check status of transaction against EL.
             // `eth_getTransactionByHash` returns the transaction both if included or if in the pool
             // Ref: https://www.quicknode.com/docs/ethereum/eth_getTransactionByHash
@@ -262,15 +267,19 @@ impl AppData {
         fetch_many_data_intent_db_full(&self.db_pool, ids).await
     }
 
-    pub async fn get_all_intents_available_for_packing(&self) -> Vec<DataIntentSummary> {
+    pub async fn get_all_intents_available_for_packing(
+        &self,
+        max_previous_inclusion_count: usize,
+    ) -> (Vec<DataIntentSummary>, usize) {
         let sync = self.sync.read().await;
+        let data_intent_tracker = self.data_intent_tracker.read().await;
 
-        self.data_intent_tracker
-            .read()
-            .await
+        let mut items_from_previous_inclusions = 0;
+
+        let data_intents = data_intent_tracker
             .get_all_intents()
             .into_iter()
-            .filter_map(|(intent, tx_hash)| {
+            .filter_map(|(intent, tx_hash, previous_inclusions)| {
                 let should_include = if let Some(tx_hash) = tx_hash {
                     match sync.get_tx_status(tx_hash) {
                         // This should never happen, the intent is marked as part of a bundle but
@@ -278,7 +287,14 @@ impl AppData {
                         None => false,
                         // If transaction is pending, only re-bundle if it's underpriced
                         Some(TxInclusion::Pending { tx_gas }) => {
-                            tx_gas.is_underpriced(sync.get_head_gas())
+                            if previous_inclusions < max_previous_inclusion_count
+                                && tx_gas.is_underpriced(sync.get_head_gas())
+                            {
+                                items_from_previous_inclusions += 1;
+                                true
+                            } else {
+                                false
+                            }
                         }
                         // Do not re-bundle intents part of a block
                         Some(TxInclusion::Included { .. }) => false,
@@ -295,7 +311,9 @@ impl AppData {
                     None
                 }
             })
-            .collect()
+            .collect();
+
+        (data_intents, items_from_previous_inclusions)
     }
 
     pub async fn get_sync(&self) -> (SyncStatusBlock, SyncStatusBlock) {

@@ -244,11 +244,6 @@ impl App {
         );
         // TODO: handle initial sync here with a nice progress bar
 
-        let mut data_intent_tracker = DataIntentTracker::default();
-        info!("syncing data intent track");
-        data_intent_tracker.sync_with_db(&db_pool).await?;
-        info!("synced data intent track");
-
         let config = AppConfig {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             panic_on_background_task_errors: args.panic_on_background_task_errors,
@@ -278,7 +273,7 @@ impl App {
             provider,
             wallet,
             chain_id,
-            data_intent_tracker,
+            DataIntentTracker::default(),
             sync,
         ));
 
@@ -294,6 +289,10 @@ impl App {
         if !finalized_ids.is_empty() {
             info!("marked some data intents as finalized {:?}", finalized_ids);
         }
+
+        info!("syncing data intent tracker");
+        app_data.sync_data_intents().await?;
+        info!("synced data intent tracker");
 
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;

@@ -1,7 +1,7 @@
-use std::time::Duration;
-
 use blob_share::{utils::get_max_fee_per_blob_gas, MAX_USABLE_BLOB_DATA_LEN};
+use log::info;
 use reth_primitives::revm_primitives::TARGET_BLOB_GAS_PER_BLOCK;
+use std::time::Duration;
 
 use crate::helpers::{
     assert_close_enough, find_excess_blob_gas, Config, DataReq, TestHarness, TestMode, ETH_TO_WEI,
@@ -73,15 +73,18 @@ async fn reprice_single_transaction_after_gas_spike() {
                 )
                 .await[0];
 
+            info!("repriced tx {}", tx_hash_repriced);
+
             // Assert transaction has been correctly repriced (same nonce) and includes the original intents
             let tx_repriced = test_harness.mock_el().get_submitted_tx(tx_hash_repriced);
-            // TODO: check:
-            // assert!(tx_repriced.ids() == data_intent_ids);
-            assert_eq!(
+            assert_close_enough(
                 get_max_fee_per_blob_gas(&tx_repriced).unwrap() as u64,
-                HIGHER_BLOB_GAS
+                HIGHER_BLOB_GAS,
+                GWEI_TO_WEI / 10000,
             );
             assert!(tx_repriced.nonce == tx_first.nonce);
+            assert!(tx_repriced.max_priority_fee_per_gas > tx_first.max_priority_fee_per_gas);
+            assert!(tx_repriced.max_fee_per_gas > tx_first.max_fee_per_gas);
         }
     })
     .await;

@@ -31,7 +31,7 @@
 
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, TxHash};
-use eyre::{bail, Context, Result};
+use eyre::{eyre, Context, Result};
 use futures::StreamExt;
 use num_traits::cast::FromPrimitive;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ use crate::{
     data_intent::{data_intent_max_cost, BlobGasPrice, DataIntentId},
     metrics,
     utils::{address_from_vec, option_hex_vec, txhash_from_vec},
-    DataIntent,
+    BlobTxSummary, DataIntent,
 };
 
 #[derive(Default)]
@@ -94,16 +94,16 @@ ORDER BY updated_at ASC
         Ok(())
     }
 
-    pub fn get_all_intents(&self) -> Vec<(&DataIntentSummary, Option<TxHash>)> {
+    pub fn get_all_intents(&self) -> Vec<(&DataIntentSummary, Option<TxHash>, usize)> {
         self.pending_intents
             .values()
             .map(|item| {
+                let tx_hashes = self.cache_intent_inclusions.get(&item.id);
+
                 (
                     item,
-                    self.cache_intent_inclusions
-                        .get(&item.id)
-                        .and_then(|tx_hashes| tx_hashes.last())
-                        .copied(),
+                    tx_hashes.and_then(|tx_hashes| tx_hashes.last()).copied(),
+                    tx_hashes.map(|tx_hashes| tx_hashes.len()).unwrap_or(0),
                 )
             })
             .collect()
@@ -145,6 +145,25 @@ ORDER BY updated_at ASC
             }
         }
     }
+
+    pub async fn insert_many_intent_tx_inclusions(
+        &mut self,
+        db_pool: &MySqlPool,
+        data_intent_ids: &[DataIntentId],
+        blob_tx: &BlobTxSummary,
+    ) -> Result<()> {
+        insert_many_intent_tx_inclusions(db_pool, data_intent_ids, blob_tx).await?;
+
+        // Include in-memory cache after successful DB update
+        for id in data_intent_ids {
+            self.cache_intent_inclusions
+                .entry(*id)
+                .or_default()
+                .push(blob_tx.tx_hash);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, FromRow, Serialize, Deserialize)]
@@ -160,8 +179,6 @@ pub struct DataIntentDbRowFull {
     pub max_blob_gas_price: u64, // BIGINT
     #[serde(with = "option_hex_vec")]
     pub data_hash_signature: Option<Vec<u8>>, // BINARY(65), Optional
-    #[serde(with = "option_hex_vec")]
-    pub inclusion_tx_hash: Option<Vec<u8>>, // BINARY(32), Optional
     pub updated_at: DateTime<Utc>, // TIMESTAMP(3)
 }
 
@@ -182,7 +199,7 @@ pub(crate) async fn fetch_data_intent_db_full(
 ) -> Result<DataIntentDbRowFull> {
     let data_intent = sqlx::query_as::<_, DataIntentDbRowFull>(
         r#"
-SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
 FROM data_intents
 WHERE id = ?
         "#)
@@ -199,7 +216,7 @@ pub(crate) async fn fetch_many_data_intent_db_full(
 ) -> Result<Vec<DataIntentDbRowFull>> {
     let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
         r#"
-SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
 FROM data_intents
 WHERE id in
     "#,
@@ -233,29 +250,41 @@ WHERE id = ?
     Ok(row.is_some())
 }
 
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct IntentInclusion {
+    pub tx_hash: TxHash,
+    pub nonce: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
 pub(crate) async fn fetch_data_intent_inclusion(
     db_pool: &MySqlPool,
     id: &Uuid,
-) -> Result<Option<(TxHash, Address, u64)>> {
-    let row = sqlx::query!(
+) -> Result<Vec<IntentInclusion>> {
+    let rows = sqlx::query!(
         r#"
-SELECT id, tx_hash, sender_address, nonce
+SELECT id, tx_hash, sender_address, nonce, updated_at
 FROM intent_inclusions
 WHERE id = ?
+ORDER BY nonce ASC, updated_at ASC
         "#,
         id
     )
-    .fetch_optional(db_pool)
+    .fetch_all(db_pool)
     .await?;
 
-    Ok(match row {
-        Some(row) => Some((
-            txhash_from_vec(&row.tx_hash)?,
-            address_from_vec(row.sender_address)?,
-            row.nonce as u64,
-        )),
-        None => None,
-    })
+    rows.iter()
+        .map(|row| {
+            Ok(IntentInclusion {
+                tx_hash: txhash_from_vec(&row.tx_hash)?,
+                //  address_from_vec(&row.sender_address)?,
+                nonce: row.nonce as u64,
+                updated_at: row
+                    .updated_at
+                    .ok_or_else(|| eyre!("no updated_at column"))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 /// Store data intent to SQL DB
@@ -324,6 +353,11 @@ pub(crate) async fn mark_data_intents_as_inclusion_finalized(
     db_pool: &MySqlPool,
     ids: &[Uuid],
 ) -> Result<()> {
+    // Query builder below does not handle empty ids slice well
+    if ids.is_empty() {
+        return Ok(());
+    }
+
     // Bulk fetch all rows
     let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
         r#"
@@ -346,60 +380,25 @@ WHERE id IN
     Ok(())
 }
 
-pub(crate) async fn update_inclusion_tx_hashes(
+// Private fn to ensure data consistency with local cache
+async fn insert_many_intent_tx_inclusions(
     db_pool: &MySqlPool,
     ids: &[Uuid],
-    new_inclusion_tx_hash: TxHash,
+    blob_tx: &BlobTxSummary,
 ) -> Result<()> {
-    let mut tx = db_pool.begin().await?;
+    let mut query_builder =
+        QueryBuilder::new("INSERT INTO intent_inclusions (id, tx_hash, sender_address, nonce) ");
 
-    #[derive(Debug, FromRow, Serialize)]
-    struct Row {
-        id: Uuid,
-        inclusion_tx_hash: Option<Vec<u8>>,
-    }
-
-    // Bulk fetch all rows
-    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
-        r#"
-SELECT id, inclusion_tx_hash
-FROM data_intents
-WHERE id IN
-    "#,
-    );
-
-    // TODO: limit the amount of ids to not reach a limit
-    // TODO: try to use different API than `.push_tuples` since you only query by id
-    query_builder.push_tuples(ids.iter(), |mut b, id| {
-        b.push_bind(id);
+    query_builder.push_values(ids, |mut b, id| {
+        b.push_bind(id)
+            .push_bind(blob_tx.tx_hash.to_fixed_bytes().to_vec())
+            .push_bind(blob_tx.from.to_fixed_bytes().to_vec())
+            .push_bind(blob_tx.nonce);
     });
 
-    let rows = query_builder.build().fetch_all(&mut *tx).await?;
+    let query = query_builder.build();
 
-    // Filter IDs where inclusion_tx_hash is not set
-    for row in rows {
-        let row = Row::from_row(&row)?;
-        if let Some(tx_hash) = row.inclusion_tx_hash {
-            bail!(
-                "data_intent {} is already included in a tx {}",
-                row.id,
-                hex::encode(tx_hash)
-            );
-        }
-    }
-
-    // Batch update the filtered IDs
-    let new_inclusion_tx_hash = new_inclusion_tx_hash.to_fixed_bytes().to_vec();
-    for id in ids {
-        sqlx::query("UPDATE data_intents SET inclusion_tx_hash = ? WHERE id = ?")
-            .bind(&new_inclusion_tx_hash)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-    }
-
-    // Commit transaction
-    tx.commit().await?;
+    query.execute(db_pool).await?;
 
     Ok(())
 }
@@ -427,7 +426,7 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
     fn try_from(value: DataIntentDbRowSummary) -> Result<Self, Self::Error> {
         Ok(DataIntentSummary {
             id: value.id,
-            from: address_from_vec(value.eth_address)?,
+            from: address_from_vec(&value.eth_address)?,
             data_hash: value.data_hash,
             data_len: value.data_len.try_into()?,
             max_blob_gas_price: value.max_blob_gas_price,
@@ -453,18 +452,16 @@ mod tests {
             data: vec![0xbb; 10],
             data_len: 10,
             data_hash: vec![0xcc; 32],
-            data_hash_signature: None,
+            data_hash_signature: Some(vec![0xee; 32]),
             max_blob_gas_price: 100000000,
-            inclusion_tx_hash: Some(vec![0xee; 32]),
             updated_at: DateTime::from_str("2023-01-01T12:12:12.202889Z").unwrap(),
         };
 
-        let expected_item_str = "{\"id\":\"1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e\",\"eth_address\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data\":\"0xbbbbbbbbbbbbbbbbbbbb\",\"data_len\":10,\"data_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"max_blob_gas_price\":100000000,\"data_hash_signature\":null,\"inclusion_tx_hash\":\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"updated_at\":\"2023-01-01T12:12:12.202889Z\"}";
+        let expected_item_str = "{\"id\":\"1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e\",\"eth_address\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data\":\"0xbbbbbbbbbbbbbbbbbbbb\",\"data_len\":10,\"data_hash\":\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"max_blob_gas_price\":100000000,\"data_hash_signature\":\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"updated_at\":\"2023-01-01T12:12:12.202889Z\"}";
 
         assert_eq!(serde_json::to_string(&item).unwrap(), expected_item_str);
         let item_recv: DataIntentDbRowFull = serde_json::from_str(expected_item_str).unwrap();
         // test eq of dedicated serde fiels with Option<Vec<u8>>
         assert_eq!(item_recv.data_hash_signature, item.data_hash_signature);
-        assert_eq!(item_recv.inclusion_tx_hash, item.inclusion_tx_hash);
     }
 }

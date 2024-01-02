@@ -74,7 +74,7 @@ pub fn hex_0x_prefix_to_vec(hex: &str) -> Result<Vec<u8>> {
 }
 
 /// Convert `Vec<u8>` into ethers Address H160 type. Errors if v.len() != 20.
-pub(crate) fn address_from_vec(v: Vec<u8>) -> Result<Address> {
+pub(crate) fn address_from_vec(v: &[u8]) -> Result<Address> {
     let fixed_vec: [u8; 20] = v
         .try_into()
         .map_err(|_| eyre!("address as vec not 20 bytes in len"))?;
@@ -82,7 +82,7 @@ pub(crate) fn address_from_vec(v: Vec<u8>) -> Result<Address> {
 }
 
 /// Convert `Vec<u8>` into ethers TxHash H256 type. Errors if v.len() != 32.
-pub(crate) fn txhash_from_vec(v: &[u8]) -> Result<TxHash> {
+pub fn txhash_from_vec(v: &[u8]) -> Result<TxHash> {
     let fixed_vec: [u8; 32] = v
         .try_into()
         .map_err(|_| eyre!("txhash as vec not 32 bytes in len"))?;
