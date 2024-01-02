@@ -1,21 +1,24 @@
 use std::sync::Arc;
 
-use ethers::signers::Signer;
+use ethers::{signers::Signer, types::TxHash};
 use eyre::{Context, Result};
 
 use crate::{
     blob_tx_data::BlobTxParticipant,
-    client::DataIntentSummary,
-    data_intent::BlobGasPrice,
     data_intent_tracker::DataIntentDbRowFull,
     debug,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
     packing::{pack_items, Item},
+    sync::NonceStatus,
     utils::address_from_vec,
     warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
+
+/// Limit the maximum number of times a data intent included in a previous transaction can be
+/// included again in a new transaction.
+const MAX_PREVIOUS_INCLUSIONS: usize = 2;
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
@@ -34,7 +37,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                 Ok(outcome) => {
                     match outcome {
                         // Loop again to try to create another blob transaction
-                        SendResult::SentBlobTx => continue,
+                        SendResult::SentBlobTx(_) => continue,
                         // Break out of inner loop and wait for new notification
                         SendResult::NoViableSet | SendResult::NoNonceAvailable => break,
                     }
@@ -56,7 +59,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 #[derive(Debug)]
 pub(crate) enum SendResult {
     NoViableSet,
-    SentBlobTx,
+    SentBlobTx(TxHash),
     NoNonceAvailable,
 }
 
@@ -71,18 +74,31 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let items = app_data.get_all_pending().await;
+        let (pending_data_intents, items_from_previous_inclusions) = app_data
+            .get_all_intents_available_for_packing(MAX_PREVIOUS_INCLUSIONS)
+            .await;
+
+        let items: Vec<Item> = pending_data_intents
+            .iter()
+            .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
+            .collect::<Vec<_>>();
+
         debug!(
-            "attempting to pack valid blob, max_fee_per_blob_gas {} items {}",
-            max_fee_per_blob_gas,
-            items.len()
+            "attempting to pack valid blob, max_fee_per_blob_gas {} items_from_previous_inclusions {} items {:?}",
+            max_fee_per_blob_gas, items_from_previous_inclusions, items
         );
+
         let _timer_pck = metrics::PACKING_TIMES.start_timer();
 
-        if let Some(next_blob_items) =
-            select_next_blob_items(&items, max_fee_per_blob_gas.try_into()?)
-        {
-            next_blob_items
+        if let Some(selected_indexes) = pack_items(
+            &items,
+            MAX_USABLE_BLOB_DATA_LEN,
+            max_fee_per_blob_gas.try_into()?,
+        ) {
+            selected_indexes
+                .iter()
+                .map(|i| pending_data_intents[*i].clone())
+                .collect::<Vec<_>>()
         } else {
             return Ok(SendResult::NoViableSet);
         }
@@ -103,9 +119,14 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let data_intents = app_data.data_intents_by_id(&data_intent_ids).await?;
 
     // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
+    //
+    // ### EIP-1559 refresher:
+    // - assert tx.max_fee_per_gas >= tx.max_priority_fee_per_gas
+    // - priority_fee_per_gas = min(tx.max_priority_fee_per_gas, tx.max_fee_per_gas - block.base_fee_per_gas)
     let (max_fee_per_gas, max_priority_fee_per_gas) =
         app_data.provider.estimate_eip1559_fees().await?;
-    let gas_config = GasConfig {
+
+    let mut gas_config = GasConfig {
         max_fee_per_gas: max_fee_per_gas.as_u128(),
         max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
         max_fee_per_blob_gas,
@@ -115,20 +136,20 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let sender_address = app_data.sender_wallet.address();
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
-    let nonce = if let Some(nonce) = app_data
-        .reserve_next_available_nonce(sender_address)
-        .await?
-    {
-        nonce
-    } else {
-        return Ok(SendResult::NoNonceAvailable);
+    let nonce = match app_data.get_next_available_nonce(sender_address).await? {
+        NonceStatus::NotAvailable => return Ok(SendResult::NoNonceAvailable),
+        NonceStatus::Available(nonce) => nonce,
+        NonceStatus::Repriced(nonce, prev_tx_gas) => {
+            gas_config.reprice_to_at_least(prev_tx_gas);
+            nonce
+        }
     };
 
     let blob_tx =
         match construct_and_send_tx(app_data.clone(), nonce, &gas_config, data_intents).await {
             Ok(blob_tx) => blob_tx,
             Err(e) => {
-                app_data.unreserve_nonce(sender_address, nonce).await;
+                // TODO: consider persisting the existance of this transaction before sending it out
                 return Err(e);
             }
         };
@@ -148,7 +169,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         app_data.sync_data_intents().await?;
     }
 
-    Ok(SendResult::SentBlobTx)
+    Ok(SendResult::SentBlobTx(blob_tx.tx_hash))
 }
 
 #[tracing::instrument(skip(app_data, gas_config, next_blob_items))]
@@ -169,7 +190,7 @@ async fn construct_and_send_tx(
         .iter()
         .map(|item| {
             Ok(BlobTxParticipant {
-                address: address_from_vec(item.eth_address.clone())?,
+                address: address_from_vec(&item.eth_address)?,
                 data_len: item.data.len(),
             })
         })
@@ -233,25 +254,4 @@ async fn construct_and_send_tx(
     }
 
     Ok(blob_tx)
-}
-
-// TODO: write optimizer algo to find a better distribution
-// TODO: is ok to represent wei units as usize?
-#[tracing::instrument(skip(data_intents))]
-fn select_next_blob_items(
-    data_intents: &[DataIntentSummary],
-    blob_gas_price: BlobGasPrice,
-) -> Option<Vec<DataIntentSummary>> {
-    let items: Vec<Item> = data_intents
-        .iter()
-        .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
-        .collect::<Vec<_>>();
-
-    pack_items(&items, MAX_USABLE_BLOB_DATA_LEN, blob_gas_price).map(|selected_indexes| {
-        selected_indexes
-            .iter()
-            // TODO: do not copy data
-            .map(|i| data_intents[*i].clone())
-            .collect::<Vec<_>>()
-    })
 }

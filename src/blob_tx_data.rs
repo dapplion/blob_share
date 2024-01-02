@@ -1,10 +1,10 @@
 use std::io::{Cursor, Read, Write};
 
 use c_kzg::BYTES_PER_BLOB;
-use ethers::types::{Address, Transaction, H256, U256};
+use ethers::types::{Address, Transaction, H256};
 use eyre::{bail, eyre, Context, Result};
 
-use crate::BlockGasSummary;
+use crate::{gas::GasConfig, utils::get_max_fee_per_blob_gas, BlockGasSummary};
 
 pub const BLOB_TX_TYPE: u8 = 0x03;
 const PARTICIPANT_DATA_SIZE: usize = 20 + 4;
@@ -15,42 +15,48 @@ pub struct BlobTxSummary {
     pub tx_hash: H256,
     pub from: Address,
     pub nonce: u64,
-    pub max_fee_per_gas: u128,
-    pub max_priority_fee_per_gas: u128,
-    pub max_fee_per_blob_gas: u128,
+    pub gas: GasConfig,
     pub used_bytes: usize,
 }
 
 impl BlobTxSummary {
-    pub fn is_underpriced(&self, gas: &BlockGasSummary) -> bool {
-        // EVM gas underpriced
-        gas.base_fee_per_gas > self.max_fee_per_gas
-        // Blob gas underpriced
-            || gas.blob_gas_price() > self.max_fee_per_blob_gas
+    /// Returns true if this gas config is underpriced against a block gas summary
+    pub fn is_underpriced(&self, block_gas: &BlockGasSummary) -> bool {
+        self.gas.is_underpriced(block_gas)
+    }
+
+    pub fn cost_to_intent(&self, data_len: usize, block_gas: Option<BlockGasSummary>) -> u128 {
+        let blob_gas_price = match block_gas {
+            Some(block_gas) => block_gas.blob_gas_price(),
+            None => self.gas.max_fee_per_blob_gas,
+        };
+        let base_fee_per_gas = match block_gas {
+            Some(block_gas) => self.effective_gas_price(Some(block_gas.base_fee_per_gas)),
+            None => self.effective_gas_price(None),
+        };
+
+        let unused_bytes = BYTES_PER_BLOB.saturating_sub(self.used_bytes);
+        // Max product here is half blob unsued, half used by a single participant. Max
+        // blob size is 2**17, so the max intermediary value is 2**16 * 2**16 = 2**32
+        let attributable_unused_data =
+            (unused_bytes as u128 * data_len as u128) / self.used_bytes as u128;
+
+        let blob_data_cost = (attributable_unused_data + data_len as u128) * blob_gas_price;
+        let evm_gas_cost = BlobTxParticipant::evm_gas() as u128 * base_fee_per_gas;
+
+        blob_data_cost + evm_gas_cost
     }
 
     pub fn cost_to_participant(
         &self,
         address: &Address,
-        block_base_fee_per_gas: Option<u128>,
-        blob_gas_price: Option<u128>,
+        block_gas: Option<BlockGasSummary>,
     ) -> u128 {
         let mut cost: u128 = 0;
 
         for participant in &self.participants {
             if &participant.address == address {
-                let unused_bytes = BYTES_PER_BLOB.saturating_sub(self.used_bytes);
-                // Max product here is half blob unsued, half used by a single participant. Max
-                // blob size is 2**17, so the max intermediary value is 2**16 * 2**16 = 2**32
-                let attributable_unused_data =
-                    (unused_bytes as u128 * participant.data_len as u128) / self.used_bytes as u128;
-
-                let blob_data_cost = (attributable_unused_data + participant.data_len as u128)
-                    * blob_gas_price.unwrap_or(self.max_fee_per_blob_gas);
-                let evm_gas_cost = participant.evm_gas() as u128
-                    * self.effective_gas_price(block_base_fee_per_gas);
-
-                cost += blob_data_cost + evm_gas_cost;
+                cost += self.cost_to_intent(participant.data_len, block_gas)
             }
         }
 
@@ -59,9 +65,9 @@ impl BlobTxSummary {
 
     fn effective_gas_price(&self, block_base_fee_per_gas: Option<u128>) -> u128 {
         if let Some(block_base_fee_per_gas) = block_base_fee_per_gas {
-            self.max_priority_fee_per_gas + block_base_fee_per_gas
+            self.gas.max_priority_fee_per_gas + block_base_fee_per_gas
         } else {
-            self.max_fee_per_gas
+            self.gas.max_fee_per_gas
         }
     }
 
@@ -101,11 +107,7 @@ impl BlobTxSummary {
             .max_priority_fee_per_gas
             .ok_or_else(|| eyre!("not a type 2 tx, no max_priority_fee_per_gas"))?
             .as_u128();
-        let max_fee_per_blob_gas: U256 = tx
-            .other
-            .get_deserialized("maxFeePerBlobGas")
-            .ok_or_else(|| eyre!("not a type 3 tx, no max_fee_per_blob_gas"))??;
-        let max_fee_per_blob_gas = max_fee_per_blob_gas.as_u128();
+        let max_fee_per_blob_gas = get_max_fee_per_blob_gas(tx)?;
 
         let used_bytes = participants.iter().map(|p| p.data_len).sum::<usize>();
 
@@ -115,9 +117,11 @@ impl BlobTxSummary {
             from: tx.from,
             nonce: tx.nonce.as_u64(),
             used_bytes,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            max_fee_per_blob_gas,
+            gas: GasConfig {
+                max_priority_fee_per_gas,
+                max_fee_per_gas,
+                max_fee_per_blob_gas,
+            },
         }))
     }
 }
@@ -132,7 +136,8 @@ pub struct BlobTxParticipant {
 }
 
 impl BlobTxParticipant {
-    fn evm_gas(&self) -> usize {
+    fn evm_gas() -> usize {
+        // TODO: make generic on different types of attributability
         16 * PARTICIPANT_DATA_SIZE
     }
 
@@ -193,9 +198,11 @@ mod tests {
             from: Address::default(),
             nonce: 0,
             used_bytes: participants.iter().map(|(_, data_len)| data_len).sum(),
-            max_priority_fee_per_gas: 1,
-            max_fee_per_gas: 1,
-            max_fee_per_blob_gas: 1,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 1,
+                max_fee_per_gas: 1,
+                max_fee_per_blob_gas: 1,
+            },
         }
     }
 
@@ -205,11 +212,7 @@ mod tests {
 
     fn test_cost_to_participant(address: u8, participants: &[(u8, usize)], expected_cost: usize) {
         assert_eq!(
-            generate_blob_tx_summary(&participants).cost_to_participant(
-                &gen_addr(address),
-                None,
-                None
-            ),
+            generate_blob_tx_summary(&participants).cost_to_participant(&gen_addr(address), None,),
             expected_cost as u128
         );
     }
@@ -293,9 +296,11 @@ mod tests {
             from: target_address,
             nonce,
             used_bytes,
-            max_fee_per_gas: 1,
-            max_priority_fee_per_gas: 2,
-            max_fee_per_blob_gas: 3,
+            gas: GasConfig {
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 2,
+                max_fee_per_blob_gas: 3,
+            },
         };
 
         assert_eq!(blob_tx_summary, expected_blob_tx_summary);

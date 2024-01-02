@@ -4,8 +4,11 @@ use ethers::{
 };
 use eyre::{Context, Result};
 use futures::stream::Stream;
-use std::pin::Pin;
+use std::{pin::Pin, time::Duration};
 use url::Url;
+
+pub type SubscribeBlocksFuture<'a> =
+    Pin<Box<dyn Stream<Item = Result<H256, ProviderError>> + Send + 'a>>;
 
 pub enum EthProvider {
     Http(Provider<Http>),
@@ -37,6 +40,17 @@ impl EthProvider {
         Ok(Self::Ws(Provider::<Ws>::connect(ws_url).await?))
     }
 
+    pub fn set_interval(&mut self, interval: Duration) {
+        match self {
+            EthProvider::Http(provider) => {
+                provider.set_interval(interval);
+            }
+            EthProvider::Ws(provider) => {
+                provider.set_interval(interval);
+            }
+        }
+    }
+
     pub async fn get_chainid(&self) -> Result<U256, ProviderError> {
         match self {
             EthProvider::Http(provider) => provider.get_chainid().await,
@@ -59,6 +73,16 @@ impl EthProvider {
         match self {
             EthProvider::Http(provider) => provider.get_transaction_count(from, block).await,
             EthProvider::Ws(provider) => provider.get_transaction_count(from, block).await,
+        }
+    }
+
+    pub async fn get_transaction(
+        &self,
+        tx_hash: TxHash,
+    ) -> Result<Option<Transaction>, ProviderError> {
+        match self {
+            EthProvider::Http(provider) => provider.get_transaction(tx_hash).await,
+            EthProvider::Ws(provider) => provider.get_transaction(tx_hash).await,
         }
     }
 
@@ -96,10 +120,7 @@ impl EthProvider {
         }
     }
 
-    pub async fn subscribe_blocks<'a>(
-        &'a self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<H256, ProviderError>> + Send + 'a>>, ProviderError>
-    {
+    pub async fn subscribe_blocks(&self) -> Result<SubscribeBlocksFuture<'_>, ProviderError> {
         match self {
             EthProvider::Http(provider) => {
                 let stream = provider.watch_blocks().await?.stream();

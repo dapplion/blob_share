@@ -133,6 +133,15 @@ pub enum GasPreference {
     Value(BlobGasPrice),
 }
 
+impl std::fmt::Debug for GasPreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GasPreference::RelativeToHead(_, factor) => write!(f, "RelativeToHead({})", factor),
+            GasPreference::Value(value) => write!(f, "Value({})", value),
+        }
+    }
+}
+
 const FACTOR_RESOLUTION: u128 = 1000;
 
 impl GasPreference {
@@ -161,6 +170,7 @@ impl GasPreference {
     }
 }
 
+#[derive(Debug)]
 pub enum NoncePreference {
     Timebased,
     Value(u64),

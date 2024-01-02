@@ -47,14 +47,14 @@ mod reth_fork;
 mod routes;
 mod sync;
 mod trusted_setup;
-mod utils;
+pub mod utils;
 
 pub use blob_tx_data::BlobTxSummary;
 pub use client::Client;
 pub use data_intent::{BlobGasPrice, DataIntent};
-pub use gas::BlockGasSummary;
+pub use gas::{get_blob_gasprice, BlockGasSummary, FeeEstimator};
+pub use kzg::compute_blob_tx_hash;
 pub use metrics::{PushMetricsConfig, PushMetricsFormat};
-pub use utils::increase_by_min_percent;
 
 // Use log crate when building application
 #[cfg(not(test))]
@@ -181,7 +181,12 @@ impl App {
     pub async fn build(args: Args) -> Result<Self> {
         let starting_point = StartingPoint::StartingBlock(args.starting_block);
 
-        let provider = EthProvider::new(&args.eth_provider).await?;
+        let mut provider = EthProvider::new(&args.eth_provider).await?;
+
+        if let Some(eth_provider_interval) = args.eth_provider_interval {
+            provider.set_interval(Duration::from_millis(eth_provider_interval));
+        }
+
         let chain_id = provider.get_chainid().await?.as_u64();
 
         // TODO: read as param
@@ -235,11 +240,6 @@ impl App {
         );
         // TODO: handle initial sync here with a nice progress bar
 
-        let mut data_intent_tracker = DataIntentTracker::default();
-        info!("syncing data intent track");
-        data_intent_tracker.sync_with_db(&db_pool).await?;
-        info!("synced data intent track");
-
         let config = AppConfig {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             panic_on_background_task_errors: args.panic_on_background_task_errors,
@@ -269,7 +269,7 @@ impl App {
             provider,
             wallet,
             chain_id,
-            data_intent_tracker,
+            DataIntentTracker::default(),
             sync,
         ));
 
@@ -277,6 +277,18 @@ impl App {
             "connected to eth node at {} chain {}",
             &args.eth_provider, chain_id
         );
+
+        info!("running consistency checks");
+        let finalized_ids = app_data
+            .initial_consistency_check_intents_with_inclusion_finalized()
+            .await?;
+        if !finalized_ids.is_empty() {
+            info!("marked some data intents as finalized {:?}", finalized_ids);
+        }
+
+        info!("syncing data intent tracker");
+        app_data.sync_data_intents().await?;
+        info!("synced data intent tracker");
 
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;

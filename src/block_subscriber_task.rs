@@ -22,6 +22,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     loop {
         tokio::select! {
             block_hash = s.next() => {
+                // block_hash type := Option<Result<H256>>
                 let block_hash = block_hash.ok_or_else(|| eyre!("block stream closed"))??;
 
                 // Run sync routine, may involve long network requests if there's a re-org
@@ -98,13 +99,8 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         block_number, block_hash, outcome
     );
 
-    // Check if any pending transactions need re-pricing
-    let underpriced_txs = app_data.evict_underpriced_pending_txs().await?;
-    if underpriced_txs > 0 {
-        metrics::UNDERPRICED_TXS_EVICTED.inc_by(underpriced_txs as f64);
-        // Potentially prepare new blob transactions with correct pricing
-        app_data.notify.notify_one();
-    }
+    // Always attempt to re-bundle after syncing a block
+    app_data.notify.notify_one();
 
     // Finalize transactions
     if let Some((finalized_txs, new_anchor_block_number)) =

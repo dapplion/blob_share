@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
 
-use alloy_primitives::{keccak256, Address, B256, U256};
+use alloy_primitives::{Address, B256, U256};
 use c_kzg::{BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB};
 use ethers::{
     signers::{LocalWallet, Signer},
     types::{Bytes, H256},
+    utils::keccak256,
 };
 use eyre::{bail, Result};
 use reth_primitives::Signature;
@@ -99,28 +100,10 @@ pub(crate) fn construct_blob_tx(
         odd_y_parity: signature.v - 27 != 0,
     };
 
-    // # Calculating the hash
-    //
-    // The full encoding of the `PooledTransaction` response is:
-    // `tx_type (0x03) || rlp([tx_payload_body, blobs, commitments, proofs])`
-    //
-    // The transaction hash however, is:
-    // `keccak256(tx_type (0x03) || rlp(tx_payload_body))`
-    //
-    // Note that this is `tx_payload_body`, not `[tx_payload_body]`, which would be
-    // `[[chain_id, nonce, max_priority_fee_per_gas, ...]]`, i.e. a list within a list.
-    //
-    // Because the pooled transaction encoding is different than the hash encoding for
-    // EIP-4844 transactions, we do not use the original buffer to calculate the hash.
-    //
-    // Instead, we use `encode_with_signature`, which RLP encodes the transaction with a
-    // signature for hashing without a header. We then hash the result.
-    let mut tx_rlp_with_sig = Vec::new();
-    tx.encode_with_signature(&signature, &mut tx_rlp_with_sig, false);
-    let tx_hash = keccak256(&tx_rlp_with_sig);
+    let (tx_hash, tx_rlp_with_sig) = compute_blob_tx_hash(&tx, &signature);
 
     let blob_tx = BlobTransaction {
-        hash: tx_hash,
+        hash: tx_hash.into(),
         transaction: tx,
         signature,
         sidecar: BlobTransactionSidecar {
@@ -140,7 +123,7 @@ pub(crate) fn construct_blob_tx(
 
     Ok(BlobTx {
         blob_tx_payload_body: tx_rlp_with_sig.into(),
-        tx_hash: H256(tx_hash.into()),
+        tx_hash: H256(tx_hash),
         blob_tx_networking: tx_rlp_networking.into(),
         tx_summary: BlobTxSummary {
             participants,
@@ -148,11 +131,31 @@ pub(crate) fn construct_blob_tx(
             from: wallet.address(),
             nonce: tx_params.nonce,
             used_bytes,
-            max_priority_fee_per_gas: gas_config.max_priority_fee_per_gas,
-            max_fee_per_gas: gas_config.max_fee_per_gas,
-            max_fee_per_blob_gas: gas_config.max_fee_per_blob_gas,
+            gas: *gas_config,
         },
     })
+}
+
+// # Calculating the hash
+//
+// The full encoding of the `PooledTransaction` response is:
+// `tx_type (0x03) || rlp([tx_payload_body, blobs, commitments, proofs])`
+//
+// The transaction hash however, is:
+// `keccak256(tx_type (0x03) || rlp(tx_payload_body))`
+//
+// Note that this is `tx_payload_body`, not `[tx_payload_body]`, which would be
+// `[[chain_id, nonce, max_priority_fee_per_gas, ...]]`, i.e. a list within a list.
+//
+// Because the pooled transaction encoding is different than the hash encoding for
+// EIP-4844 transactions, we do not use the original buffer to calculate the hash.
+//
+// Instead, we use `encode_with_signature`, which RLP encodes the transaction with a
+// signature for hashing without a header. We then hash the result.
+pub fn compute_blob_tx_hash(tx: &TxEip4844, signature: &Signature) -> ([u8; 32], Vec<u8>) {
+    let mut tx_rlp_with_sig = Vec::new();
+    tx.encode_with_signature(signature, &mut tx_rlp_with_sig, false);
+    (keccak256(&tx_rlp_with_sig), tx_rlp_with_sig)
 }
 
 // Chunk data in 31 bytes to ensure each field element is < BLS_MODULUS
@@ -255,18 +258,7 @@ mod tests {
         );
 
         // Assert gas
-        assert_eq!(
-            blob_tx.tx_summary.max_fee_per_gas,
-            gas_config.max_fee_per_gas
-        );
-        assert_eq!(
-            blob_tx.tx_summary.max_fee_per_blob_gas,
-            gas_config.max_fee_per_blob_gas
-        );
-        assert_eq!(
-            blob_tx.tx_summary.max_priority_fee_per_gas,
-            gas_config.max_priority_fee_per_gas
-        );
+        assert_eq!(blob_tx.tx_summary.gas, gas_config);
 
         // Assert participants
         assert_eq!(blob_tx.tx_summary.participants, participants);
