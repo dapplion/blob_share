@@ -287,6 +287,14 @@ impl App {
             &args.eth_provider, chain_id
         );
 
+        info!("running consistency checks");
+        let finalized_ids = app_data
+            .initial_consistency_check_intents_with_inclusion_finalized()
+            .await?;
+        if !finalized_ids.is_empty() {
+            info!("marked some data intents as finalized {:?}", finalized_ids);
+        }
+
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
         let listener_port = listener.local_addr().unwrap().port();

@@ -131,9 +131,7 @@ pub(crate) fn construct_blob_tx(
             from: wallet.address(),
             nonce: tx_params.nonce,
             used_bytes,
-            max_priority_fee_per_gas: gas_config.max_priority_fee_per_gas,
-            max_fee_per_gas: gas_config.max_fee_per_gas,
-            max_fee_per_blob_gas: gas_config.max_fee_per_blob_gas,
+            gas: *gas_config,
         },
     })
 }

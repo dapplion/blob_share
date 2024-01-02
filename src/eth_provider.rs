@@ -76,6 +76,16 @@ impl EthProvider {
         }
     }
 
+    pub async fn get_transaction(
+        &self,
+        tx_hash: TxHash,
+    ) -> Result<Option<Transaction>, ProviderError> {
+        match self {
+            EthProvider::Http(provider) => provider.get_transaction(tx_hash).await,
+            EthProvider::Ws(provider) => provider.get_transaction(tx_hash).await,
+        }
+    }
+
     pub async fn get_block<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,

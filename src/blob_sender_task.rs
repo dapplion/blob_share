@@ -11,6 +11,7 @@ use crate::{
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
     packing::{pack_items, Item},
+    sync::NonceStatus,
     utils::address_from_vec,
     warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
@@ -69,7 +70,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let pending_data_intents = app_data.get_all_pending().await;
+        let pending_data_intents = app_data.get_all_intents_available_for_packing().await;
 
         let items: Vec<Item> = pending_data_intents
             .iter()
@@ -119,7 +120,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let (max_fee_per_gas, max_priority_fee_per_gas) =
         app_data.provider.estimate_eip1559_fees().await?;
 
-    let gas_config = GasConfig {
+    let mut gas_config = GasConfig {
         max_fee_per_gas: max_fee_per_gas.as_u128(),
         max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
         max_fee_per_blob_gas,
@@ -129,20 +130,20 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let sender_address = app_data.sender_wallet.address();
 
     // Make getting the nonce reliable + heing able to send multiple txs at once
-    let nonce = if let Some(nonce) = app_data
-        .reserve_next_available_nonce(sender_address)
-        .await?
-    {
-        nonce
-    } else {
-        return Ok(SendResult::NoNonceAvailable);
+    let nonce = match app_data.get_next_available_nonce(sender_address).await? {
+        NonceStatus::NotAvailable => return Ok(SendResult::NoNonceAvailable),
+        NonceStatus::Available(nonce) => nonce,
+        NonceStatus::Repriced(nonce, prev_tx_gas) => {
+            gas_config.reprice_to_at_least(prev_tx_gas);
+            nonce
+        }
     };
 
     let blob_tx =
         match construct_and_send_tx(app_data.clone(), nonce, &gas_config, data_intents).await {
             Ok(blob_tx) => blob_tx,
             Err(e) => {
-                app_data.unreserve_nonce(sender_address, nonce).await;
+                // TODO: consider persisting the existance of this transaction before sending it out
                 return Err(e);
             }
         };

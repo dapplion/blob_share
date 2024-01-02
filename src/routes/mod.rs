@@ -56,7 +56,7 @@ pub(crate) async fn get_sync(
 pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let items: Vec<DataIntentSummary> = data.get_all_pending().await;
+    let items: Vec<DataIntentSummary> = data.get_all_intents_available_for_packing().await;
     Ok(HttpResponse::Ok().json(items))
 }
 
@@ -137,7 +137,7 @@ impl DataIntentStatus {
     pub fn is_in_tx(&self) -> Option<TxHash> {
         match self {
             DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
-            DataIntentStatus::InPendingTx { tx_hash } => Some(*tx_hash),
+            DataIntentStatus::InPendingTx { tx_hash, .. } => Some(*tx_hash),
             DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
         }
     }

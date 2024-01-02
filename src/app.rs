@@ -1,18 +1,20 @@
 use ethers::{signers::LocalWallet, types::Address};
-use eyre::{bail, Context, Result};
+use eyre::{bail, Result};
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
 use crate::{
     client::{DataIntentDbRowFull, DataIntentId, DataIntentStatus, DataIntentSummary},
     data_intent_tracker::{
-        fetch_data_intent_db_full, fetch_data_intent_db_summary, fetch_many_data_intent_db_full,
-        store_data_intent, update_inclusion_tx_hashes, DataIntentTracker,
+        fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
+        fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_many_data_intent_db_full,
+        mark_data_intents_as_inclusion_finalized, store_data_intent, update_inclusion_tx_hashes,
+        DataIntentTracker,
     },
     eth_provider::EthProvider,
     routes::SyncStatusBlock,
-    sync::{BlockSync, BlockWithTxs, SyncBlockError, SyncBlockOutcome, TxInclusion},
-    utils::{address_to_hex_lowercase, txhash_from_vec},
+    sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
+    utils::address_to_hex_lowercase,
     AppConfig, BlobTxSummary, DataIntent,
 };
 
@@ -100,33 +102,56 @@ impl AppData {
         Ok(id)
     }
 
-    pub async fn evict_underpriced_pending_txs(&self) -> Result<usize> {
-        let underpriced_txs = { self.sync.write().await.evict_underpriced_pending_txs() };
-
-        if !underpriced_txs.is_empty() {
-            let mut data_intent_tracker = self.data_intent_tracker.write().await;
-            for tx in &underpriced_txs {
-                // TODO: should handle each individual error or abort iteration?
-                data_intent_tracker.revert_item_to_pending(tx.tx_hash)?;
-            }
-        }
-
-        Ok(underpriced_txs.len())
-    }
-
     pub async fn maybe_advance_anchor_block(&self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
-        if let Some((finalized_txs, new_anchor_block_number)) =
+        if let Some((finalized_included_txs, finalized_excluded_txs, new_anchor_block_number)) =
             self.sync.write().await.maybe_advance_anchor_block()?
         {
             let mut data_intent_tracker = self.data_intent_tracker.write().await;
-            for tx in &finalized_txs {
+            for tx in &finalized_included_txs {
                 data_intent_tracker.finalize_tx(tx.tx_hash);
             }
 
-            Ok(Some((finalized_txs, new_anchor_block_number)))
+            // TODO: Mark intents as finalzed
+
+            // Forget about excluded transactions
+            for _excluded_tx in finalized_excluded_txs {
+                // TODO: Drop inclusions for excluded transactions
+                // data_intent_tracker.drop_excluded_tx(excluded_tx.tx_hash);
+            }
+
+            Ok(Some((finalized_included_txs, new_anchor_block_number)))
         } else {
             Ok(None)
         }
+    }
+
+    /// Mark data intents included in finalized blocks as such, to prevent re-fetching them during
+    /// the packing phase.
+    pub async fn initial_consistency_check_intents_with_inclusion_finalized(
+        &self,
+    ) -> Result<Vec<DataIntentId>> {
+        let anchor_block_number = { self.sync.read().await.get_anchor().number };
+        let intents = fetch_all_intents_with_inclusion_not_finalized(&self.db_pool).await?;
+
+        let mut ids_with_inclusion_finalized = vec![];
+
+        for (id, tx_hash) in intents {
+            // TODO: cache fetch of the same transaction
+            if let Some(tx) = self.provider.get_transaction(tx_hash).await? {
+                if let Some(inclusion_block_number) = tx.block_number {
+                    if inclusion_block_number.as_u64() <= anchor_block_number {
+                        // intent was included in a block equal or ancestor of finalized anchor
+                        // block
+                        ids_with_inclusion_finalized.push(id);
+                    }
+                }
+            }
+        }
+
+        mark_data_intents_as_inclusion_finalized(&self.db_pool, &ids_with_inclusion_finalized)
+            .await?;
+
+        Ok(ids_with_inclusion_finalized)
     }
 
     pub async fn blob_gas_price_next_head_block(&self) -> u128 {
@@ -137,6 +162,7 @@ impl AppData {
             .blob_gas_price_next_block()
     }
 
+    /// Register valid accepted blob transaction by the EL node
     pub async fn register_sent_blob_tx(
         &self,
         data_intent_ids: &[DataIntentId],
@@ -144,11 +170,7 @@ impl AppData {
     ) -> Result<()> {
         update_inclusion_tx_hashes(&self.db_pool, data_intent_ids, blob_tx.tx_hash).await?;
 
-        self.sync
-            .write()
-            .await
-            .register_pending_blob_tx(blob_tx)
-            .wrap_err("consistency error with blob_tx")?;
+        self.sync.write().await.register_sent_blob_tx(blob_tx);
 
         Ok(())
     }
@@ -168,22 +190,12 @@ impl AppData {
         BlockSync::sync_next_head(&self.sync, &self.provider, block).await
     }
 
-    pub async fn reserve_next_available_nonce(
-        &self,
-        sender_address: Address,
-    ) -> Result<Option<u64>> {
+    pub async fn get_next_available_nonce(&self, sender_address: Address) -> Result<NonceStatus> {
         self.sync
-            .write()
+            .read()
             .await
-            .reserve_next_available_nonce(&self.provider, sender_address)
+            .get_next_available_nonce(&self.provider, sender_address)
             .await
-    }
-
-    pub async fn unreserve_nonce(&self, sender_address: Address, nonce: u64) {
-        self.sync
-            .write()
-            .await
-            .unreserve_nonce(sender_address, nonce);
     }
 
     #[tracing::instrument(skip(self))]
@@ -191,50 +203,51 @@ impl AppData {
         self.data_intent_tracker
             .read()
             .await
-            .pending_intents_total_data_len(address)
+            .non_included_intents_total_data_len(address)
             + self.sync.read().await.pending_txs_data_len(address)
     }
 
     #[tracing::instrument(skip(self))]
     pub async fn balance_of_user(&self, from: &Address) -> i128 {
+        // sync tracks the balance of anything that has been included in transaction. Compliment
+        // that balance with never included data intents from the data intent tracker
         self.sync.read().await.balance_with_pending(from)
             - self
                 .data_intent_tracker
                 .read()
                 .await
-                .pending_intents_total_cost(from) as i128
+                .non_included_intents_total_cost(from) as i128
     }
 
     #[tracing::instrument(skip(self))]
     pub async fn status_by_id(&self, id: &DataIntentId) -> Result<DataIntentStatus> {
-        Ok(
-            match fetch_data_intent_db_summary(&self.db_pool, id).await? {
-                None => DataIntentStatus::Unknown,
-                Some(data_intent) => {
-                    match data_intent.inclusion_tx_hash {
-                        None => DataIntentStatus::Pending,
-                        Some(tx_hash) => {
-                            let tx_hash = txhash_from_vec(tx_hash)?;
-                            match self.sync.read().await.get_tx_status(tx_hash) {
-                                Some(TxInclusion::Pending) => {
-                                    DataIntentStatus::InPendingTx { tx_hash }
-                                }
-                                Some(TxInclusion::Included(block_hash)) => {
-                                    DataIntentStatus::InConfirmedTx {
-                                        tx_hash,
-                                        block_hash,
-                                    }
-                                }
-                                None => {
-                                    // Should never happen, review this case
-                                    DataIntentStatus::Unknown
-                                }
-                            }
-                        }
-                    }
+        let status = if let Some((tx_hash, _sender_address, _nonce)) =
+            fetch_data_intent_inclusion(&self.db_pool, id).await?
+        {
+            // Check status of transaction against EL.
+            // `eth_getTransactionByHash` returns the transaction both if included or if in the pool
+            // Ref: https://www.quicknode.com/docs/ethereum/eth_getTransactionByHash
+            if let Some(tx) = self.provider.get_transaction(tx_hash).await? {
+                match tx.block_hash {
+                    None => DataIntentStatus::InPendingTx { tx_hash },
+                    Some(block_hash) => DataIntentStatus::InConfirmedTx {
+                        tx_hash,
+                        block_hash,
+                    },
                 }
-            },
-        )
+            } else {
+                DataIntentStatus::InPendingTx { tx_hash }
+            }
+        } else {
+            // Check if intent is known
+            // TODO: Should check only in-memory?
+            if fetch_data_intent_db_is_known(&self.db_pool, id).await? {
+                DataIntentStatus::Pending
+            } else {
+                DataIntentStatus::Unknown
+            }
+        };
+        Ok(status)
     }
 
     pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentDbRowFull> {
@@ -248,8 +261,40 @@ impl AppData {
         fetch_many_data_intent_db_full(&self.db_pool, ids).await
     }
 
-    pub async fn get_all_pending(&self) -> Vec<DataIntentSummary> {
-        self.data_intent_tracker.read().await.get_all_pending()
+    pub async fn get_all_intents_available_for_packing(&self) -> Vec<DataIntentSummary> {
+        let sync = self.sync.read().await;
+
+        self.data_intent_tracker
+            .read()
+            .await
+            .get_all_intents()
+            .into_iter()
+            .filter_map(|(intent, tx_hash)| {
+                let should_include = if let Some(tx_hash) = tx_hash {
+                    match sync.get_tx_status(tx_hash) {
+                        // This should never happen, the intent is marked as part of a bundle but
+                        // the sync does not know about it. To be safe, do not include in bundles
+                        None => false,
+                        // If transaction is pending, only re-bundle if it's underpriced
+                        Some(TxInclusion::Pending { tx_gas }) => {
+                            tx_gas.is_underpriced(sync.get_head_gas())
+                        }
+                        // Do not re-bundle intents part of a block
+                        Some(TxInclusion::Included { .. }) => false,
+                    }
+                } else {
+                    // Always include intents not part of any transaction
+                    true
+                };
+
+                if should_include {
+                    // TODO: prevent having to clone here
+                    Some(intent.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub async fn get_sync(&self) -> (SyncStatusBlock, SyncStatusBlock) {

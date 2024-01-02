@@ -1,7 +1,4 @@
-use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
-    fmt, mem,
-};
+use std::{collections::HashMap, fmt, mem};
 
 use async_trait::async_trait;
 use ethers::types::{Address, Block, Transaction, TxHash, H256};
@@ -10,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, info, metrics,
+    blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, gas::GasConfig, info, metrics,
     routes::SyncStatusBlock, BlockGasSummary,
 };
 
@@ -39,11 +36,13 @@ type Nonce = u64;
 ///   3.1. Tx included in new head chain => Ok
 ///   3.2. Tx dropped => jump to 2.2.
 ///
-/// # Tx cancellation
+/// # Tx replacement
 ///
 /// If a transaction is underpriced, there are multiple intents tied to that transaction that
 /// should be packed into a new transaction. When an underpriced transaction is replaced with
-/// another transaction of higher gas price, when can the previous transaction be forgotten?
+/// another transaction of higher gas price, there's some window where a single intent is included
+/// in multiple transactions. Re-priced transactions can be safely forgotten when another
+/// transaction with the same nonce is finalized.
 /// How to handle the intermediary state of the intents still participant in an old under-priced
 /// transaction
 ///
@@ -55,12 +54,19 @@ type Nonce = u64;
 /// 5b. Previous transaction gets included
 /// 5c. Re-org an included transaction changes
 ///
+/// Re-priced transaction with nonce N can be safely forgotten when another transaction with
+/// nonce N is finalized.
+///
 pub struct BlockSync {
     anchor_block: AnchorBlock,
     unfinalized_head_chain: Vec<BlockSummary>,
-    reserved_nonces: HashSet<Nonce>,
+    /// Tracks transactions not included in any block of the unfinalized head chain. Transaction
+    /// can become under-priced, which is a temporary state.
     pending_transactions: HashMap<Nonce, BlobTxSummary>,
+    repriced_transactions: HashMap<Nonce, Vec<BlobTxSummary>>,
     config: BlockSyncConfig,
+
+    cache_transactions_by_hash: HashMap<TxHash, TxInclusion>,
 }
 
 pub struct BlockSyncConfig {
@@ -77,8 +83,8 @@ pub trait BlockProvider {
 }
 
 pub enum TxInclusion {
-    Pending,
-    Included(H256),
+    Pending { tx_gas: GasConfig },
+    Included { block_hash: H256 },
 }
 
 impl BlockSync {
@@ -86,9 +92,10 @@ impl BlockSync {
         Self {
             anchor_block,
             unfinalized_head_chain: <_>::default(),
-            reserved_nonces: <_>::default(),
             pending_transactions: <_>::default(),
+            repriced_transactions: <_>::default(),
             config,
+            cache_transactions_by_hash: <_>::default(),
         }
     }
 
@@ -126,39 +133,36 @@ impl BlockSync {
     /// WARNING: requires a write lock while performing a network request. This is necessary to
     /// guarantee consistency that the fetched transaction count is consistent with the local view
     /// of the chain inside BlockSync.
-    pub async fn reserve_next_available_nonce<T: BlockProvider>(
-        &mut self,
+    pub async fn get_next_available_nonce<T: BlockProvider>(
+        &self,
         provider: &T,
         address: Address,
-    ) -> Result<Option<u64>> {
+    ) -> Result<NonceStatus> {
+        let head_gas = self.get_head_gas();
+        let head_hash = self.get_head().hash;
+
         // TODO: Support multiple sender addresses
         assert_eq!(address, self.config.target_address);
 
-        let transaction_count_at_head = provider
-            .get_transaction_count(address, self.get_head().hash)
-            .await?;
+        let transaction_count_at_head = provider.get_transaction_count(address, head_hash).await?;
 
         for next_nonce in transaction_count_at_head
             ..transaction_count_at_head + self.config.max_pending_transactions
         {
-            if !self.pending_transactions.contains_key(&next_nonce)
-                // .insert returns true if the value was inserted (!contains)
-                && self.reserved_nonces.insert(next_nonce)
-            {
-                return Ok(Some(next_nonce));
+            match self.pending_transactions.get(&next_nonce) {
+                None => return Ok(NonceStatus::Available(next_nonce)),
+                Some(tx) => {
+                    if tx.is_underpriced(head_gas) {
+                        return Ok(NonceStatus::Repriced(next_nonce, tx.into()));
+                    } else {
+                        continue;
+                    }
+                }
             }
         }
 
         // All nonces are taken
-        Ok(None)
-    }
-
-    /// Rollback a reserve from reserve_next_available_nonce() in case of error
-    pub fn unreserve_nonce(&mut self, address: Address, nonce: u64) {
-        // TODO: Support multiple sender addresses
-        assert_eq!(address, self.config.target_address);
-
-        self.reserved_nonces.remove(&nonce);
+        Ok(NonceStatus::NotAvailable)
     }
 
     /// Returns the unfinalized balance delta for `address`, including both top-ups and included
@@ -173,7 +177,7 @@ impl BlockSync {
         let cost_of_pending_txs = self
             .pending_transactions
             .values()
-            .map(|tx| tx.cost_to_participant(address, None, None))
+            .map(|tx| tx.cost_to_participant(address, None))
             .sum::<u128>();
 
         let finalized_balance = self
@@ -198,72 +202,43 @@ impl BlockSync {
             .sum()
     }
 
-    pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<TxInclusion> {
-        for block in self.unfinalized_head_chain.iter() {
-            for tx in &block.blob_txs {
-                if tx_hash == tx.tx_hash {
-                    return Some(TxInclusion::Included(block.hash));
-                }
-            }
-        }
-
-        for tx in self.pending_transactions.values() {
-            if tx_hash == tx.tx_hash {
-                return Some(TxInclusion::Pending);
-            }
-        }
-
-        None
+    pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<&TxInclusion> {
+        self.cache_transactions_by_hash.get(&tx_hash)
     }
 
-    /// Register pending transaction with sync
-    pub fn register_pending_blob_tx(&mut self, tx: BlobTxSummary) -> Result<()> {
+    /// Register valid accepted blob transaction by the EL node.
+    ///
+    /// Allows to replace transactions with the same nonce. Only valid accepted transactions should
+    /// be added via this fn, which assumes that the re-pricing is correct.
+    ///
+    /// TODO: Note there's potential nonce deadlock,
+    /// where the blob sharing sends a viable transaction at gas price P, the network
+    /// base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
+    /// that case the sender account is stuck because it can't send a profitable re-price
+    /// transaction. In that case it should send a self transfer to unlock the nonce.
+    pub fn register_sent_blob_tx(&mut self, tx: BlobTxSummary) {
         // TODO: Handle multiple senders
         assert_eq!(tx.from, self.config.target_address);
 
-        // TODO: Allow to replace transactions with same nonce. Note there's potential nonce
-        // deadlocks where the blob sharing sends a viable transaction at gas price P, the network
-        // base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
-        // that case the sender account is stuck because it can't send a profitable re-price
-        // transaction. In that case it should send a self transfer to unlock the nonce.
-
-        // Prune reserved nonce
-        self.reserved_nonces.remove(&tx.nonce);
-
-        match self.pending_transactions.entry(tx.nonce) {
-            Entry::Vacant(e) => {
-                e.insert(tx);
-                Ok(())
-            }
-            Entry::Occupied(_) => bail!("transaction already registered for nonce {}", tx.nonce),
+        if let Some(tx) = self.pending_transactions.remove(&tx.nonce) {
+            self.repriced_transactions
+                .entry(tx.nonce)
+                .or_insert_with(|| vec![])
+                .push(tx);
         }
-    }
 
-    /// Removes and returns underpriced pending transactions against current head
-    pub fn evict_underpriced_pending_txs(&mut self) -> Vec<BlobTxSummary> {
-        let head_gas = self.get_head_gas();
+        // Update cache
+        self.cache_transactions_by_hash
+            .insert(tx.tx_hash, TxInclusion::Pending { tx_gas: tx.gas });
 
-        let keys_to_remove = self
-            .pending_transactions
-            .iter()
-            .filter_map(|(k, tx)| {
-                if tx.is_underpriced(head_gas) {
-                    Some(*k)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        keys_to_remove
-            .iter()
-            .map(|k| self.pending_transactions.remove(k).expect("key must exist"))
-            .collect()
+        self.pending_transactions.insert(tx.nonce, tx);
     }
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
     #[tracing::instrument(skip(self), fields(new_anchor_index))]
-    pub fn maybe_advance_anchor_block(&mut self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
+    pub fn maybe_advance_anchor_block(
+        &mut self,
+    ) -> Result<Option<(Vec<BlobTxSummary>, Vec<BlobTxSummary>, u64)>> {
         let head_number = self.get_head().number;
         let new_anchor_index =
             if self.anchor_block_number() + self.config.finalize_depth < head_number {
@@ -286,8 +261,20 @@ impl BlockSync {
         let finalized_chain =
             mem::replace(&mut self.unfinalized_head_chain, unfinalized_head_chain);
 
+        let mut repriced_transactions = vec![];
+
         for block in &finalized_chain {
             self.anchor_block.apply_finalized_block(block);
+
+            for tx in &block.blob_txs {
+                if let Some(txs) = self.repriced_transactions.remove(&tx.nonce) {
+                    for repriced_tx in txs {
+                        self.cache_transactions_by_hash.remove(&repriced_tx.tx_hash);
+                        repriced_transactions.push(repriced_tx);
+                    }
+                }
+                self.cache_transactions_by_hash.remove(&tx.tx_hash);
+            }
         }
 
         Ok(Some((
@@ -295,6 +282,7 @@ impl BlockSync {
                 .into_iter()
                 .flat_map(|b| b.blob_txs.into_iter())
                 .collect(),
+            repriced_transactions,
             self.anchor_block.number,
         )))
     }
@@ -423,6 +411,8 @@ impl BlockSync {
             // TODO: do accounting on the balances cache
             for tx in &reorged_block.blob_txs {
                 self.pending_transactions.insert(tx.nonce, tx.clone());
+                self.cache_transactions_by_hash
+                    .insert(tx.tx_hash, TxInclusion::Pending { tx_gas: tx.gas });
             }
         }
 
@@ -433,6 +423,12 @@ impl BlockSync {
         // Drop pending transactions
         for tx in &block.blob_txs {
             self.pending_transactions.remove(&tx.nonce);
+            self.cache_transactions_by_hash.insert(
+                tx.tx_hash,
+                TxInclusion::Included {
+                    block_hash: block.hash,
+                },
+            );
             info!(
                 "pending blob tx included from {} nonce {} tx_hash {}",
                 tx.from, tx.nonce, tx.tx_hash
@@ -440,6 +436,13 @@ impl BlockSync {
         }
         self.unfinalized_head_chain.push(block);
     }
+}
+
+#[derive(Debug)]
+pub enum NonceStatus {
+    Available(u64),
+    Repriced(u64, GasConfig),
+    NotAvailable,
 }
 
 #[derive(Debug)]
@@ -541,11 +544,11 @@ impl AnchorBlock {
 #[derive(Clone, Debug)]
 struct BlockSummary {
     number: u64,
-    hash: H256,
+    pub hash: H256,
     parent_hash: H256,
     topup_txs: Vec<TopupTx>,
     blob_txs: Vec<BlobTxSummary>,
-    gas: BlockGasSummary,
+    pub gas: BlockGasSummary,
 }
 
 #[derive(Clone, Debug)]
@@ -603,11 +606,7 @@ impl BlockSummary {
         }
 
         for blob_tx in &self.blob_txs {
-            balance_delta -= blob_tx.cost_to_participant(
-                address,
-                Some(self.gas.base_fee_per_gas),
-                Some(self.gas.blob_gas_price()),
-            ) as i128
+            balance_delta -= blob_tx.cost_to_participant(address, Some(self.gas)) as i128
         }
 
         balance_delta

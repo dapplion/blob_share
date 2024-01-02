@@ -82,7 +82,7 @@ pub(crate) fn address_from_vec(v: Vec<u8>) -> Result<Address> {
 }
 
 /// Convert `Vec<u8>` into ethers TxHash H256 type. Errors if v.len() != 32.
-pub(crate) fn txhash_from_vec(v: Vec<u8>) -> Result<TxHash> {
+pub(crate) fn txhash_from_vec(v: &[u8]) -> Result<TxHash> {
     let fixed_vec: [u8; 32] = v
         .try_into()
         .map_err(|_| eyre!("txhash as vec not 32 bytes in len"))?;

@@ -14,7 +14,7 @@
 //!
 //! Data intents are stored in the data_intents table. A blob share instance may pack a number of
 //! data intent items not yet included into a blob transaction. If the blob transaction is latter
-//! dropped due to underpriced gas, those data intents may be reverted to pending.
+//! replaced due to underpriced gas, those data intents may be re-included into a new transaction.
 //!
 //! Underpriced data intents will remain in the internal blob share pool consuming user balance. A
 //! user can cancel data intents by ID at any point.
@@ -31,7 +31,7 @@
 
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, TxHash};
-use eyre::{bail, eyre, Context, Result};
+use eyre::{bail, Context, Result};
 use futures::StreamExt;
 use num_traits::cast::FromPrimitive;
 use serde::{Deserialize, Serialize};
@@ -51,14 +51,11 @@ use crate::{
 pub struct DataIntentTracker {
     // DateTime default = NaiveDateTime default = timestamp(0)
     last_sync_table_data_intents: DateTime<Utc>,
-    pending_intents: HashMap<DataIntentId, DataIntentItem>,
+    pending_intents: HashMap<DataIntentId, DataIntentSummary>,
     included_intents: HashMap<TxHash, Vec<DataIntentId>>,
-}
-
-#[derive(Clone)]
-pub enum DataIntentItem {
-    Pending(DataIntentSummary),
-    Included(DataIntentSummary, TxHash),
+    // An intent may be temporarily included in multiple transactions. The goal is to have a single
+    // canonical inclusion, but tx repricing can result in > 1 inclusion.
+    cache_intent_inclusions: HashMap<DataIntentId, Vec<TxHash>>,
 }
 
 // TODO: Need to prune all items once included for long enough
@@ -74,7 +71,7 @@ impl DataIntentTracker {
 
         let mut stream = sqlx::query(
             r#"
-SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
 FROM data_intents
 WHERE updated_at BETWEEN ? AND ?
 ORDER BY updated_at ASC
@@ -97,68 +94,47 @@ ORDER BY updated_at ASC
         Ok(())
     }
 
-    /// Returns the total sum of pending itents cost from `from`.
-    pub fn pending_intents_total_cost(&self, from: &Address) -> u128 {
+    pub fn get_all_intents(&self) -> Vec<(&DataIntentSummary, Option<TxHash>)> {
         self.pending_intents
             .values()
-            .map(|item| match item {
-                DataIntentItem::Pending(data_intent) => {
-                    if &data_intent.from == from {
-                        data_intent_max_cost(data_intent.data_len, data_intent.max_blob_gas_price)
-                    } else {
-                        0
-                    }
+            .map(|item| {
+                (
+                    item,
+                    self.cache_intent_inclusions
+                        .get(&item.id)
+                        .and_then(|tx_hashes| tx_hashes.last())
+                        .copied(),
+                )
+            })
+            .collect()
+    }
+
+    /// Returns the total sum of pending itents cost from `from`.
+    pub fn non_included_intents_total_cost(&self, from: &Address) -> u128 {
+        self.pending_intents
+            .values()
+            .map(|intent| {
+                if &intent.from == from && self.cache_intent_inclusions.get(&intent.id).is_none() {
+                    intent.max_cost()
+                } else {
+                    0
                 }
-                DataIntentItem::Included(_, _) => 0,
             })
             .sum()
     }
 
     /// Returns the total sum of pending itents total length.
-    pub fn pending_intents_total_data_len(&self, from: &Address) -> usize {
+    pub fn non_included_intents_total_data_len(&self, from: &Address) -> usize {
         self.pending_intents
             .values()
-            .map(|item| match item {
-                DataIntentItem::Pending(data_intent) => {
-                    if &data_intent.from == from {
-                        data_intent.data_len
-                    } else {
-                        0
-                    }
+            .map(|intent| {
+                if &intent.from == from && self.cache_intent_inclusions.get(&intent.id).is_none() {
+                    intent.data_len
+                } else {
+                    0
                 }
-                DataIntentItem::Included(_, _) => 0,
             })
             .sum()
-    }
-
-    pub fn get_all_pending(&self) -> Vec<DataIntentSummary> {
-        self.pending_intents
-            .values()
-            // TODO: Do not clone here, the sum of all DataIntents can be big
-            .filter_map(|item| match item {
-                DataIntentItem::Pending(data_intent) => Some(data_intent.clone()),
-                DataIntentItem::Included(_, _) => None,
-            })
-            .collect()
-    }
-
-    pub fn revert_item_to_pending(&mut self, tx_hash: TxHash) -> Result<()> {
-        let ids = self
-            .included_intents
-            .remove(&tx_hash)
-            .ok_or_else(|| eyre!("items not known for tx_hash {}", tx_hash))?;
-
-        for id in ids {
-            match self.pending_intents.remove(&id) {
-                None => bail!("pending intent removed while moving into pending {}", id),
-                // TODO: Should check that the transaction is consistent?
-                Some(DataIntentItem::Included(data_intent, _))
-                | Some(DataIntentItem::Pending(data_intent)) => self
-                    .pending_intents
-                    .insert(id, DataIntentItem::Pending(data_intent)),
-            };
-        }
-        Ok(())
     }
 
     /// Drops all intents associated with transaction. Does not error if items not found
@@ -197,7 +173,6 @@ pub struct DataIntentDbRowSummary {
     pub data_hash: Vec<u8>,                   // BINARY(32)
     pub max_blob_gas_price: u64,              // BIGINT
     pub data_hash_signature: Option<Vec<u8>>, // BINARY(65), Optional
-    pub inclusion_tx_hash: Option<Vec<u8>>,   // BINARY(32), Optional
     pub updated_at: DateTime<Utc>,            // TIMESTAMP(3)
 }
 
@@ -243,21 +218,44 @@ WHERE id in
         .collect::<Result<Vec<_>>>()
 }
 
-pub(crate) async fn fetch_data_intent_db_summary(
-    db_pool: &MySqlPool,
-    id: &Uuid,
-) -> Result<Option<DataIntentDbRowSummary>> {
-    let data_intent = sqlx::query_as::<_, DataIntentDbRowSummary>(
+pub(crate) async fn fetch_data_intent_db_is_known(db_pool: &MySqlPool, id: &Uuid) -> Result<bool> {
+    let row = sqlx::query!(
         r#"
-SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, inclusion_tx_hash, updated_at
+SELECT id 
 FROM data_intents
 WHERE id = ?
-        "#)
-        .bind(id)
-        .fetch_optional(db_pool)
-        .await?;
+        "#,
+        id
+    )
+    .fetch_optional(db_pool)
+    .await?;
 
-    Ok(data_intent)
+    Ok(row.is_some())
+}
+
+pub(crate) async fn fetch_data_intent_inclusion(
+    db_pool: &MySqlPool,
+    id: &Uuid,
+) -> Result<Option<(TxHash, Address, u64)>> {
+    let row = sqlx::query!(
+        r#"
+SELECT id, tx_hash, sender_address, nonce
+FROM intent_inclusions
+WHERE id = ?
+        "#,
+        id
+    )
+    .fetch_optional(db_pool)
+    .await?;
+
+    Ok(match row {
+        Some(row) => Some((
+            txhash_from_vec(&row.tx_hash)?,
+            address_from_vec(row.sender_address)?,
+            row.nonce as u64,
+        )),
+        None => None,
+    })
 }
 
 /// Store data intent to SQL DB
@@ -301,6 +299,52 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
     //        };
 
     Ok(id)
+}
+
+pub(crate) async fn fetch_all_intents_with_inclusion_not_finalized(
+    db_pool: &MySqlPool,
+) -> Result<Vec<(DataIntentId, TxHash)>> {
+    let rows = sqlx::query!(
+        r#"
+SELECT data_intents.id, intent_inclusions.tx_hash
+FROM data_intents
+INNER JOIN intent_inclusions ON data_intents.id = intent_inclusions.id
+WHERE data_intents.inclusion_finalized = FALSE;
+"#
+    )
+    .fetch_all(db_pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Ok((Uuid::from_slice(&row.id)?, txhash_from_vec(&row.tx_hash)?)))
+        .collect::<Result<Vec<_>>>()?)
+}
+
+pub(crate) async fn mark_data_intents_as_inclusion_finalized(
+    db_pool: &MySqlPool,
+    ids: &[Uuid],
+) -> Result<()> {
+    // Bulk fetch all rows
+    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
+        r#"
+UPDATE data_intents
+SET inclusion_finalized = TRUE
+WHERE id IN
+    "#,
+    );
+
+    // TODO: limit the amount of ids to not reach a limit
+    // TODO: try to use different API than `.push_tuples` since you only query by id
+    query_builder
+        .push_tuples(ids.iter(), |mut b, id| {
+            b.push_bind(id);
+        })
+        .build()
+        .fetch_all(db_pool)
+        .await?;
+
+    Ok(())
 }
 
 pub(crate) async fn update_inclusion_tx_hashes(
@@ -372,6 +416,12 @@ pub struct DataIntentSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+impl DataIntentSummary {
+    pub fn max_cost(&self) -> u128 {
+        data_intent_max_cost(self.data_len, self.max_blob_gas_price)
+    }
+}
+
 impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
     type Error = eyre::Report;
 
@@ -383,17 +433,6 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
             data_len: value.data_len.try_into()?,
             max_blob_gas_price: value.max_blob_gas_price,
             updated_at: value.updated_at,
-        })
-    }
-}
-
-impl TryFrom<DataIntentDbRowSummary> for DataIntentItem {
-    type Error = eyre::Report;
-
-    fn try_from(value: DataIntentDbRowSummary) -> std::result::Result<Self, Self::Error> {
-        Ok(match value.inclusion_tx_hash.clone() {
-            None => DataIntentItem::Pending(value.try_into()?),
-            Some(tx_hash) => DataIntentItem::Included(value.try_into()?, txhash_from_vec(tx_hash)?),
         })
     }
 }
