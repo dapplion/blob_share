@@ -123,10 +123,6 @@ pub struct Args {
     #[arg(env, long, default_value_t = 6)]
     pub max_pending_transactions: u64,
 
-    /// Choose strategy to decide eip1559 style fees
-    #[arg(env, long, value_enum, default_value_t = FeeEstimator::Default)]
-    pub fee_estimator: FeeEstimator,
-
     /// Database URL to mysql DB with format `mysql://user:password@localhost/test`
     #[arg(env, long)]
     pub database_url: String,

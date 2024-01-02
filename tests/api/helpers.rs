@@ -190,7 +190,6 @@ impl TestHarness {
             panic_on_background_task_errors: true,
             finalize_depth: FINALIZE_DEPTH,
             max_pending_transactions: 6,
-            fee_estimator: blob_share::FeeEstimator::Default,
             // TODO: De-duplicate of configure properly
             database_url: format!("{database_url_without_db}/{database_name}"),
             metrics: false,
