@@ -22,11 +22,15 @@ use std::{
 use tempfile::{tempdir, TempDir};
 use tokio::time::{sleep, timeout};
 
-use blob_share::{
+use bundler::{
     anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
-    client::{DataIntentId, EthProvider, GasPreference, NoncePreference, PostDataResponse},
     consumer::BlobConsumer,
-    get_blob_gasprice, App, Args, BlockGasSummary, Client, PushMetricsFormat,
+    eth_provider::EthProvider,
+    get_blob_gasprice, App, Args, BlockGasSummary, PushMetricsFormat,
+};
+use bundler_client::{
+    types::{DataIntentId, PostDataResponse},
+    Client, GasPreference, NoncePreference,
 };
 
 use crate::{
@@ -313,7 +317,7 @@ impl TestHarness {
         let gas_preference = if let Some(max_blob_gas) = data_req.max_blob_gas {
             GasPreference::Value(max_blob_gas)
         } else {
-            GasPreference::RelativeToHead(EthProvider::Http(self.eth_provider_http()), 1.0)
+            GasPreference::RelativeToHead(1.0)
         };
 
         let nonce_preference = if let Some(nonce) = data_req.nonce {

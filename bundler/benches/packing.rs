@@ -1,4 +1,4 @@
-use blob_share::packing::{
+use bundler::packing::{
     self, pack_items_brute_force, pack_items_greedy_sorted, pack_items_knapsack,
 };
 use criterion::{criterion_group, criterion_main, Criterion};

@@ -1,5 +1,5 @@
-use blob_share::packing::{pack_items_brute_force, pack_items_greedy_sorted, Item};
-use blob_share::BlobGasPrice;
+use bundler::packing::{pack_items_brute_force, pack_items_greedy_sorted, Item};
+use bundler::BlobGasPrice;
 use eyre::Result;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};

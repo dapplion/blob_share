@@ -29,6 +29,7 @@
 //! the last fetched timestamp.
 //!
 
+use bundler_client::types::{DataIntentFull, DataIntentId, DataIntentSummary};
 use chrono::{DateTime, Utc};
 use ethers::types::{Address, TxHash};
 use eyre::{eyre, Context, Result};
@@ -41,7 +42,6 @@ use std::{cmp, collections::HashMap};
 use uuid::Uuid;
 
 use crate::{
-    data_intent::{data_intent_max_cost, BlobGasPrice, DataIntentId},
     metrics,
     utils::{address_from_vec, option_hex_vec, txhash_from_vec},
     BlobTxSummary, DataIntent,
@@ -196,7 +196,7 @@ pub struct DataIntentDbRowSummary {
 pub(crate) async fn fetch_data_intent_db_full(
     db_pool: &MySqlPool,
     id: &Uuid,
-) -> Result<DataIntentDbRowFull> {
+) -> Result<DataIntentFull> {
     let data_intent = sqlx::query_as::<_, DataIntentDbRowFull>(
         r#"
 SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
@@ -207,7 +207,16 @@ WHERE id = ?
         .fetch_one(db_pool)
         .await?;
 
-    Ok(data_intent)
+    Ok(DataIntentFull {
+        id: data_intent.id,
+        eth_address: data_intent.eth_address,
+        data: data_intent.data,
+        data_len: data_intent.data_len,
+        data_hash: data_intent.data_hash,
+        max_blob_gas_price: data_intent.max_blob_gas_price,
+        data_hash_signature: data_intent.data_hash_signature,
+        updated_at: data_intent.updated_at,
+    })
 }
 
 pub(crate) async fn fetch_many_data_intent_db_full(
@@ -402,23 +411,6 @@ async fn insert_many_intent_tx_inclusions(
     query.execute(db_pool).await?;
 
     Ok(())
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DataIntentSummary {
-    pub id: DataIntentId,
-    pub from: Address,
-    #[serde(with = "hex_vec")]
-    pub data_hash: Vec<u8>,
-    pub data_len: usize,
-    pub max_blob_gas_price: BlobGasPrice,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl DataIntentSummary {
-    pub fn max_cost(&self) -> u128 {
-        data_intent_max_cost(self.data_len, self.max_blob_gas_price)
-    }
 }
 
 impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {

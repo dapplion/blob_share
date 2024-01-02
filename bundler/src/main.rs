@@ -1,4 +1,4 @@
-use blob_share::{App, Args};
+use bundler::{App, Args};
 use clap::Parser;
 use dotenv::dotenv;
 use eyre::Result;

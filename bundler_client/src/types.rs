@@ -17,6 +17,8 @@ use std::{
 };
 use uuid::Uuid;
 
+pub use crate::gas::BlockGasSummary;
+
 pub type DataIntentId = Uuid;
 
 pub type BlobGasPrice = u64;

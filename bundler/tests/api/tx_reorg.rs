@@ -1,4 +1,4 @@
-use blob_share::{utils::get_max_fee_per_blob_gas, MAX_USABLE_BLOB_DATA_LEN};
+use bundler::{utils::get_max_fee_per_blob_gas, MAX_USABLE_BLOB_DATA_LEN};
 use log::info;
 use reth_primitives::revm_primitives::TARGET_BLOB_GAS_PER_BLOCK;
 use std::time::Duration;

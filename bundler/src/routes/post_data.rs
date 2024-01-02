@@ -1,15 +1,11 @@
 use actix_web::{post, web, HttpResponse};
-use ethers::signers::{LocalWallet, Signer};
-use ethers::types::{Address, Signature};
-use eyre::{bail, eyre, Result};
+use bundler_client::types::{DataHash, PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse};
+use eyre::{eyre, Result};
 use log::debug;
-use serde::{Deserialize, Serialize};
-use serde_utils::hex_vec;
 use std::sync::Arc;
 
-use crate::client::DataIntentId;
-use crate::data_intent::{BlobGasPrice, DataHash, DataIntent, DataIntentNoSignature};
-use crate::utils::{deserialize_signature, e400, e500, unix_timestamps_millis};
+use crate::data_intent::{DataIntent, DataIntentNoSignature};
+use crate::utils::{e400, e500};
 use crate::{AppData, MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN};
 
 #[tracing::instrument(skip(body, data), err)]
@@ -64,82 +60,6 @@ pub(crate) async fn post_data(
     data.notify.notify_one();
 
     Ok(HttpResponse::Ok().json(PostDataResponse { id }))
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataResponse {
-    pub id: DataIntentId,
-}
-
-/// TODO: Expose a "login with Ethereum" function an expose the non-signed variant
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataIntentV1 {
-    /// Address sending the data
-    pub from: Address,
-    /// Data to be posted
-    #[serde(with = "hex_vec")]
-    pub data: Vec<u8>,
-    /// Max price user is willing to pay in wei
-    pub max_blob_gas_price: BlobGasPrice,
-}
-
-/// PostDataIntent message for non authenticated channels
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PostDataIntentV1Signed {
-    pub intent: PostDataIntentV1,
-    /// DataIntent nonce, to allow replay protection. Each new intent must have a nonce higher than
-    /// the last known nonce from this `from` sender. Re-pricings will be done with a different
-    /// nonce. For simplicity just pick the current UNIX timestemp in miliseconds.
-    ///
-    /// u64::MAX is 18446744073709551616, able to represent unix timestamps in miliseconds way into
-    /// the future.
-    pub nonce: u64,
-    /// Signature over := data | nonce | max_blob_gas_price
-    #[serde(with = "hex_vec")]
-    pub signature: Vec<u8>,
-}
-
-impl PostDataIntentV1Signed {
-    pub async fn with_signature(
-        wallet: &LocalWallet,
-        intent: PostDataIntentV1,
-        nonce: Option<u64>,
-    ) -> Result<Self> {
-        if wallet.address() != intent.from {
-            bail!(
-                "intent.from {} does not match wallet address {}",
-                intent.from,
-                wallet.address()
-            );
-        }
-
-        let nonce = nonce.unwrap_or_else(unix_timestamps_millis);
-        let signature: Signature = wallet.sign_message(Self::sign_hash(&intent, nonce)).await?;
-
-        Ok(Self {
-            intent,
-            nonce,
-            signature: signature.into(),
-        })
-    }
-
-    fn sign_hash(intent: &PostDataIntentV1, nonce: u64) -> Vec<u8> {
-        let data_hash = DataHash::from_data(&intent.data);
-
-        // Concat: data_hash | nonce | max_blob_gas_price
-        let mut signed_data = data_hash.to_vec();
-        signed_data.extend_from_slice(&intent.max_blob_gas_price.to_be_bytes());
-        signed_data.extend_from_slice(&nonce.to_be_bytes());
-
-        signed_data
-    }
-
-    fn verify_signature(&self) -> Result<()> {
-        let signature = deserialize_signature(&self.signature)?;
-        let sign_hash = PostDataIntentV1Signed::sign_hash(&self.intent, self.nonce);
-        signature.verify(sign_hash, self.intent.from)?;
-        Ok(())
-    }
 }
 
 impl TryInto<DataIntent> for PostDataIntentV1Signed {

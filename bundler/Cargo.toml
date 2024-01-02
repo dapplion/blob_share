@@ -20,6 +20,8 @@ harness = false
 
 
 [dependencies]
+bundler_client = { workspace = true }
+
 actix-web = "4"
 clap = { version = "4.4.8", features = ["derive", "env"] }
 env_logger = "0.10.1"
@@ -59,7 +61,6 @@ uuid = { version = "1.6.1", features = ["v4", "serde"] }
 chrono = { version = "0.4.31", default-features = false, features = ["clock", "serde"] }
 
 [dev-dependencies]
-hex = "0.4.3"
 once_cell = "1.18.0"
 reqwest = "0.11.22"
 proptest = "1.4.0"

@@ -1,17 +1,19 @@
+use bundler_client::types::{
+    DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary, SyncStatusBlock,
+};
 use ethers::{signers::LocalWallet, types::Address};
 use eyre::{bail, Result};
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
 use crate::{
-    client::{DataIntentDbRowFull, DataIntentId, DataIntentStatus, DataIntentSummary},
     data_intent_tracker::{
         fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
         fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_many_data_intent_db_full,
-        mark_data_intents_as_inclusion_finalized, store_data_intent, DataIntentTracker,
+        mark_data_intents_as_inclusion_finalized, store_data_intent, DataIntentDbRowFull,
+        DataIntentTracker,
     },
     eth_provider::EthProvider,
-    routes::SyncStatusBlock,
     sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
     utils::address_to_hex_lowercase,
     AppConfig, BlobTxSummary, DataIntent,
@@ -256,7 +258,7 @@ impl AppData {
         Ok(status)
     }
 
-    pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentDbRowFull> {
+    pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentFull> {
         fetch_data_intent_db_full(&self.db_pool, id).await
     }
 

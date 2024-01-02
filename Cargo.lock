@@ -784,6 +784,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "async-trait",
+ "bundler_client",
  "bytes",
  "c-kzg",
  "chrono",
@@ -822,6 +823,18 @@ dependencies = [
 [[package]]
 name = "bundler_client"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ethereum_serde_utils",
+ "ethers",
+ "eyre",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "url",
+ "uuid 1.6.1",
+]
 
 [[package]]
 name = "byte-slice-cast"

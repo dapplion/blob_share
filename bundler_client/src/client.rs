@@ -6,10 +6,10 @@ use eyre::Result;
 use url::Url;
 
 use crate::{
-    gas::BlockGasSummary,
     types::{
-        BlobGasPrice, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
-        PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse, SenderDetails, SyncStatus,
+        BlobGasPrice, BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus,
+        DataIntentSummary, PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse,
+        SenderDetails, SyncStatus,
     },
     utils::{address_to_hex_lowercase, is_ok_response, unix_timestamps_millis},
 };

@@ -1,19 +1,18 @@
 use actix_web::{get, web, HttpResponse, Responder};
+use bundler_client::types::{
+    DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary, SenderDetails, SyncStatus,
+    SyncStatusBlock,
+};
 use ethers::signers::Signer;
-use ethers::types::{Address, TxHash, H256};
+use ethers::types::Address;
 use eyre::{eyre, Result};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub mod post_data;
 
-use crate::data_intent::DataIntentId;
-use crate::data_intent_tracker::{DataIntentDbRowFull, DataIntentSummary};
 use crate::eth_provider::EthProvider;
-use crate::sync::AnchorBlock;
 use crate::utils::e500;
 use crate::AppData;
-pub use post_data::{PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse};
 
 // TODO: Add route to cancel data intents by ID
 
@@ -69,7 +68,7 @@ pub(crate) async fn get_data_by_id(
     id: web::Path<DataIntentId>,
 ) -> Result<HttpResponse, actix_web::Error> {
     // TODO: Try to unify types, too many `DataIntent*` things
-    let item: DataIntentDbRowFull = data.data_intent_by_id(&id).await.map_err(e500)?;
+    let item: DataIntentFull = data.data_intent_by_id(&id).await.map_err(e500)?;
     Ok(HttpResponse::Ok().json(item))
 }
 
@@ -90,72 +89,6 @@ pub(crate) async fn get_balance_by_address(
 ) -> Result<HttpResponse, actix_web::Error> {
     let balance: i128 = data.balance_of_user(&address).await;
     Ok(HttpResponse::Ok().json(balance))
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SenderDetails {
-    pub address: Address,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SyncStatusBlock {
-    pub hash: H256,
-    pub number: u64,
-}
-
-impl From<&AnchorBlock> for SyncStatusBlock {
-    fn from(val: &AnchorBlock) -> Self {
-        Self {
-            number: val.number,
-            hash: val.hash,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SyncStatus {
-    pub anchor_block: SyncStatusBlock,
-    pub synced_head: SyncStatusBlock,
-    pub node_head: SyncStatusBlock,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum DataIntentStatus {
-    Unknown,
-    Pending,
-    InPendingTx { tx_hash: TxHash },
-    InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
-}
-
-impl DataIntentStatus {
-    pub fn is_known(&self) -> bool {
-        match self {
-            DataIntentStatus::InConfirmedTx { .. }
-            | DataIntentStatus::InPendingTx { .. }
-            | DataIntentStatus::Pending => true,
-            DataIntentStatus::Unknown => false,
-        }
-    }
-
-    pub fn is_in_tx(&self) -> Option<TxHash> {
-        match self {
-            DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
-            DataIntentStatus::InPendingTx { tx_hash, .. } => Some(*tx_hash),
-            DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
-        }
-    }
-
-    pub fn is_in_block(&self) -> Option<(H256, TxHash)> {
-        match self {
-            DataIntentStatus::Unknown
-            | DataIntentStatus::Pending
-            | DataIntentStatus::InPendingTx { .. } => None,
-            DataIntentStatus::InConfirmedTx {
-                tx_hash,
-                block_hash,
-            } => Some((*tx_hash, *block_hash)),
-        }
-    }
 }
 
 /// Fetch execution node head block number and hash

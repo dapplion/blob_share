@@ -1,10 +1,9 @@
 use actix_web::http::header::AUTHORIZATION;
 use actix_web::HttpRequest;
-use ethers::types::{Address, Signature, Transaction, TxHash, H160, H256, U256};
+use ethers::types::{Address, Transaction, TxHash, H160, H256, U256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
 use std::fmt::{self, Debug, Display};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::reth_fork::tx_eip4844::TxEip4844;
 use crate::reth_fork::tx_sidecar::BlobTransaction;
@@ -89,11 +88,6 @@ pub fn txhash_from_vec(v: &[u8]) -> Result<TxHash> {
     Ok(H256(fixed_vec))
 }
 
-/// Deserialize ethers' Signature
-pub(crate) fn deserialize_signature(signature: &[u8]) -> Result<Signature> {
-    Ok(signature.try_into()?)
-}
-
 /// Compute the transaction hash from a serialized networking blob tx (pooled tx)
 pub fn deserialize_blob_tx_pooled(serialized_networking_blob_tx: &[u8]) -> Result<BlobTransaction> {
     let mut blob_tx_networking = &serialized_networking_blob_tx[1..];
@@ -118,14 +112,6 @@ pub fn tx_reth_to_ethers(txr: &TxEip4844) -> Result<Transaction> {
         serde_json::to_value(Into::<U256>::into(txr.max_fee_per_blob_gas))?,
     );
     Ok(tx)
-}
-
-/// Return unix timestamp in milliseconds
-pub(crate) fn unix_timestamps_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis() as u64
 }
 
 /// Extract Bearer token from actix_web request, or return an error

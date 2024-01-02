@@ -4,10 +4,8 @@ use crate::helpers::{
     retry_with_timeout, unique, Config, DataReq, TestHarness, TestMode, FINALIZE_DEPTH,
     GENESIS_FUNDS_ADDR,
 };
-use blob_share::{
-    client::{PostDataIntentV1, PostDataIntentV1Signed},
-    MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN,
-};
+use bundler::{MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN};
+use bundler_client::types::{PostDataIntentV1, PostDataIntentV1Signed};
 use ethers::signers::{LocalWallet, Signer};
 use log::info;
 

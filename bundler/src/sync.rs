@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt, mem};
 
 use async_trait::async_trait;
+use bundler_client::types::SyncStatusBlock;
 use ethers::types::{Address, Block, Transaction, TxHash, H256};
 use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, gas::GasConfig, info, metrics,
-    routes::SyncStatusBlock, BlockGasSummary,
+    BlockGasSummary,
 };
 
 type Nonce = u64;
@@ -542,6 +543,15 @@ impl AnchorBlock {
         self.hash = block.hash;
         self.number = block.number;
         self.gas = block.gas;
+    }
+}
+
+impl From<&AnchorBlock> for SyncStatusBlock {
+    fn from(val: &AnchorBlock) -> Self {
+        SyncStatusBlock {
+            hash: val.hash,
+            number: val.number,
+        }
     }
 }
 
