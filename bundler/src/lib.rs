@@ -340,6 +340,7 @@ impl App {
             blob_sender_task(self.data.clone()),
             block_subscriber_task(self.data.clone()),
             remote_node_tracker_task(self.data.clone()),
+            run_consistency_checks_task(self.data.clone()),
             push_metrics_task(self.data.config.metrics_push.clone()),
         )?;
         Ok(())
@@ -364,4 +365,18 @@ pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
         &trusted_setup.g1_points(),
         &trusted_setup.g2_points(),
     )?)
+}
+
+async fn run_consistency_checks_task(data: Arc<AppData>) -> Result<()> {
+    match data
+        .initial_consistency_check_intents_with_inclusion_finalized()
+        .await
+    {
+        Ok(ids_with_inclusion_finalized) => {
+            info!("Completed initial consistency checks for intents with inclusion finalzied");
+            debug!("ids_with_inclusion_finalized {ids_with_inclusion_finalized:?}",);
+        }
+        Err(e) => error!("Error doing initial consistency checks for intents {e:?}"),
+    };
+    Ok(())
 }

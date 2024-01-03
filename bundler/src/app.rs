@@ -1,10 +1,12 @@
+use std::collections::{hash_map::Entry, HashMap};
+
 use bundler_client::types::{
     BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
     SyncStatusBlock,
 };
 use ethers::{
     signers::LocalWallet,
-    types::{Address, BlockNumber},
+    types::{Address, BlockNumber, H256},
 };
 use eyre::{bail, eyre, Result};
 use futures::{stream, StreamExt, TryStreamExt};
@@ -150,17 +152,23 @@ impl AppData {
         let anchor_block_number = { self.sync.read().await.get_anchor().number };
         let intents = fetch_all_intents_with_inclusion_not_finalized(&self.db_pool).await?;
 
+        // Cache to prevent fetching the same transaction for the same intent
+        let mut tx_cache: HashMap<H256, Option<u64>> = <_>::default();
         let mut ids_with_inclusion_finalized = vec![];
 
         for (id, tx_hash) in intents {
             // TODO: cache fetch of the same transaction
-            if let Some(tx) = self.provider.get_transaction(tx_hash).await? {
-                if let Some(inclusion_block_number) = tx.block_number {
-                    if inclusion_block_number.as_u64() <= anchor_block_number {
-                        // intent was included in a block equal or ancestor of finalized anchor
-                        // block
-                        ids_with_inclusion_finalized.push(id);
-                    }
+
+            if let Entry::Vacant(e) = tx_cache.entry(tx_hash) {
+                let tx = self.provider.get_transaction(tx_hash).await?;
+                e.insert(tx.and_then(|tx| tx.block_number.map(|n| n.as_u64())));
+            }
+
+            if let Some(Some(inclusion_block_number)) = tx_cache.get(&tx_hash) {
+                if inclusion_block_number <= &anchor_block_number {
+                    // intent was included in a block equal or ancestor of finalized anchor
+                    // block
+                    ids_with_inclusion_finalized.push(id);
                 }
             }
         }
