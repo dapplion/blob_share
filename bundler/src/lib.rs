@@ -285,8 +285,8 @@ impl App {
         );
 
         info!("syncing data intent tracker");
-        app_data.sync_data_intents().await?;
-        info!("synced data intent tracker");
+        let synced_intents = app_data.sync_data_intents().await?;
+        info!("synced data intent tracker, added {synced_intents} items");
 
         // Prints progress every few blocks to info level
         app_data.initial_block_sync().await?;

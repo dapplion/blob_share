@@ -12,7 +12,7 @@ pub(crate) async fn get_home(data: web::Data<Arc<AppData>>) -> impl Responder {
     let head_gas = data.get_head_gas().await;
 
     let (mut data_intents, _) = data
-        .get_all_intents_available_for_packing(BlobGasPrice::MAX)
+        .get_all_intents_available_for_packing(BlobGasPrice::MIN)
         .await;
 
     data_intents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));

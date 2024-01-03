@@ -57,7 +57,7 @@ pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let items: Vec<DataIntentSummary> = data
-        .get_all_intents_available_for_packing(BlobGasPrice::MAX)
+        .get_all_intents_available_for_packing(BlobGasPrice::MIN)
         .await
         .0;
     Ok(HttpResponse::Ok().json(items))

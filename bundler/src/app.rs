@@ -212,7 +212,7 @@ impl AppData {
         Ok(())
     }
 
-    pub async fn sync_data_intents(&self) -> Result<()> {
+    pub async fn sync_data_intents(&self) -> Result<usize> {
         self.data_intent_tracker
             .write()
             .await
