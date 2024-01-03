@@ -706,9 +706,8 @@ impl BlockProvider for EthProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE},
-        BlockGasSummary,
+    use crate::blob_tx_data::{
+        encode_blob_tx_data, BlobTxParticipant, BlobTxSummary, BLOB_TX_TYPE,
     };
 
     use super::{BlockProvider, BlockSync, BlockWithTxs};
@@ -889,9 +888,11 @@ mod tests {
             hash,
             parent_hash,
             transactions: vec![],
-            base_fee_per_gas: 1,
-            excess_blob_gas: 1,
-            blob_gas_used: 1,
+            gas: BlockGasSummary {
+                base_fee_per_gas: 1,
+                excess_blob_gas: 1,
+                blob_gas_used: 1,
+            },
         }
     }
 

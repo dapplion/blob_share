@@ -4,6 +4,8 @@ use ethers::types::{Address, Signature};
 use eyre::{bail, Result};
 use reqwest::Response;
 
+pub use crate::gas::get_blob_gasprice;
+
 /// Post-process a reqwest response to handle non 2xx codes gracefully
 pub(crate) async fn is_ok_response(response: Response) -> Result<Response> {
     if response.status().is_success() {

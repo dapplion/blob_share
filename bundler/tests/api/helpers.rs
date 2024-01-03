@@ -2,7 +2,7 @@ use ethers::{
     middleware::SignerMiddleware,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
-    types::{Address, Block, Transaction, TransactionRequest, TxHash, H256, U256},
+    types::{Address, Block, Transaction, TransactionRequest, H256, U256},
     utils::parse_ether,
 };
 use eyre::{bail, eyre, Result};
@@ -26,10 +26,11 @@ use bundler::{
     anchor_block::{anchor_block_from_starting_block, persist_anchor_block_to_db},
     consumer::BlobConsumer,
     eth_provider::EthProvider,
-    get_blob_gasprice, App, Args, BlockGasSummary, PushMetricsFormat,
+    App, Args, PushMetricsFormat,
 };
 use bundler_client::{
-    types::{DataIntentId, PostDataResponse},
+    types::{BlockGasSummary, DataIntentId, PostDataResponse},
+    utils::get_blob_gasprice,
     Client, GasPreference, NoncePreference,
 };
 
@@ -716,11 +717,11 @@ fn block_gas_summary_from_excess(
     excess_blob_gas: u128,
     prev_gas_summary: &BlockGasSummary,
 ) -> BlockGasSummary {
-    let mut block = Block::<TxHash>::default();
-    block.excess_blob_gas = Some(excess_blob_gas.into());
-    block.blob_gas_used = Some(0.into());
-    block.base_fee_per_gas = Some(prev_gas_summary.base_fee_per_gas.into());
-    BlockGasSummary::from_block(&block).unwrap()
+    BlockGasSummary {
+        excess_blob_gas,
+        blob_gas_used: 0,
+        base_fee_per_gas: prev_gas_summary.base_fee_per_gas,
+    }
 }
 
 pub async fn retry_with_timeout<T, Fut, F: FnMut() -> Fut>(
