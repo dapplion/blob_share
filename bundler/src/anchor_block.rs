@@ -1,43 +1,23 @@
-use std::path::PathBuf;
-
-use eyre::{bail, eyre, Context, Result};
+use eyre::{eyre, Result};
 use sqlx::MySqlPool;
-use tokio::{fs, io};
 
-use crate::{
-    eth_provider::EthProvider, gas::block_gas_summary_from_block, sync::AnchorBlock, StartingPoint,
-};
+use crate::{eth_provider::EthProvider, gas::block_gas_summary_from_block, sync::AnchorBlock};
 
 pub(crate) async fn get_anchor_block(
-    anchor_block_filepath: &PathBuf,
     db_pool: &MySqlPool,
     provider: &EthProvider,
-    starting_point: StartingPoint,
+    starting_block: u64,
 ) -> Result<AnchorBlock> {
-    // TODO: choose starting point that's not genesis
-    // Attempt to read persisted file first if exists
-    match fs::read_to_string(&anchor_block_filepath).await {
-        Ok(str) => return serde_json::from_str(&str).wrap_err_with(|| "parsing anchor block file"),
-        Err(e) => match e.kind() {
-            io::ErrorKind::NotFound => {} // Ok continue
-            _ => bail!(
-                "error opening anchor_block file {}: {e:?}",
-                anchor_block_filepath.to_string_lossy()
-            ),
-        },
-    }
-
     // Second, fetch from DB
     if let Some(anchor_block) = fetch_anchor_block_from_db(db_pool).await? {
-        return Ok(anchor_block);
+        if anchor_block.number >= starting_block {
+            return Ok(anchor_block);
+        }
+        // else bootstrap from starting block
     }
 
     // Last initialize from network at starting point
-    match starting_point {
-        StartingPoint::StartingBlock(starting_block) => {
-            anchor_block_from_starting_block(provider, starting_block).await
-        }
-    }
+    anchor_block_from_starting_block(provider, starting_block).await
 }
 
 /// Fetch AnchorBlock from DB
@@ -58,10 +38,10 @@ pub async fn fetch_anchor_block_from_db(db_pool: &MySqlPool) -> Result<Option<An
 /// TODO: Keep a single row with latest block
 pub async fn persist_anchor_block_to_db(
     db_pool: &MySqlPool,
-    anchor_block: AnchorBlock,
+    anchor_block: &AnchorBlock,
 ) -> Result<()> {
     // Serialize the AnchorBlock (except the block_number field) to a JSON string
-    let anchor_block_json = serde_json::to_string(&anchor_block)?;
+    let anchor_block_json = serde_json::to_string(anchor_block)?;
     let block_number = anchor_block.number;
 
     // Insert the data into the database

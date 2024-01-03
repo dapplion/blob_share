@@ -159,7 +159,6 @@ impl Args {
 struct AppConfig {
     l1_inbox_address: Address,
     panic_on_background_task_errors: bool,
-    anchor_block_filepath: PathBuf,
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
 }
@@ -170,16 +169,10 @@ pub struct App {
     data: Arc<AppData>,
 }
 
-enum StartingPoint {
-    StartingBlock(u64),
-}
-
 impl App {
     /// Instantiates components, fetching initial data, binds http server. Does not make progress
     /// on the server future. To actually run the app, call `Self::run`.
     pub async fn build(args: Args) -> Result<Self> {
-        let starting_point = StartingPoint::StartingBlock(args.starting_block);
-
         let mut provider = EthProvider::new(&args.eth_provider).await?;
 
         if let Some(eth_provider_interval) = args.eth_provider_interval {
@@ -222,11 +215,8 @@ impl App {
             .connect(&args.database_url)
             .await?;
 
-        let anchor_block_filepath = data_dir.join("anchor_block.json");
-
         // TODO: choose starting point that's not genesis
-        let anchor_block =
-            get_anchor_block(&anchor_block_filepath, &db_pool, &provider, starting_point).await?;
+        let anchor_block = get_anchor_block(&db_pool, &provider, args.starting_block).await?;
         debug!("retrieved anchor block: {:?}", anchor_block);
 
         let sync = BlockSync::new(
@@ -242,7 +232,6 @@ impl App {
         let config = AppConfig {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             panic_on_background_task_errors: args.panic_on_background_task_errors,
-            anchor_block_filepath,
             metrics_server_bearer_token: args.metrics_bearer_token.clone(),
             metrics_push: if let Some(url) = &args.metrics_push_url {
                 Some(PushMetricsConfig {
