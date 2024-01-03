@@ -80,6 +80,8 @@ lazy_static! {
         register_gauge!("blobshare_remote_node_head_block_number", "remote node head block number").unwrap();
     pub(crate) static ref REMOTE_NODE_HEAD_BLOCK_FETCH_ERRORS: Counter =
         register_counter!("blobshare_remote_node_head_block_fetch_errors", "remote node head block fetch errors").unwrap();
+    pub(crate) static ref SENDER_BALANCE_REMOTE_HEAD: Gauge =
+        register_gauge!("blobshare_sender_balance_remote_head", "sender balance at remote head").unwrap();
     //
     // Data intent
     //
