@@ -112,7 +112,9 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
             test_harness
                 .post_data_ok(
                     &wallet.signer(),
-                    DataReq::new().with_data_len(MAX_USABLE_BLOB_DATA_LEN),
+                    DataReq::new()
+                        .with_data_len(MAX_USABLE_BLOB_DATA_LEN)
+                        .with_max_blob_gas(1),
                 )
                 .await;
         }
@@ -121,7 +123,9 @@ async fn reject_posting_too_many_pending_intents(send_blob_txs: bool) {
         let res = test_harness
             .post_data(
                 &wallet.signer(),
-                DataReq::new().with_data_len(MAX_USABLE_BLOB_DATA_LEN),
+                DataReq::new()
+                    .with_data_len(MAX_USABLE_BLOB_DATA_LEN)
+                    .with_max_blob_gas(1),
             )
             .await;
         assert_eq!(
