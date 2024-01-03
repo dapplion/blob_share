@@ -17,36 +17,32 @@ impl Item {
 
 const MAX_COUNT_FOR_BRUTEFORCE: usize = 8;
 
-pub fn pack_items(items: &[Item], max_len: usize, cost_per_len: u64) -> Option<Vec<usize>> {
-    if items.len() < MAX_COUNT_FOR_BRUTEFORCE {
-        return pack_items_brute_force(items, max_len, cost_per_len);
+/// Requires items to be sorted.
+///
+/// Returns the selected indexes in order of the arg items.
+pub fn pack_items(items_sorted: &[Item], max_len: usize, cost_per_len: u64) -> Option<Vec<usize>> {
+    if items_sorted.len() < MAX_COUNT_FOR_BRUTEFORCE {
+        return pack_items_brute_force(items_sorted, max_len, cost_per_len);
     }
-
-    // Filter items that don't event meet the current len price
-    let mut items = items
-        .iter()
-        .filter(|item| item.max_len_price >= cost_per_len)
-        .copied()
-        .enumerate()
-        .collect::<Vec<(usize, Item)>>();
 
     // let items_len_sum = items.iter().map(|(len, _)| len).sum::<usize>();
     // if items_len_sum < max_len {
     // special case
     //  }
 
-    items.sort_by(|a, b| a.1.len.cmp(&b.1.len));
-
-    let index_ordered = items.iter().map(|e| e.0).collect::<Vec<_>>();
-    let items_sorted = items.into_iter().map(|e| e.1).collect::<Vec<_>>();
+    // Items must be sorted ascending for pack_items_greedy to work correctly
+    assert!(is_sorted_ascending(items_sorted));
 
     // TODO: consider other algos
-    pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len).map(|selected_indexes_sorted| {
-        selected_indexes_sorted
-            .iter()
-            .map(|i| index_ordered[*i])
-            .collect::<Vec<_>>()
-    })
+    pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len)
+}
+
+fn is_sorted_ascending(slice: &[Item]) -> bool {
+    slice.windows(2).all(|w| w[0].len <= w[1].len)
+}
+
+pub fn sort_items(items: &mut [Item]) {
+    items.sort_by(|a, b| a.len.cmp(&b.len));
 }
 
 /// Returns the combination of items with sum of len closest to `max_len` where all items satisfy
@@ -420,6 +416,8 @@ mod tests {
         price_per_len: u64,
         expected_selected_items: Option<&[ItemTuple]>,
     ) {
+        let mut items = items.to_vec();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
         let selected_indexes = pack_items(&from_tuples(&items), MAX_LEN, price_per_len);
         let selected_items = selected_indexes.map(|idxs| unwrap_items(idxs, &items));
 

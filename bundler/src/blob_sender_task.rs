@@ -17,10 +17,6 @@ use crate::{
     warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
 
-/// Limit the maximum number of times a data intent included in a previous transaction can be
-/// included again in a new transaction.
-const MAX_PREVIOUS_INCLUSIONS: usize = 2;
-
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
 
@@ -83,9 +79,12 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let (pending_data_intents, items_from_previous_inclusions) = app_data
-            .get_all_intents_available_for_packing(MAX_PREVIOUS_INCLUSIONS)
+        let (mut pending_data_intents, items_from_previous_inclusions) = app_data
+            .get_all_intents_available_for_packing(max_fee_per_blob_gas as u64)
             .await;
+
+        // Sort ascending before creating items to preserve order
+        pending_data_intents.sort_by(|a, b| a.data_len.cmp(&b.data_len));
 
         let items: Vec<Item> = pending_data_intents
             .iter()
