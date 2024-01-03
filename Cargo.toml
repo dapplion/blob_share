@@ -2,6 +2,7 @@
 members = [
     "bundler",
     "bundler_client",
+    "bundler_client_cli",
 ]
 resolver = "2"
 

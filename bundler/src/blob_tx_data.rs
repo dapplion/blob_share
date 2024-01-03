@@ -1,10 +1,11 @@
 use std::io::{Cursor, Read, Write};
 
+use bundler_client::types::BlockGasSummary;
 use c_kzg::BYTES_PER_BLOB;
 use ethers::types::{Address, Transaction, H256};
 use eyre::{bail, eyre, Context, Result};
 
-use crate::{gas::GasConfig, utils::get_max_fee_per_blob_gas, BlockGasSummary};
+use crate::{gas::GasConfig, utils::get_max_fee_per_blob_gas};
 
 pub const BLOB_TX_TYPE: u8 = 0x03;
 const PARTICIPANT_DATA_SIZE: usize = 20 + 4;

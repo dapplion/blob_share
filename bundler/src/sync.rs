@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt, mem};
 
 use async_trait::async_trait;
-use bundler_client::types::SyncStatusBlock;
+use bundler_client::types::{BlockGasSummary, SyncStatusBlock};
 use ethers::types::{Address, Block, Transaction, TxHash, H256};
 use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 
 use crate::{
     blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, gas::GasConfig, info, metrics,
-    BlockGasSummary,
 };
 
 type Nonce = u64;
@@ -606,7 +605,7 @@ impl BlockSummary {
             parent_hash: block.parent_hash,
             topup_txs,
             blob_txs,
-            gas: block.into(),
+            gas: block.gas,
         })
     }
 
@@ -655,9 +654,7 @@ pub struct BlockWithTxs {
     parent_hash: H256,
     number: u64,
     transactions: Vec<Transaction>,
-    pub base_fee_per_gas: u128,
-    pub excess_blob_gas: u128,
-    pub blob_gas_used: u128,
+    pub gas: BlockGasSummary,
 }
 
 impl BlockWithTxs {
@@ -670,18 +667,20 @@ impl BlockWithTxs {
             hash: block.hash.ok_or_else(|| eyre!("block hash not present"))?,
             parent_hash: block.parent_hash,
             transactions: block.transactions,
-            base_fee_per_gas: block
-                .base_fee_per_gas
-                .ok_or_else(|| eyre!("block should be post-London no base_fee_per_gas"))?
-                .as_u128(),
-            blob_gas_used: block
-                .blob_gas_used
-                .ok_or_else(|| eyre!("block missing prop blob_gas_used"))?
-                .as_u128(),
-            excess_blob_gas: block
-                .excess_blob_gas
-                .ok_or_else(|| eyre!("block should be post-cancun no excess_blob_gas"))?
-                .as_u128(),
+            gas: BlockGasSummary {
+                base_fee_per_gas: block
+                    .base_fee_per_gas
+                    .ok_or_else(|| eyre!("block should be post-London no base_fee_per_gas"))?
+                    .as_u128(),
+                blob_gas_used: block
+                    .blob_gas_used
+                    .ok_or_else(|| eyre!("block missing prop blob_gas_used"))?
+                    .as_u128(),
+                excess_blob_gas: block
+                    .excess_blob_gas
+                    .ok_or_else(|| eyre!("block should be post-cancun no excess_blob_gas"))?
+                    .as_u128(),
+            },
         })
     }
 }

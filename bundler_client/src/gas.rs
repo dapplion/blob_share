@@ -6,8 +6,8 @@ const TARGET_BLOB_GAS_PER_BLOCK: u128 = 393216;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct BlockGasSummary {
-    blob_gas_used: u128,
-    excess_blob_gas: u128,
+    pub blob_gas_used: u128,
+    pub excess_blob_gas: u128,
     pub base_fee_per_gas: u128,
 }
 

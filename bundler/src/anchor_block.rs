@@ -4,7 +4,9 @@ use eyre::{bail, eyre, Context, Result};
 use sqlx::MySqlPool;
 use tokio::{fs, io};
 
-use crate::{eth_provider::EthProvider, sync::AnchorBlock, BlockGasSummary, StartingPoint};
+use crate::{
+    eth_provider::EthProvider, gas::block_gas_summary_from_block, sync::AnchorBlock, StartingPoint,
+};
 
 pub(crate) async fn get_anchor_block(
     anchor_block_filepath: &PathBuf,
@@ -93,7 +95,7 @@ pub async fn anchor_block_from_starting_block(
     Ok(AnchorBlock {
         hash,
         number,
-        gas: BlockGasSummary::from_block(&anchor_block)?,
+        gas: block_gas_summary_from_block(&anchor_block)?,
         // At genesis all balances are zero
         finalized_balances: <_>::default(),
     })

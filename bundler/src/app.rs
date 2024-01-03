@@ -1,5 +1,6 @@
 use bundler_client::types::{
-    DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary, SyncStatusBlock,
+    BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
+    SyncStatusBlock,
 };
 use ethers::{signers::LocalWallet, types::Address};
 use eyre::{bail, Result};
@@ -323,6 +324,10 @@ impl AppData {
             self.sync.read().await.get_anchor().into(),
             self.sync.read().await.get_head(),
         )
+    }
+
+    pub async fn get_head_gas(&self) -> BlockGasSummary {
+        *self.sync.read().await.get_head_gas()
     }
 
     pub async fn serialize_anchor_block(&self) -> Result<String, serde_json::Error> {
