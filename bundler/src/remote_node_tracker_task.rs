@@ -38,5 +38,16 @@ pub(crate) async fn remote_node_tracker_task(app_data: Arc<AppData>) -> Result<(
                 error!("Error fetching sender balance {e:?}");
             }
         }
+
+        match app_data
+            .provider
+            .get_transaction_count(app_data.sender_wallet.address(), None)
+            .await
+        {
+            Ok(nonce) => metrics::SENDER_NONCE_REMOTE_HEAD.set(nonce.as_u64() as f64),
+            Err(e) => {
+                error!("Error fetching sender nonce {e:?}");
+            }
+        }
     }
 }
