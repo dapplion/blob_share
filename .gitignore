@@ -2,3 +2,5 @@
 invalid_tx_blob_*.rlp
 .env
 /data
+to_send.txt
+

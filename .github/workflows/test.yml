@@ -89,7 +89,7 @@ jobs:
         run: cargo check
         # To re-sync run `cargo sqlx prepare` ref: https://github.com/launchbadge/sqlx/blob/main/sqlx-cli/README.md#enable-building-in-offline-mode-with-query
       - name: Ensure sqlx-offline data is synced
-        run: cargo sqlx prepare --check
+        run: cargo sqlx prepare --check --workspace
       - name: Test
         run: cargo test -- --test-threads=1 --nocapture
 
