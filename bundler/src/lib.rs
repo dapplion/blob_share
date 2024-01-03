@@ -19,6 +19,7 @@ use crate::{
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
     metrics::{get_metrics, push_metrics_task},
+    remote_node_tracker_task::remote_node_tracker_task,
     routes::{
         get_balance_by_address, get_data, get_data_by_id, get_gas, get_health, get_home,
         get_sender, get_status_by_id, get_sync, post_data::post_data,
@@ -42,6 +43,7 @@ mod gas;
 mod kzg;
 mod metrics;
 pub mod packing;
+mod remote_node_tracker_task;
 mod reth_fork;
 mod routes;
 mod sync;
@@ -340,6 +342,7 @@ impl App {
             run_server(self.server),
             blob_sender_task(self.data.clone()),
             block_subscriber_task(self.data.clone()),
+            remote_node_tracker_task(self.data.clone()),
             push_metrics_task(self.data.config.metrics_push.clone()),
         )?;
         Ok(())

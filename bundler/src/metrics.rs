@@ -53,8 +53,6 @@ lazy_static! {
         register_gauge!("blobshare_sync_head_number", "sync head number").unwrap();
     pub(crate) static ref SYNC_ANCHOR_NUMBER: Gauge =
         register_gauge!("blobshare_sync_anchor_number", "sync anchor number").unwrap();
-    pub(crate) static ref UNDERPRICED_TXS_EVICTED: Counter =
-        register_counter!("blobshare_underpriced_txs_evicted_total", "underpriced txs evicted total").unwrap();
     pub(crate) static ref FINALIZED_TXS: Counter =
         register_counter!("blobshare_finalized_txs_total", "finalized txs total").unwrap();
     //
@@ -75,6 +73,13 @@ lazy_static! {
         //   1/8     1/4     1/2     0.6     0.7     0.8      0.9      1
         vec![16384., 32768., 65536., 78643., 91750., 104857., 117964., 131072.]
     ).unwrap();
+    //
+    // Remote node tracker task
+    //
+    pub(crate) static ref REMOTE_NODE_HEAD_BLOCK_NUMBER: Gauge =
+        register_gauge!("blobshare_remote_node_head_block_number", "remote node head block number").unwrap();
+    pub(crate) static ref REMOTE_NODE_HEAD_BLOCK_FETCH_ERRORS: Counter =
+        register_counter!("blobshare_remote_node_head_block_fetch_errors", "remote node head block fetch errors").unwrap();
     //
     // Data intent
     //
@@ -278,7 +283,6 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         SYNC_BLOB_TXS_SYNCED.inc();
         SYNC_HEAD_NUMBER.inc();
         SYNC_ANCHOR_NUMBER.inc();
-        UNDERPRICED_TXS_EVICTED.inc();
         FINALIZED_TXS.inc();
         BLOB_SENDER_TASK_TIMES.observe(0.);
         BLOB_SENDER_TASK_ERRORS.inc();
