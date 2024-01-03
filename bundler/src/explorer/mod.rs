@@ -1,4 +1,7 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{
+    dev::{ServiceFactory, ServiceRequest},
+    web, HttpResponse, Responder,
+};
 use bundler_client::types::DataIntentId;
 use ethers::types::Address;
 use serde_json::json;
@@ -11,9 +14,12 @@ use crate::{
 
 // TODO: Add route to cancel data intents by ID
 
-pub(crate) fn get_explorer_service() -> actix_web::Scope {
-    web::scope("")
-        .route("/", web::get().to(get_home))
+pub(crate) fn register_explorer_service<
+    T: ServiceFactory<ServiceRequest, Config = (), Error = actix_web::Error, InitError = ()>,
+>(
+    app: actix_web::App<T>,
+) -> actix_web::App<T> {
+    app.route("/", web::get().to(get_home))
         .route("/address/{address}", web::get().to(get_address))
         .route("/intent/{id}", web::get().to(get_intent))
 }

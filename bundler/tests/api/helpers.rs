@@ -603,6 +603,27 @@ impl TestHarness {
         .await
         .expect("timeout waiting for app to subscribe to mock EL block filter");
     }
+
+    pub async fn wait_for_synced(&self) {
+        retry_with_timeout(
+            || async {
+                let sync = self.client.get_sync().await.unwrap();
+                if sync.node_head.number > sync.synced_head.number + 1 {
+                    bail!(
+                        "node not synced, head: {:?} node: {:?}",
+                        sync.node_head,
+                        sync.synced_head
+                    );
+                } else {
+                    Ok(())
+                }
+            },
+            Duration::from_secs(2),
+            Duration::from_millis(100),
+        )
+        .await
+        .expect("timeout waiting for app to be synced");
+    }
 }
 
 struct EthProviderURLs {

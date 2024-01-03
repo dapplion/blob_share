@@ -6,10 +6,16 @@ use eyre::{eyre, Context, Result};
 use crate::{
     debug, error, info, metrics,
     sync::{BlockWithTxs, SyncBlockError, SyncBlockOutcome},
-    AppData,
+    warn, AppData,
 };
 
 pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> {
+    // Allow to disable block subscriber to halt sync
+    if std::env::var("TEST_DISABLE_BLOCK_SUBSCRIBER").is_ok() {
+        warn!("block subscriber disabled");
+        return Ok(());
+    }
+
     debug!("starting block subscriber task");
 
     // Subscribes to 'newHeads' which:
