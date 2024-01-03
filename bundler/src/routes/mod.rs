@@ -12,16 +12,9 @@ pub mod post_data;
 
 use crate::eth_provider::EthProvider;
 use crate::utils::e500;
-use crate::AppData;
+use crate::{AppData, BlobGasPrice};
 
 // TODO: Add route to cancel data intents by ID
-
-#[get("/")]
-pub(crate) async fn get_home() -> impl Responder {
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body("<html><body><h1>Blob share API</h1></body></html>")
-}
 
 #[get("/v1/health")]
 pub(crate) async fn get_health() -> impl Responder {
@@ -64,7 +57,7 @@ pub(crate) async fn get_data(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let items: Vec<DataIntentSummary> = data
-        .get_all_intents_available_for_packing(usize::MAX)
+        .get_all_intents_available_for_packing(BlobGasPrice::MIN)
         .await
         .0;
     Ok(HttpResponse::Ok().json(items))

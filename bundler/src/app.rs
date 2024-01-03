@@ -10,6 +10,7 @@ use ethers::{
 };
 use eyre::{bail, eyre, Result};
 use futures::{stream, StreamExt, TryStreamExt};
+use handlebars::Handlebars;
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
@@ -25,13 +26,17 @@ use crate::{
     info,
     sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
     utils::address_to_hex_lowercase,
-    warn, AppConfig, BlobTxSummary, DataIntent,
+    warn, AppConfig, BlobGasPrice, BlobTxSummary, DataIntent,
 };
 
 pub(crate) const PERSIST_ANCHOR_BLOCK_INITIAL_SYNC_INTERVAL: u64 = 32;
 pub(crate) const MAX_DISTANCE_SYNC: u64 = 8;
+/// Limit the maximum number of times a data intent included in a previous transaction can be
+/// included again in a new transaction.
+const MAX_PREVIOUS_INCLUSIONS: usize = 2;
 
 pub(crate) struct AppData {
+    pub handlebars: Handlebars<'static>,
     pub config: AppConfig,
     pub kzg_settings: c_kzg::KzgSettings,
     pub provider: EthProvider,
@@ -47,6 +52,7 @@ pub(crate) struct AppData {
 impl AppData {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        handlebars: Handlebars<'static>,
         config: AppConfig,
         kzg_settings: c_kzg::KzgSettings,
         db_pool: MySqlPool,
@@ -57,6 +63,7 @@ impl AppData {
         sync: BlockSync,
     ) -> Self {
         AppData {
+            handlebars,
             config,
             kzg_settings,
             db_pool,
@@ -205,7 +212,7 @@ impl AppData {
         Ok(())
     }
 
-    pub async fn sync_data_intents(&self) -> Result<()> {
+    pub async fn sync_data_intents(&self) -> Result<usize> {
         self.data_intent_tracker
             .write()
             .await
@@ -294,7 +301,7 @@ impl AppData {
 
     pub async fn get_all_intents_available_for_packing(
         &self,
-        max_previous_inclusion_count: usize,
+        min_blob_gas_fee: BlobGasPrice,
     ) -> (Vec<DataIntentSummary>, usize) {
         let sync = self.sync.read().await;
         let data_intent_tracker = self.data_intent_tracker.read().await;
@@ -305,29 +312,31 @@ impl AppData {
             .get_all_intents()
             .into_iter()
             .filter_map(|(intent, tx_hash, previous_inclusions)| {
-                let should_include = if let Some(tx_hash) = tx_hash {
-                    match sync.get_tx_status(tx_hash) {
-                        // This should never happen, the intent is marked as part of a bundle but
-                        // the sync does not know about it. To be safe, do not include in bundles
-                        None => false,
-                        // If transaction is pending, only re-bundle if it's underpriced
-                        Some(TxInclusion::Pending { tx_gas }) => {
-                            if previous_inclusions < max_previous_inclusion_count
-                                && tx_gas.is_underpriced(sync.get_head_gas())
-                            {
-                                items_from_previous_inclusions += 1;
-                                true
-                            } else {
-                                false
+                // Ignore items that can't pay the minimum blob base fee
+                let should_include = intent.max_blob_gas_price >= min_blob_gas_fee
+                    && if let Some(tx_hash) = tx_hash {
+                        match sync.get_tx_status(tx_hash) {
+                            // This should never happen, the intent is marked as part of a bundle but
+                            // the sync does not know about it. To be safe, do not include in bundles
+                            None => false,
+                            // If transaction is pending, only re-bundle if it's underpriced
+                            Some(TxInclusion::Pending { tx_gas }) => {
+                                if previous_inclusions < MAX_PREVIOUS_INCLUSIONS
+                                    && tx_gas.is_underpriced(sync.get_head_gas())
+                                {
+                                    items_from_previous_inclusions += 1;
+                                    true
+                                } else {
+                                    false
+                                }
                             }
+                            // Do not re-bundle intents part of a block
+                            Some(TxInclusion::Included { .. }) => false,
                         }
-                        // Do not re-bundle intents part of a block
-                        Some(TxInclusion::Included { .. }) => false,
-                    }
-                } else {
-                    // Always include intents not part of any transaction
-                    true
-                };
+                    } else {
+                        // Always include intents not part of any transaction
+                        true
+                    };
 
                 if should_include {
                     // TODO: prevent having to clone here
@@ -410,6 +419,16 @@ impl AppData {
             .number
             .ok_or_else(|| eyre!("block has no number"))?
             .as_u64())
+    }
+
+    pub async fn assert_node_synced(&self) -> Result<()> {
+        let remote_node_head = self.fetch_remote_node_latest_block_number().await?;
+        let head_number = self.sync.read().await.get_head().number;
+        if remote_node_head > head_number + MAX_DISTANCE_SYNC {
+            bail!("Local head number {head_number} not synced with remote node {remote_node_head}");
+        } else {
+            Ok(())
+        }
     }
 
     pub async fn collect_metrics(&self) {

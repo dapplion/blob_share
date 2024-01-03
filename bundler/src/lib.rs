@@ -8,6 +8,7 @@ use ethers::{
     types::Address,
 };
 use eyre::{Context, Result};
+use handlebars::Handlebars;
 use sqlx::mysql::MySqlPoolOptions;
 use std::{env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tokio::fs;
@@ -18,11 +19,12 @@ use crate::{
     app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
+    explorer::register_explorer_service,
     metrics::{get_metrics, push_metrics_task},
     remote_node_tracker_task::remote_node_tracker_task,
     routes::{
-        get_balance_by_address, get_data, get_data_by_id, get_gas, get_health, get_home,
-        get_sender, get_status_by_id, get_sync, post_data::post_data,
+        get_balance_by_address, get_data, get_data_by_id, get_gas, get_health, get_sender,
+        get_status_by_id, get_sync, post_data::post_data,
     },
     sync::{BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
@@ -39,6 +41,7 @@ pub mod consumer;
 mod data_intent;
 mod data_intent_tracker;
 pub mod eth_provider;
+mod explorer;
 mod gas;
 mod kzg;
 mod metrics;
@@ -250,7 +253,22 @@ impl App {
             },
         };
 
+        // Handlebars uses a repository for the compiled templates. This object must be
+        // shared between the application threads, and is therefore passed to the
+        // Application Builder as an atomic reference-counted pointer.
+        let mut handlebars = Handlebars::new();
+        handlebars
+            .register_templates_directory(
+                "./static/templates",
+                handlebars::DirectorySourceOptions {
+                    tpl_extension: ".html".to_string(),
+                    ..Default::default()
+                },
+            )
+            .wrap_err("registering handlebars template")?;
+
         let app_data = Arc::new(AppData::new(
+            handlebars,
             config,
             load_kzg_settings()?,
             db_pool,
@@ -266,17 +284,9 @@ impl App {
             &args.eth_provider, chain_id
         );
 
-        info!("running consistency checks");
-        let finalized_ids = app_data
-            .initial_consistency_check_intents_with_inclusion_finalized()
-            .await?;
-        if !finalized_ids.is_empty() {
-            info!("marked some data intents as finalized {:?}", finalized_ids);
-        }
-
         info!("syncing data intent tracker");
-        app_data.sync_data_intents().await?;
-        info!("synced data intent tracker");
+        let synced_intents = app_data.sync_data_intents().await?;
+        info!("synced data intent tracker, added {synced_intents} items");
 
         // Prints progress every few blocks to info level
         app_data.initial_block_sync().await?;
@@ -305,7 +315,7 @@ impl App {
             let app = actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
-                .service(get_home)
+                // TODO: move to API service
                 .service(get_health)
                 .service(get_sender)
                 .service(get_sync)
@@ -315,6 +325,7 @@ impl App {
                 .service(get_data_by_id)
                 .service(get_status_by_id)
                 .service(get_balance_by_address);
+            let app = register_explorer_service(app);
 
             // Conditionally register the metrics route
             if register_get_metrics {

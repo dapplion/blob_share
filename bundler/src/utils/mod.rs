@@ -164,6 +164,11 @@ where
     }
 }
 
+pub(crate) fn wei_to_f64(wei: u128) -> f64 {
+    let gwei = wei / 1_000_000_000;
+    gwei as f64 / 1_000_000_000. // eth
+}
+
 #[cfg(test)]
 mod tests {
     use ethers::types::Transaction;

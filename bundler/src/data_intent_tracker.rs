@@ -65,15 +65,16 @@ impl DataIntentTracker {
         metrics::INCLUDED_INTENTS_CACHE.set(self.included_intents.len() as f64);
     }
 
-    pub async fn sync_with_db(&mut self, db_pool: &MySqlPool) -> Result<()> {
+    pub async fn sync_with_db(&mut self, db_pool: &MySqlPool) -> Result<usize> {
+        let count_prev = self.pending_intents.len();
         let from = self.last_sync_table_data_intents;
         let to: DateTime<Utc> = Utc::now();
 
         let mut stream = sqlx::query(
             r#"
-SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
+SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at, inclusion_finalized
 FROM data_intents
-WHERE updated_at BETWEEN ? AND ?
+WHERE (inclusion_finalized = FALSE) AND (updated_at BETWEEN ? AND ?)
 ORDER BY updated_at ASC
         "#,
         )
@@ -91,7 +92,7 @@ ORDER BY updated_at ASC
                 cmp::max(self.last_sync_table_data_intents, updated_at);
         }
 
-        Ok(())
+        Ok(self.pending_intents.len() - count_prev)
     }
 
     pub fn get_all_intents(&self) -> Vec<(&DataIntentSummary, Option<TxHash>, usize)> {

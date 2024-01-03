@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bundler explorer</title>
+    <style>
+        html {
+            font-family: monospace, monospace;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        table, th, td {
+            border: 1px solid black;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <h1>Address {{address}}</h1>
+    <p>Balance: {{balance}}</p>
+
+    <h2>Pending intents</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>From</th>
+                <th>Data len</th>
+                <th>Max blob gas price</th>
+                <th>Updated at</th>
+            </tr>
+        </thead>
+        <tbody>
+	    {{#each data_intents}}
+            <tr>
+		<td>{{id}}</td>
+                <td>
+                    <a href='/address/{{from}}'>{{from}}</a>
+                </td>
+		<td>{{data_len}}</td>
+		<td>{{max_blob_gas_price}}</td>
+                <td>{{updated_at}}</td>
+	    </tr>
+	    {{/each}}
+        </tbody>
+    </table>
+</body>
+</html>
+

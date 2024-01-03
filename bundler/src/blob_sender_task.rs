@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use ethers::{signers::Signer, types::TxHash};
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result};
 
 use crate::{
-    app::MAX_DISTANCE_SYNC,
     blob_tx_data::BlobTxParticipant,
     data_intent_tracker::DataIntentDbRowFull,
     debug, error,
@@ -16,10 +15,6 @@ use crate::{
     utils::address_from_vec,
     warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
 };
-
-/// Limit the maximum number of times a data intent included in a previous transaction can be
-/// included again in a new transaction.
-const MAX_PREVIOUS_INCLUSIONS: usize = 2;
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
@@ -71,11 +66,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
 
     // Only allow to send blob transactions if synced with remote node
-    let remote_node_head = app_data.fetch_remote_node_latest_block_number().await?;
-    let head_number = app_data.get_sync().await.1.number;
-    if remote_node_head > head_number + MAX_DISTANCE_SYNC {
-        bail!("Local head number {head_number} not synced with remote node {remote_node_head}");
-    }
+    app_data.assert_node_synced().await?;
 
     // Sync available intents
     app_data.sync_data_intents().await?;
@@ -83,9 +74,12 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
     let data_intent_summaries = {
-        let (pending_data_intents, items_from_previous_inclusions) = app_data
-            .get_all_intents_available_for_packing(MAX_PREVIOUS_INCLUSIONS)
+        let (mut pending_data_intents, items_from_previous_inclusions) = app_data
+            .get_all_intents_available_for_packing(max_fee_per_blob_gas as u64)
             .await;
+
+        // Sort ascending before creating items to preserve order
+        pending_data_intents.sort_by(|a, b| a.data_len.cmp(&b.data_len));
 
         let items: Vec<Item> = pending_data_intents
             .iter()
@@ -163,6 +157,9 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
             }
         };
 
+    metrics::PACKED_BLOB_USED_LEN.observe(blob_tx.tx_summary.used_bytes as f64);
+    metrics::PACKED_BLOB_ITEMS.observe(blob_tx.tx_summary.participants.len() as f64);
+
     // TODO: Assumes this function is never called concurrently. Therefore it can afford to
     // register the transaction when it has been accepted by the execution node. If this function
     // can be called concurrently it should mark the items as 'Pending' before sending the
@@ -218,9 +215,6 @@ async fn construct_and_send_tx(
         participants,
         datas,
     )?;
-
-    metrics::PACKED_BLOB_USED_LEN.observe(blob_tx.tx_summary.used_bytes as f64);
-    metrics::PACKED_BLOB_ITEMS.observe(blob_tx.tx_summary.participants.len() as f64);
 
     debug!(
         "sending blob transaction {} with intents {:?}: {:?}",

@@ -257,13 +257,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
     let data_2 = vec![0xb0_u8 + i; MAX_USABLE_BLOB_DATA_LEN / 2 - 1];
 
     // Ensure node is synced up to 1 block of difference
-    let sync = test_harness.client.get_sync().await.unwrap();
-    assert!(
-        sync.node_head.number - sync.synced_head.number < 1,
-        "node not synced, head: {:?} node: {:?}",
-        sync.node_head,
-        sync.synced_head
-    );
+    test_harness.wait_for_synced().await;
 
     let balance_before_intent_1 = test_harness
         .client
