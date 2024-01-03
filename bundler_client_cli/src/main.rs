@@ -91,6 +91,10 @@ async fn main() -> Result<()> {
         panic!("Must set either mnemonic or priv_key");
     }
     .with_chain_id(chain_id);
+    println!(
+        "Using wallet with address 0x{}",
+        hex::encode(wallet.address().to_fixed_bytes())
+    );
 
     maybe_fund_sender_account(&args, &client, &provider, &wallet).await?;
 

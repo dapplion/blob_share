@@ -67,11 +67,11 @@ lazy_static! {
     pub(crate) static ref PACKING_TIMES: Histogram =
         register_histogram!("blobshare_packing_seconds", "packing seconds").unwrap();
     pub(crate) static ref PACKED_BLOB_ITEMS: Histogram = register_histogram!(
-        "blob_share_packed_blob_items", "packed blob items",
+        "blobshare_packed_blob_items", "packed blob items",
         vec![1.,2.,3.,4.,6.,8.,12.,16.,24.,32.]
     ).unwrap();
     pub(crate) static ref PACKED_BLOB_USED_LEN: Histogram = register_histogram!(
-        "blob_share_packed_blob_used_len", "packed blob used len",
+        "blobshare_packed_blob_used_len", "packed blob used len",
         //   1/8     1/4     1/2     0.6     0.7     0.8      0.9      1
         vec![16384., 32768., 65536., 78643., 91750., 104857., 117964., 131072.]
     ).unwrap();
