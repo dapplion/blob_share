@@ -21,6 +21,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
 
     loop {
         tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
             block_hash = s.next() => {
                 // block_hash type := Option<Result<H256>>
                 let block_hash = block_hash.ok_or_else(|| eyre!("block stream closed"))??;
@@ -50,7 +51,6 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
                 // Maybe compute new blob transactions
                 app_data.notify.notify_one();
             },
-            _ = tokio::signal::ctrl_c() => break,
 
         }
     }

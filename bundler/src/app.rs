@@ -2,8 +2,11 @@ use bundler_client::types::{
     BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
     SyncStatusBlock,
 };
-use ethers::{signers::LocalWallet, types::Address};
-use eyre::{bail, Result};
+use ethers::{
+    signers::LocalWallet,
+    types::{Address, BlockNumber},
+};
+use eyre::{bail, eyre, Result};
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
@@ -328,6 +331,18 @@ impl AppData {
 
     pub async fn get_head_gas(&self) -> BlockGasSummary {
         *self.sync.read().await.get_head_gas()
+    }
+
+    pub async fn fetch_remote_node_latest_block_number(&self) -> Result<u64> {
+        let block = self
+            .provider
+            .get_block(BlockNumber::Latest)
+            .await?
+            .ok_or_else(|| eyre!("no latest block"))?;
+        Ok(block
+            .number
+            .ok_or_else(|| eyre!("block has no number"))?
+            .as_u64())
     }
 
     pub async fn serialize_anchor_block(&self) -> Result<String, serde_json::Error> {

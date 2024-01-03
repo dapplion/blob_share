@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ethers::{signers::Signer, types::TxHash};
-use eyre::{Context, Result};
+use eyre::{bail, Context, Result};
 
 use crate::{
     blob_tx_data::BlobTxParticipant,
@@ -19,6 +19,7 @@ use crate::{
 /// Limit the maximum number of times a data intent included in a previous transaction can be
 /// included again in a new transaction.
 const MAX_PREVIOUS_INCLUSIONS: usize = 2;
+const MAX_DISTANCE_SYNC: u64 = 8;
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
@@ -68,6 +69,13 @@ pub(crate) enum SendResult {
 // `_id` argument is used by tracing to track all internal log lines
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Result<SendResult> {
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
+
+    // Only allow to send blob transactions if synced with remote node
+    let remote_node_head = app_data.fetch_remote_node_latest_block_number().await?;
+    let head_number = app_data.get_sync().await.1.number;
+    if remote_node_head > head_number + MAX_DISTANCE_SYNC {
+        bail!("Local head number {head_number} not synced with remote node {remote_node_head}");
+    }
 
     // Sync available intents
     app_data.sync_data_intents().await?;
