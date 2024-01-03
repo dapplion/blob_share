@@ -1,13 +1,23 @@
-use actix_web::{get, web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, Responder};
+use bundler_client::types::DataIntentId;
 use ethers::types::Address;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::{AppData, BlobGasPrice};
+use crate::{
+    utils::{e500, vec_to_hex_0x_prefix},
+    AppData, BlobGasPrice,
+};
 
 // TODO: Add route to cancel data intents by ID
 
-#[get("/")]
+pub(crate) fn get_explorer_service() -> actix_web::Scope {
+    web::scope("")
+        .route("/", web::get().to(get_home))
+        .route("/address/{address}", web::get().to(get_address))
+        .route("/intent/{id}", web::get().to(get_intent))
+}
+
 pub(crate) async fn get_home(data: web::Data<Arc<AppData>>) -> impl Responder {
     let head_gas = data.get_head_gas().await;
 
@@ -27,7 +37,6 @@ pub(crate) async fn get_home(data: web::Data<Arc<AppData>>) -> impl Responder {
     HttpResponse::Ok().body(body)
 }
 
-#[get("/address/{address}")]
 pub(crate) async fn get_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
@@ -42,4 +51,22 @@ pub(crate) async fn get_address(
     let body = data.handlebars.render("address", &values).unwrap();
 
     HttpResponse::Ok().body(body)
+}
+
+pub(crate) async fn get_intent(
+    data: web::Data<Arc<AppData>>,
+    id: web::Path<DataIntentId>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let item = data.data_intent_by_id(&id).await.map_err(e500)?;
+
+    let values = json!({
+        "id": *id,
+        "from": vec_to_hex_0x_prefix(&item.eth_address),
+        "data_len": item.data_len,
+        "data_hash": vec_to_hex_0x_prefix(&item.data_hash),
+        "data": vec_to_hex_0x_prefix(&item.data),
+    });
+    let body = data.handlebars.render("intent", &values).unwrap();
+
+    Ok(HttpResponse::Ok().body(body))
 }

@@ -37,7 +37,9 @@
         <tbody>
 	    {{#each data_intents}}
             <tr>
-		<td>{{id}}</td>
+		<td>
+                    <a href='/intent/{{id}}'>{{id}}</a>
+                </td>
                 <td>
                     <a href='/address/{{from}}'>{{from}}</a>
                 </td>

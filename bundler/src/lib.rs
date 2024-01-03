@@ -19,7 +19,7 @@ use crate::{
     app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
-    explorer::{get_address, get_home},
+    explorer::get_explorer_service,
     metrics::{get_metrics, push_metrics_task},
     remote_node_tracker_task::remote_node_tracker_task,
     routes::{
@@ -315,9 +315,7 @@ impl App {
             let app = actix_web::App::new()
                 .wrap(Logger::default())
                 .app_data(web::Data::new(app_data_clone.clone()))
-                // TODO: move to explorer service
-                .service(get_home)
-                .service(get_address)
+                .service(get_explorer_service())
                 // TODO: move to API service
                 .service(get_health)
                 .service(get_sender)
