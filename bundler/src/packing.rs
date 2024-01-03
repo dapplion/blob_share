@@ -34,7 +34,7 @@ pub fn pack_items(items_sorted: &[Item], max_len: usize, cost_per_len: u64) -> O
     assert!(is_sorted_ascending(items_sorted));
 
     // TODO: consider other algos
-    pack_items_greedy_sorted(&items_sorted, max_len, cost_per_len)
+    pack_items_greedy_sorted(items_sorted, max_len, cost_per_len)
 }
 
 fn is_sorted_ascending(slice: &[Item]) -> bool {
