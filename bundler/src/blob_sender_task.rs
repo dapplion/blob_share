@@ -6,7 +6,7 @@ use eyre::{Context, Result};
 use crate::{
     blob_tx_data::BlobTxParticipant,
     data_intent_tracker::DataIntentDbRowFull,
-    debug,
+    debug, error,
     gas::GasConfig,
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
@@ -47,6 +47,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                         return Err(e);
                     } else {
                         metrics::BLOB_SENDER_TASK_ERRORS.inc();
+                        error!("error on send blob tx {:?}", e);
                         // TODO: Review if breaking out of the inner loop is the best outcome
                         break;
                     }
@@ -63,7 +64,7 @@ pub(crate) enum SendResult {
     NoNonceAvailable,
 }
 
-#[tracing::instrument(ret, err, skip(app_data), fields(id = _id))]
+#[tracing::instrument(ret, err, skip(app_data, _id), fields(id = _id))]
 // `_id` argument is used by tracing to track all internal log lines
 pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Result<SendResult> {
     let _timer = metrics::BLOB_SENDER_TASK_TIMES.start_timer();
