@@ -159,7 +159,6 @@ impl Args {
 struct AppConfig {
     l1_inbox_address: Address,
     panic_on_background_task_errors: bool,
-    anchor_block_filepath: PathBuf,
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
 }

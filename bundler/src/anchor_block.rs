@@ -38,10 +38,10 @@ pub async fn fetch_anchor_block_from_db(db_pool: &MySqlPool) -> Result<Option<An
 /// TODO: Keep a single row with latest block
 pub async fn persist_anchor_block_to_db(
     db_pool: &MySqlPool,
-    anchor_block: AnchorBlock,
+    anchor_block: &AnchorBlock,
 ) -> Result<()> {
     // Serialize the AnchorBlock (except the block_number field) to a JSON string
-    let anchor_block_json = serde_json::to_string(&anchor_block)?;
+    let anchor_block_json = serde_json::to_string(anchor_block)?;
     let block_number = anchor_block.number;
 
     // Insert the data into the database

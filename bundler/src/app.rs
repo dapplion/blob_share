@@ -11,6 +11,7 @@ use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
 use crate::{
+    anchor_block::persist_anchor_block_to_db,
     data_intent_tracker::{
         fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
         fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_many_data_intent_db_full,
@@ -108,7 +109,9 @@ impl AppData {
     }
 
     pub async fn maybe_advance_anchor_block(&self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {
-        if let Some(finalized_result) = self.sync.write().await.maybe_advance_anchor_block()? {
+        let finalize_result = { self.sync.write().await.maybe_advance_anchor_block()? };
+
+        if let Some(finalized_result) = finalize_result {
             let mut data_intent_tracker = self.data_intent_tracker.write().await;
             for tx in &finalized_result.finalized_included_txs {
                 data_intent_tracker.finalize_tx(tx.tx_hash);
@@ -121,6 +124,9 @@ impl AppData {
                 // TODO: Drop inclusions for excluded transactions
                 // data_intent_tracker.drop_excluded_tx(excluded_tx.tx_hash);
             }
+
+            // TODO: Persist anchor block to DB less often
+            persist_anchor_block_to_db(&self.db_pool, self.sync.read().await.get_anchor()).await?;
 
             Ok(Some((
                 finalized_result.finalized_included_txs,
@@ -343,10 +349,6 @@ impl AppData {
             .number
             .ok_or_else(|| eyre!("block has no number"))?
             .as_u64())
-    }
-
-    pub async fn serialize_anchor_block(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self.sync.read().await.get_anchor())
     }
 
     pub async fn collect_metrics(&self) {

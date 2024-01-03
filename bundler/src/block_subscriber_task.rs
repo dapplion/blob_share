@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use ethers::{providers::StreamExt, types::TxHash};
 use eyre::{eyre, Context, Result};
-use tokio::fs;
 
 use crate::{
     debug, error, info, metrics,
@@ -116,22 +115,6 @@ async fn sync_block(app_data: Arc<AppData>, block_hash: TxHash) -> Result<(), Sy
         );
         metrics::SYNC_ANCHOR_NUMBER.set(new_anchor_block_number as f64);
         metrics::FINALIZED_TXS.inc_by(finalized_tx_hashes.len() as f64);
-
-        // Persist anchor block
-        // TODO: Throttle to not persist every block, not necessary
-        let anchor_block_str = {
-            app_data
-                .serialize_anchor_block()
-                .await
-                .wrap_err("serializing AnchorBlock")?
-        };
-        fs::write(&app_data.config.anchor_block_filepath, anchor_block_str)
-            .await
-            .wrap_err("persisting anchor block")?;
-        debug!(
-            "persisted anchor_block file at {}",
-            app_data.config.anchor_block_filepath.to_string_lossy()
-        );
     }
 
     Ok(())

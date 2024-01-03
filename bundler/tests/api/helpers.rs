@@ -172,7 +172,7 @@ impl TestHarness {
             );
 
             let db_pool = connect_db_pool(&database_url).await;
-            persist_anchor_block_to_db(&db_pool, anchor_block)
+            persist_anchor_block_to_db(&db_pool, &anchor_block)
                 .await
                 .unwrap();
         }
