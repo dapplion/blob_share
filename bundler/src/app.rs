@@ -7,6 +7,7 @@ use ethers::{
     types::{Address, BlockNumber},
 };
 use eyre::{bail, eyre, Result};
+use futures::{stream, StreamExt, TryStreamExt};
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
 
@@ -19,10 +20,14 @@ use crate::{
         DataIntentTracker,
     },
     eth_provider::EthProvider,
+    info,
     sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
     utils::address_to_hex_lowercase,
-    AppConfig, BlobTxSummary, DataIntent,
+    warn, AppConfig, BlobTxSummary, DataIntent,
 };
+
+pub(crate) const PERSIST_ANCHOR_BLOCK_INITIAL_SYNC_INTERVAL: u64 = 32;
+pub(crate) const MAX_DISTANCE_SYNC: u64 = 8;
 
 pub(crate) struct AppData {
     pub config: AppConfig,
@@ -326,6 +331,54 @@ impl AppData {
             .collect();
 
         (data_intents, items_from_previous_inclusions)
+    }
+
+    /// Do initial blocking sync to get to the remote node head before starting the API and
+    /// potentially building blob transactions.
+    pub async fn initial_block_sync(&self) -> Result<()> {
+        loop {
+            let remote_node_head_block = self.fetch_remote_node_latest_block_number().await?;
+            let head_block = self.sync.read().await.get_head().number;
+
+            // Every sync iteration get closer to the remote head until being close enough
+            if head_block < remote_node_head_block + MAX_DISTANCE_SYNC {
+                break;
+            }
+
+            stream::iter(head_block + 1..remote_node_head_block)
+                .map(|block_number| self.fetch_block(block_number))
+                .buffered(16)
+                .try_for_each(|block| async {
+                    let block_number = block.number;
+                    let outcome = self.sync_next_head(block).await?;
+
+                    if let SyncBlockOutcome::BlockKnown = outcome {
+                        warn!("initial sync imported a known block {block_number}");
+                    }
+
+                    if block_number % PERSIST_ANCHOR_BLOCK_INITIAL_SYNC_INTERVAL == 0 {
+                        self.maybe_advance_anchor_block().await?;
+                        info!(
+                            "initial sync progress {block_number}/{remote_node_head_block} {} left",
+                            remote_node_head_block - block_number
+                        )
+                    }
+                    Ok(())
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Helper for `self.initial_block_sync`
+    async fn fetch_block(&self, block_number: u64) -> Result<BlockWithTxs> {
+        let block = self
+            .provider
+            .get_block_with_txs(block_number)
+            .await?
+            .ok_or_else(|| eyre!(format!("no block for number {block_number}")))?;
+        BlockWithTxs::from_ethers_block(block)
     }
 
     pub async fn get_sync(&self) -> (SyncStatusBlock, SyncStatusBlock) {

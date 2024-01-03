@@ -4,6 +4,7 @@ use ethers::{signers::Signer, types::TxHash};
 use eyre::{bail, Context, Result};
 
 use crate::{
+    app::MAX_DISTANCE_SYNC,
     blob_tx_data::BlobTxParticipant,
     data_intent_tracker::DataIntentDbRowFull,
     debug, error,
@@ -19,7 +20,6 @@ use crate::{
 /// Limit the maximum number of times a data intent included in a previous transaction can be
 /// included again in a new transaction.
 const MAX_PREVIOUS_INCLUSIONS: usize = 2;
-const MAX_DISTANCE_SYNC: u64 = 8;
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
