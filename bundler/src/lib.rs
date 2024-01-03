@@ -278,10 +278,27 @@ impl App {
         app_data.sync_data_intents().await?;
         info!("synced data intent tracker");
 
+        // Prints progress every few blocks to info level
+        app_data.initial_block_sync().await?;
+
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
         let listener_port = listener.local_addr().unwrap().port();
         info!("Binding server on {}:{}", args.bind_address, listener_port);
+
+        let register_get_metrics = if args.metrics {
+            if args.metrics_port == args.port {
+                info!("enabling metrics on server port");
+                if args.metrics_bearer_token.is_none() {
+                    warn!("UNSAFE: metrics exposed on the server port without auth");
+                }
+                true
+            } else {
+                todo!("serve metrics on different port");
+            }
+        } else {
+            false
+        };
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
@@ -300,11 +317,7 @@ impl App {
                 .service(get_balance_by_address);
 
             // Conditionally register the metrics route
-            if args.metrics && args.metrics_port == args.port {
-                info!("enabling metrics on server port");
-                if args.metrics_bearer_token.is_none() {
-                    warn!("UNSAFE: metrics exposed on the server port without auth");
-                }
+            if register_get_metrics {
                 app.service(get_metrics)
             } else {
                 app
@@ -312,11 +325,6 @@ impl App {
         })
         .listen(listener)?
         .run();
-
-        // TODO: serve metrics on different port
-        if args.metrics && args.metrics_port != args.port {
-            todo!("serve metrics on different port");
-        }
 
         Ok(App {
             port: listener_port,

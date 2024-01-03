@@ -652,7 +652,7 @@ impl From<&BlockSummary> for SyncStatusBlock {
 pub struct BlockWithTxs {
     hash: H256,
     parent_hash: H256,
-    number: u64,
+    pub number: u64,
     transactions: Vec<Transaction>,
     pub gas: BlockGasSummary,
 }
