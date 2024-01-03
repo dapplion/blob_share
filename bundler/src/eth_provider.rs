@@ -1,6 +1,6 @@
 use ethers::{
     providers::{Http, Middleware, Provider, ProviderError, StreamExt, Ws},
-    types::{Block, BlockId, Bytes, NameOrAddress, Transaction, TxHash, H256, U256, U64},
+    types::{Address, Block, BlockId, Bytes, NameOrAddress, Transaction, TxHash, H256, U256, U64},
 };
 use eyre::{Context, Result};
 use futures::stream::Stream;
@@ -103,6 +103,13 @@ impl EthProvider {
         match self {
             EthProvider::Http(provider) => provider.get_block_with_txs(block_hash_or_number).await,
             EthProvider::Ws(provider) => provider.get_block_with_txs(block_hash_or_number).await,
+        }
+    }
+
+    pub async fn get_balance(&self, from: Address) -> Result<U256, ProviderError> {
+        match self {
+            EthProvider::Http(provider) => provider.get_balance(from, None).await,
+            EthProvider::Ws(provider) => provider.get_balance(from, None).await,
         }
     }
 
