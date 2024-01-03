@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Read;
+use std::ops::Range;
 use std::time::Duration;
 
 use bundler_client::{types::DataIntentStatus, Client, GasPreference, NoncePreference};
@@ -169,8 +170,12 @@ async fn send_data_request(args: &Args, client: &Client, wallet: &LocalWallet) -
     let data = if let Some(test_data_random) = &args.test_data_random {
         let mut rng = thread_rng();
         match RandomData::from_str(test_data_random)? {
-            RandomData::Rand(data_len) => (0..data_len).map(|_| rng.gen()).collect::<Vec<u8>>(),
+            RandomData::Rand(data_len) => {
+                let data_len = rng.gen_range(data_len);
+                (0..data_len).map(|_| rng.gen()).collect::<Vec<u8>>()
+            }
             RandomData::RandSameAlphanumeric(data_len) => {
+                let data_len = rng.gen_range(data_len);
                 let random_char = rng.sample(rand::distributions::Alphanumeric) as u8;
                 vec![random_char; data_len]
             }
@@ -213,27 +218,47 @@ async fn send_data_request(args: &Args, client: &Client, wallet: &LocalWallet) -
 
 #[derive(Clone)]
 enum RandomData {
-    Rand(usize),
-    RandSameAlphanumeric(usize),
+    Rand(Range<usize>),
+    RandSameAlphanumeric(Range<usize>),
 }
 
 impl RandomData {
     fn from_str(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split(',').collect();
-        let first = parts
-            .first()
-            .ok_or_else(|| eyre!("invalid rand args"))?
-            .to_lowercase();
+        let first = get_part(&parts, 0)?;
 
-        Ok(match first.as_str() {
-            "rand" => RandomData::Rand(parts.get(1).ok_or_else(|| eyre!("no rand arg"))?.parse()?),
-            "rand_same_alphanumeric" => RandomData::RandSameAlphanumeric(
-                parts
-                    .get(1)
-                    .ok_or_else(|| eyre!("no rand_same_alphanumeric arg"))?
-                    .parse()?,
-            ),
+        Ok(match first {
+            "rand" => RandomData::Rand(parse_range(get_part(&parts, 1)?)?),
+            "rand_same_alphanumeric" => {
+                RandomData::RandSameAlphanumeric(parse_range(get_part(&parts, 1)?)?)
+            }
             _ => bail!(format!("unknown RandomData variant {first}")),
         })
+    }
+}
+
+fn get_part<'a>(parts: &'a [&'a str], i: usize) -> Result<&'a str> {
+    parts
+        .get(i)
+        .ok_or_else(|| eyre!("no arg in position {i}"))
+        .copied()
+}
+
+fn parse_range(range_str: &str) -> Result<std::ops::Range<usize>> {
+    let bounds: Vec<&str> = range_str.split("..").collect();
+    match *bounds.as_slice() {
+        [start] => {
+            let start = start.parse::<usize>()?;
+            Ok(start..start + 1)
+        }
+        [start, end] => {
+            let start = start.parse::<usize>()?;
+            let end = end.parse::<usize>()?;
+            if start >= end {
+                bail!("start >= end");
+            }
+            Ok(start..end)
+        }
+        _ => bail!("Invalid range format"),
     }
 }
