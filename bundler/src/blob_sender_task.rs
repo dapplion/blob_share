@@ -13,7 +13,7 @@ use crate::{
     packing::{pack_items, Item},
     sync::NonceStatus,
     utils::address_from_vec,
-    warn, AppData, MAX_USABLE_BLOB_DATA_LEN,
+    warn, AppData, BUMP_PERCENT_TYPE3_TX, MAX_USABLE_BLOB_DATA_LEN,
 };
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
@@ -143,7 +143,7 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         NonceStatus::NotAvailable => return Ok(SendResult::NoNonceAvailable),
         NonceStatus::Available(nonce) => nonce,
         NonceStatus::Repriced(nonce, prev_tx_gas) => {
-            gas_config.reprice_to_at_least(prev_tx_gas);
+            gas_config.reprice_to_at_least(prev_tx_gas, BUMP_PERCENT_TYPE3_TX as u128);
             nonce
         }
     };

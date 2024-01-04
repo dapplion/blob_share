@@ -75,6 +75,10 @@ pub const MAX_PENDING_DATA_LEN_PER_USER: usize = MAX_USABLE_BLOB_DATA_LEN * 16;
 /// Default target address
 const ADDRESS_ZERO: &str = "0x0000000000000000000000000000000000000000";
 
+/// Type 2 transactions require a 10% fee bump. However, since blob transactions are more expensive
+/// they require a 100% bump. Ref: https://ethereum.karalabe.com/talks/2023-ethtokyo.html#10
+const BUMP_PERCENT_TYPE3_TX: usize = 100;
+
 pub const TRUSTED_SETUP_BYTES: &[u8] = include_bytes!("../trusted_setup.json");
 
 #[derive(Parser, Debug)]
