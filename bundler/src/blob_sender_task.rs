@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ethers::{signers::Signer, types::TxHash};
-use eyre::{Context, Result};
+use eyre::{eyre, Context, Result};
 
 use crate::{
     blob_tx_data::BlobTxParticipant,
@@ -195,16 +195,23 @@ async fn construct_and_send_tx(
     let participants = next_blob_items
         .iter()
         .map(|item| {
+            let data = item
+                .data
+                .as_ref()
+                .ok_or_else(|| eyre!("intent {} has been pruned, cannot pack", item.id))?;
             Ok(BlobTxParticipant {
                 address: address_from_vec(&item.eth_address)?,
-                data_len: item.data.len(),
+                data_len: data.len(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
     let datas = next_blob_items
         .into_iter()
-        .map(|item| item.data)
-        .collect::<Vec<_>>();
+        .map(|item| {
+            item.data
+                .ok_or_else(|| eyre!("intent {} has been pruned, cannot pack", item.id))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let blob_tx = construct_blob_tx(
         &app_data.kzg_settings,

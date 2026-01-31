@@ -58,7 +58,7 @@ pub struct DataIntentTracker {
     cache_intent_inclusions: HashMap<DataIntentId, Vec<TxHash>>,
 }
 
-// TODO: Need to prune all items once included for long enough
+// Pruning of finalized items is handled by `prune_finalized_intent_data` in app.rs
 impl DataIntentTracker {
     pub fn collect_metrics(&self) {
         metrics::PENDING_INTENTS_CACHE.set(self.pending_intents.len() as f64);
@@ -210,8 +210,8 @@ pub struct DataIntentDbRowFull {
     pub id: Uuid,
     #[serde(with = "hex_vec")]
     pub eth_address: Vec<u8>, // BINARY(20)
-    #[serde(with = "hex_vec")]
-    pub data: Vec<u8>, // MEDIUMBLOB
+    #[serde(with = "option_hex_vec")]
+    pub data: Option<Vec<u8>>, // MEDIUMBLOB, NULL after pruning
     pub data_len: u32, // INT
     #[serde(with = "hex_vec")]
     pub data_hash: Vec<u8>, // BINARY(32)
@@ -249,7 +249,7 @@ WHERE id = ?
     Ok(DataIntentFull {
         id: data_intent.id,
         eth_address: data_intent.eth_address,
-        data: data_intent.data,
+        data: data_intent.data.unwrap_or_default(),
         data_len: data_intent.data_len,
         data_hash: data_intent.data_hash,
         max_blob_gas_price: data_intent.max_blob_gas_price,
@@ -479,6 +479,59 @@ pub(crate) async fn delete_intent_inclusions_by_tx_hash(
     Ok(())
 }
 
+/// Mark finalized data intents with their finalization block number.
+/// Called during finalization so we can later prune intents that are old enough.
+pub(crate) async fn set_finalized_block_number(
+    db_pool: &MySqlPool,
+    ids: &[Uuid],
+    block_number: u64,
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let block_number = block_number as u32;
+    let mut query_builder: QueryBuilder<MySql> =
+        QueryBuilder::new("UPDATE data_intents SET finalized_block_number = ");
+    query_builder.push_bind(block_number);
+    query_builder.push(" WHERE id IN ");
+    query_builder.push_tuples(ids.iter(), |mut b, id| {
+        b.push_bind(id);
+    });
+    query_builder.build().execute(db_pool).await?;
+
+    Ok(())
+}
+
+/// Prune raw data from finalized intents that are old enough.
+/// Sets `data = NULL` for intents where `inclusion_finalized = TRUE`
+/// and `finalized_block_number + prune_after_blocks <= current_anchor_block_number`.
+/// Returns the number of pruned rows.
+pub(crate) async fn prune_finalized_intent_data(
+    db_pool: &MySqlPool,
+    current_anchor_block_number: u64,
+    prune_after_blocks: u64,
+) -> Result<u64> {
+    // Only prune if the anchor is far enough ahead
+    let threshold = current_anchor_block_number.saturating_sub(prune_after_blocks) as u32;
+
+    let result = sqlx::query(
+        r#"
+UPDATE data_intents
+SET data = NULL
+WHERE inclusion_finalized = TRUE
+  AND data IS NOT NULL
+  AND finalized_block_number IS NOT NULL
+  AND finalized_block_number <= ?
+        "#,
+    )
+    .bind(threshold)
+    .execute(db_pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 // Private fn to ensure data consistency with local cache
 async fn insert_many_intent_tx_inclusions(
     db_pool: &MySqlPool,
@@ -544,7 +597,7 @@ mod tests {
         let item = DataIntentDbRowFull {
             id: Uuid::from_str("1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e").unwrap(),
             eth_address: vec![0xaa; 20],
-            data: vec![0xbb; 10],
+            data: Some(vec![0xbb; 10]),
             data_len: 10,
             data_hash: vec![0xcc; 32],
             data_hash_signature: Some(vec![0xee; 32]),
@@ -779,6 +832,29 @@ mod tests {
         assert!(!tracker.is_intent_included(&id));
         // Unknown ID is also not included
         assert!(!tracker.is_intent_included(&Uuid::new_v4()));
+    }
+
+    #[test]
+    fn serde_data_intent_db_row_full_pruned_data() {
+        let item = DataIntentDbRowFull {
+            id: Uuid::from_str("1bcb4515-8c91-456c-a87d-7c4f5f3f0d9e").unwrap(),
+            eth_address: vec![0xaa; 20],
+            data: None, // Pruned
+            data_len: 10,
+            data_hash: vec![0xcc; 32],
+            data_hash_signature: None,
+            max_blob_gas_price: 100000000,
+            updated_at: DateTime::from_str("2023-01-01T12:12:12.202889Z").unwrap(),
+        };
+
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("\"data\":null"));
+        assert!(json.contains("\"data_hash_signature\":null"));
+
+        let deserialized: DataIntentDbRowFull = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.data.is_none());
+        assert!(deserialized.data_hash_signature.is_none());
+        assert_eq!(deserialized.data_len, 10);
     }
 
     #[test]

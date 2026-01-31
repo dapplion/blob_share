@@ -84,7 +84,7 @@ A reliable, self-operated blob bundling service where:
 - **File:** `bundler/src/app.rs:138` (TODO)
 - When finalization excludes a repriced TX, clean up the `intent_inclusion` rows for that TX hash
 
-### [ ] 2.4 Prune finalized data
+### [x] 2.4 Prune finalized data
 - **File:** `bundler/src/data_intent_tracker.rs:61` (TODO), new migration
 - Add background task or hook in finalization: after N blocks past finalization, delete raw `data` column content from finalized intents (keep metadata)
 - Consolidate anchor_block table to single row (anchor_block.rs:38 TODO)

@@ -20,7 +20,8 @@ use crate::{
         delete_intent_inclusions_by_tx_hash, fetch_all_intents_with_inclusion_not_finalized,
         fetch_data_intent_db_full, fetch_data_intent_db_is_known, fetch_data_intent_inclusion,
         fetch_data_intent_is_cancelled, fetch_data_intent_owner, fetch_many_data_intent_db_full,
-        mark_data_intent_cancelled, mark_data_intents_as_inclusion_finalized, store_data_intent,
+        mark_data_intent_cancelled, mark_data_intents_as_inclusion_finalized,
+        prune_finalized_intent_data, set_finalized_block_number, store_data_intent,
         DataIntentDbRowFull, DataIntentTracker,
     },
     eth_provider::EthProvider,
@@ -139,6 +140,14 @@ impl AppData {
             // Mark finalized intents in database
             mark_data_intents_as_inclusion_finalized(&self.db_pool, &finalized_intent_ids).await?;
 
+            // Record the block number at which these intents were finalized (for pruning)
+            set_finalized_block_number(
+                &self.db_pool,
+                &finalized_intent_ids,
+                finalized_result.new_anchor_block_number,
+            )
+            .await?;
+
             // Drop inclusions for excluded (repriced) transactions
             {
                 let mut data_intent_tracker = self.data_intent_tracker.write().await;
@@ -152,6 +161,19 @@ impl AppData {
 
             // TODO: Persist anchor block to DB less often
             persist_anchor_block_to_db(&self.db_pool, self.sync.read().await.get_anchor()).await?;
+
+            // Prune raw data from old finalized intents
+            if self.config.prune_after_blocks > 0 {
+                let pruned = prune_finalized_intent_data(
+                    &self.db_pool,
+                    finalized_result.new_anchor_block_number,
+                    self.config.prune_after_blocks,
+                )
+                .await?;
+                if pruned > 0 {
+                    info!("Pruned raw data from {pruned} finalized intents");
+                }
+            }
 
             Ok(Some((
                 finalized_result.finalized_included_txs,

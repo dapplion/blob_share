@@ -34,17 +34,19 @@ pub async fn fetch_anchor_block_from_db(db_pool: &MySqlPool) -> Result<Option<An
     })
 }
 
-/// Persist AnchorBlock to DB row.
-/// TODO: Keep a single row with latest block
+/// Persist AnchorBlock to DB row, keeping only the latest row.
+/// Deletes all existing rows and inserts the new one.
 pub async fn persist_anchor_block_to_db(
     db_pool: &MySqlPool,
     anchor_block: &AnchorBlock,
 ) -> Result<()> {
-    // Serialize the AnchorBlock (except the block_number field) to a JSON string
     let anchor_block_json = serde_json::to_string(anchor_block)?;
     let block_number = anchor_block.number;
 
-    // Insert the data into the database
+    // Delete all existing rows and insert the new one
+    sqlx::query("DELETE FROM anchor_block")
+        .execute(db_pool)
+        .await?;
     sqlx::query!(
         "INSERT INTO anchor_block (anchor_block_json, block_number) VALUES (?, ?)",
         anchor_block_json,

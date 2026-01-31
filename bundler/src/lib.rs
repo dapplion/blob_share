@@ -168,6 +168,11 @@ pub struct Args {
     /// Format to send push gateway metrics
     #[arg(env, long, value_enum, default_value_t = PushMetricsFormat::Protobuf)]
     pub metrics_push_format: PushMetricsFormat,
+
+    /// Prune raw data from finalized intents after this many blocks past finalization.
+    /// Set to 0 to disable pruning.
+    #[arg(env, long, default_value_t = 1000)]
+    pub prune_after_blocks: u64,
 }
 
 impl Args {
@@ -182,6 +187,9 @@ struct AppConfig {
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
     node_poll_interval: Duration,
+    /// Prune raw data from finalized intents after this many blocks past finalization.
+    /// 0 means pruning is disabled.
+    prune_after_blocks: u64,
 }
 
 pub struct App {
@@ -254,6 +262,7 @@ impl App {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             panic_on_background_task_errors: args.panic_on_background_task_errors,
             node_poll_interval: Duration::from_secs(args.node_poll_interval_sec),
+            prune_after_blocks: args.prune_after_blocks,
             metrics_server_bearer_token: args.metrics_bearer_token.clone(),
             metrics_push: if let Some(url) = &args.metrics_push_url {
                 Some(PushMetricsConfig {
