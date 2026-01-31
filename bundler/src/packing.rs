@@ -45,8 +45,11 @@ pub fn pack_items(items_sorted: &[Item], max_len: usize, cost_per_len: u64) -> O
     // special case
     //  }
 
-    // Items must be sorted ascending for pack_items_greedy to work correctly
-    assert!(is_sorted_ascending(items_sorted));
+    // Items must be sorted ascending for pack_items_greedy to work correctly.
+    // Return None instead of panicking if the caller passes unsorted items.
+    if !is_sorted_ascending(items_sorted) {
+        return None;
+    }
 
     // TODO: consider other algos
     pack_items_greedy_sorted(items_sorted, max_len, cost_per_len)
@@ -63,9 +66,7 @@ pub fn sort_items(items: &mut [Item]) {
 /// Returns the combination of items with sum of len closest to `max_len` where all items satisfy
 /// the condition `effective_cost_per_len <= item.max_len_price`
 ///
-/// # Panics
-///
-/// `items.len()` must be < 32
+/// Returns `None` if no viable combination exists or if `items.len() >= 32` (bitmask limit).
 ///
 /// # Performance
 ///
@@ -77,8 +78,10 @@ pub fn pack_items_brute_force(
     cost_per_len: u64,
 ) -> Option<Vec<usize>> {
     let n = items.len();
-    // Max n to shift mask to
-    assert!(n < 32);
+    // Max n to shift mask to. Return None instead of panicking if items exceed bitmask capacity.
+    if n >= 32 {
+        return None;
+    }
 
     let mut best_combination = None;
     let mut best_selected_len = 0;
@@ -597,5 +600,63 @@ mod tests {
     fn item_new_has_no_group() {
         let item = Item::new(100, 5);
         assert_eq!(item.group_id, None);
+    }
+
+    // --- graceful error handling (no panics) ---
+
+    #[test]
+    fn pack_items_returns_none_for_unsorted_large_set() {
+        // >= MAX_COUNT_FOR_BRUTEFORCE items in descending order (unsorted).
+        // Previously this would panic via assert!(); now returns None.
+        let items: Vec<Item> = (0..MAX_COUNT_FOR_BRUTEFORCE)
+            .rev()
+            .map(|i| Item::new((i + 1) * 10, 10))
+            .collect();
+        assert!(!is_sorted_ascending(&items));
+        let result = pack_items(&items, MAX_LEN, 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pack_items_brute_force_returns_none_for_32_items() {
+        // Exactly 32 items exceeds the bitmask capacity (u32).
+        // Previously this would panic via assert!(); now returns None.
+        let items: Vec<Item> = (0..32).map(|_| Item::new(1, u64::MAX)).collect();
+        let result = pack_items_brute_force(&items, 100, 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pack_items_brute_force_returns_none_for_33_items() {
+        // 33 items, well above the 32-item bitmask limit.
+        let items: Vec<Item> = (0..33).map(|_| Item::new(1, u64::MAX)).collect();
+        let result = pack_items_brute_force(&items, 100, 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pack_items_brute_force_accepts_fewer_than_32_items() {
+        // Verify that items.len() < 32 is accepted (no early return).
+        // Using a small count to keep the test fast — the boundary check
+        // itself is at n >= 32, tested above with 32 and 33 items.
+        let items: Vec<Item> = (0..7).map(|_| Item::new(10, 100)).collect();
+        // 7 * 10 = 70, max_len = 70, all items fit exactly
+        let result = pack_items_brute_force(&items, 70, 1);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 7);
+    }
+
+    #[test]
+    fn pack_items_sorted_large_set_still_works() {
+        // Properly sorted large set should work fine via greedy path.
+        // Each item is MAX_LEN / MAX_COUNT_FOR_BRUTEFORCE so all items fill the blob exactly.
+        let item_len = MAX_LEN / MAX_COUNT_FOR_BRUTEFORCE;
+        let mut items: Vec<Item> = (0..MAX_COUNT_FOR_BRUTEFORCE)
+            .map(|_| Item::new(item_len, 10))
+            .collect();
+        sort_items(&mut items);
+        assert!(is_sorted_ascending(&items));
+        let result = pack_items(&items, MAX_LEN, 1);
+        assert!(result.is_some());
     }
 }

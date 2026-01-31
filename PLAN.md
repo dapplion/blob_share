@@ -355,6 +355,20 @@ Phase 4 (mostly independent)
     - Line 192: Replaced `TODO: Should use a more efficient encoding technique` with a doc comment explaining the encoding scheme and why the leading zero byte is necessary for BLS_MODULUS safety.
 - **Why:** `trusted_setup.rs` handles BLS trusted setup deserialization from the Ethereum consensus specs format with custom serde Visitor implementations, but had zero test coverage. Error paths (wrong point length, invalid hex) were completely untested. The stale TODOs in `kzg.rs` incorrectly suggested the code lacked field element safety, which could mislead future developers into unnecessary changes — the `encode_data_to_blob` function already correctly chunks data into 31-byte segments with a leading zero byte per field element.
 
+### [x] 5.13 Replace assert!() panics in packing.rs with graceful error handling
+- **File:** `bundler/src/packing.rs`
+- **Changes:**
+  - Replaced `assert!(is_sorted_ascending(items_sorted))` in `pack_items()` with an `if !... { return None; }` guard, preventing a panic if the function is called with unsorted items when the greedy path is taken (>= 8 items).
+  - Replaced `assert!(n < 32)` in `pack_items_brute_force()` with an `if n >= 32 { return None; }` guard, preventing a panic if called with 32+ items (which would overflow the u32 bitmask).
+  - Updated the doc comment on `pack_items_brute_force` to document the new None return behavior instead of the removed panic.
+  - Added 5 unit tests:
+    - `pack_items_returns_none_for_unsorted_large_set`: unsorted items with >= 8 elements returns None instead of panicking.
+    - `pack_items_brute_force_returns_none_for_32_items`: exactly 32 items returns None.
+    - `pack_items_brute_force_returns_none_for_33_items`: 33 items returns None.
+    - `pack_items_brute_force_accepts_fewer_than_32_items`: 7 items accepted and packs correctly.
+    - `pack_items_sorted_large_set_still_works`: sorted large set uses greedy path successfully.
+- **Why:** These were the last two `assert!()` calls in production code paths. While the current call site in `blob_sender_task.rs` always sorts items before calling `pack_items` and limits item count via `MAX_COUNT_FOR_BRUTEFORCE`, the public API of these functions could be called incorrectly from a future call site or if `MAX_COUNT_FOR_BRUTEFORCE` is changed. Returning `None` (no viable packing) is semantically correct and consistent with the functions' existing return type, whereas panicking would crash the entire service.
+
 ---
 
 ## Key Files Modified Across All Phases
