@@ -1,5 +1,7 @@
 use std::collections::{hash_map::Entry, HashMap};
 
+use ethers::types::TxHash;
+
 use bundler_client::types::{
     BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
     SyncStatusBlock,
@@ -28,6 +30,7 @@ use crate::{
     eth_provider::EthProvider,
     gas::GasConfig,
     info,
+    routes::get_blobs::BlobsResponse,
     sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
     utils::address_to_hex_lowercase,
     warn, AppConfig, BlobGasPrice, BlobTxSummary, DataIntent,
@@ -47,9 +50,10 @@ pub(crate) struct AppData {
     pub sender_wallet: LocalWallet,
     pub notify: Notify,
     pub chain_id: u64,
-    /// Available when `--beacon-api-url` is set. Used by blob retrieval endpoints (task 3.2).
-    #[allow(dead_code)]
+    /// Available when `--beacon-api-url` is set. Used by blob retrieval endpoints.
     pub beacon_consumer: Option<BlobConsumer>,
+    /// In-memory cache for blob data lookups. Blob data for included txs is immutable.
+    pub blob_cache: RwLock<HashMap<TxHash, BlobsResponse>>,
     // Private members, to ensure consistent manipulation
     data_intent_tracker: RwLock<DataIntentTracker>,
     sync: RwLock<BlockSync>,
@@ -80,6 +84,7 @@ impl AppData {
             notify: <_>::default(),
             chain_id,
             beacon_consumer,
+            blob_cache: RwLock::new(HashMap::new()),
             data_intent_tracker: data_intent_tracker.into(),
             sync: sync.into(),
         }

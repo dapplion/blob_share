@@ -4,10 +4,12 @@ use crate::{
     beacon_api_client::{BeaconApiClient, Slot},
     blob_tx_data::{is_blob_tx, BlobTxSummary},
     kzg::decode_blob_to_data,
+    routes::get_blobs::{BlobParticipantData, BlobsResponse},
+    utils::address_to_hex_lowercase,
 };
 use ethers::{
     providers::{Http, Middleware, Provider},
-    types::{Address, Block, Transaction, H256},
+    types::{Address, Block, Transaction, TxHash, H256},
 };
 use eyre::{bail, eyre, Result};
 
@@ -102,6 +104,83 @@ impl BlobConsumer {
                 Ok(blob_data[item.data_offset..end].to_vec())
             })
             .collect::<Result<Vec<_>>>()
+    }
+
+    /// Fetch blob data for a given transaction hash. Returns participants with their decoded
+    /// data extracted from the blob sidecars.
+    pub async fn fetch_blob_data_by_tx_hash(&self, tx_hash: TxHash) -> Result<BlobsResponse> {
+        let tx = self
+            .eth_provider
+            .get_transaction(tx_hash)
+            .await?
+            .ok_or_else(|| eyre!("transaction {tx_hash:?} not found"))?;
+
+        if !is_blob_tx(&tx) {
+            bail!("transaction {tx_hash:?} is not a blob transaction");
+        }
+
+        let block_hash = tx
+            .block_hash
+            .ok_or_else(|| eyre!("transaction {tx_hash:?} is not yet included in a block"))?;
+
+        let block = self
+            .eth_provider
+            .get_block_with_txs(block_hash)
+            .await?
+            .ok_or_else(|| eyre!("block {block_hash:?} not found"))?;
+
+        let blob_tx_summary = BlobTxSummary::from_tx(&tx)?
+            .ok_or_else(|| eyre!("could not parse blob tx summary from {tx_hash:?}"))?;
+
+        // Find the blob index for this transaction within the block
+        let mut block_blob_index: usize = 0;
+        let mut tx_blob_index: Option<usize> = None;
+        for block_tx in &block.transactions {
+            if block_tx.hash == tx_hash {
+                tx_blob_index = Some(block_blob_index);
+                break;
+            }
+            if is_blob_tx(block_tx) {
+                block_blob_index += 1;
+            }
+        }
+        let tx_blob_index =
+            tx_blob_index.ok_or_else(|| eyre!("transaction {tx_hash:?} not found in its block"))?;
+
+        let block_slot = self.slot_of_block(block.timestamp.as_u64()).await?;
+        let blob_sidecars = self
+            .beacon_api_client
+            .get_blob_sidecars(block_slot, Some(&[tx_blob_index]))
+            .await?;
+
+        let blob_data = blob_sidecars
+            .data
+            .first()
+            .ok_or_else(|| eyre!("no blob sidecar returned for index {tx_blob_index}"))?;
+        let decoded = decode_blob_to_data(&blob_data.blob);
+
+        let mut data_offset: usize = 0;
+        let mut participants = Vec::with_capacity(blob_tx_summary.participants.len());
+        for p in &blob_tx_summary.participants {
+            let end = data_offset + p.data_len;
+            let data = if end <= decoded.len() {
+                decoded[data_offset..end].to_vec()
+            } else {
+                // Return what's available, capped to decoded length
+                decoded[data_offset..decoded.len().min(end)].to_vec()
+            };
+            participants.push(BlobParticipantData {
+                address: address_to_hex_lowercase(p.address),
+                data_len: p.data_len,
+                data,
+            });
+            data_offset = end;
+        }
+
+        Ok(BlobsResponse {
+            tx_hash,
+            participants,
+        })
     }
 
     async fn slot_of_block(&self, timestamp: u64) -> Result<Slot> {

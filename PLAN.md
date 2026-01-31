@@ -121,7 +121,7 @@ A reliable, self-operated blob bundling service where:
 - Add `BlobConsumer` (or just `BeaconApiClient`) to `AppData`
 - Fix `consumer.rs:83` `assert_eq!(blob_sidecars.data.len(), 1)` — handle multi-blob transactions
 
-### [ ] 3.2 Add blob retrieval API endpoint
+### [x] 3.2 Add blob retrieval API endpoint
 - **File:** new `bundler/src/routes/get_blobs.rs`, `bundler/src/routes/mod.rs`
 - `GET /v1/blobs/{tx_hash}` — given a blob TX hash, fetch blob sidecars from beacon API, decode participants, return structured data
 - Cache results in-memory (finalized blobs don't change)

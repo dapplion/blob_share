@@ -9,6 +9,7 @@ use eyre::{eyre, Result};
 use std::sync::Arc;
 
 pub mod delete_data;
+pub mod get_blobs;
 pub mod post_data;
 
 use crate::eth_provider::EthProvider;
