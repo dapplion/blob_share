@@ -8,13 +8,12 @@ use ethers::types::Address;
 use eyre::{eyre, Result};
 use std::sync::Arc;
 
+pub mod delete_data;
 pub mod post_data;
 
 use crate::eth_provider::EthProvider;
 use crate::utils::e500;
 use crate::{AppData, BlobGasPrice};
-
-// TODO: Add route to cancel data intents by ID
 
 #[get("/v1/health")]
 pub(crate) async fn get_health(

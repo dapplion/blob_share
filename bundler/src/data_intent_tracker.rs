@@ -74,7 +74,7 @@ impl DataIntentTracker {
             r#"
 SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at, inclusion_finalized
 FROM data_intents
-WHERE (inclusion_finalized = FALSE) AND (updated_at BETWEEN ? AND ?)
+WHERE (inclusion_finalized = FALSE) AND (cancelled = FALSE) AND (updated_at BETWEEN ? AND ?)
 ORDER BY updated_at ASC
         "#,
         )
@@ -165,6 +165,18 @@ ORDER BY updated_at ASC
         } else {
             vec![]
         }
+    }
+
+    /// Returns true if the intent has been included in any transaction (pending or confirmed).
+    pub fn is_intent_included(&self, id: &DataIntentId) -> bool {
+        self.cache_intent_inclusions.contains_key(id)
+    }
+
+    /// Remove a pending intent from the in-memory tracker. Returns the removed summary if found.
+    /// Only removes from `pending_intents`; the caller should ensure the intent is not included
+    /// in any transaction before calling this.
+    pub fn remove_pending_intent(&mut self, id: &DataIntentId) -> Option<DataIntentSummary> {
+        self.pending_intents.remove(id)
     }
 
     pub async fn insert_many_intent_tx_inclusions(
@@ -415,6 +427,42 @@ WHERE id IN
         .await?;
 
     Ok(())
+}
+
+/// Mark a data intent as cancelled in the database.
+pub(crate) async fn mark_data_intent_cancelled(db_pool: &MySqlPool, id: &Uuid) -> Result<()> {
+    sqlx::query("UPDATE data_intents SET cancelled = TRUE WHERE id = ?")
+        .bind(id)
+        .execute(db_pool)
+        .await?;
+    Ok(())
+}
+
+/// Fetch the owner address of a data intent. Returns None if the intent does not exist.
+pub(crate) async fn fetch_data_intent_owner(
+    db_pool: &MySqlPool,
+    id: &Uuid,
+) -> Result<Option<Address>> {
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT eth_address FROM data_intents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db_pool)
+            .await?;
+
+    match row {
+        Some((eth_address,)) => Ok(Some(address_from_vec(&eth_address)?)),
+        None => Ok(None),
+    }
+}
+
+/// Check if a data intent is already cancelled in the database.
+pub(crate) async fn fetch_data_intent_is_cancelled(db_pool: &MySqlPool, id: &Uuid) -> Result<bool> {
+    let row: Option<(bool,)> = sqlx::query_as("SELECT cancelled FROM data_intents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db_pool)
+        .await?;
+
+    Ok(row.map(|(cancelled,)| cancelled).unwrap_or(false))
 }
 
 /// Delete all intent_inclusions rows for a given transaction hash.
@@ -672,5 +720,81 @@ mod tests {
         assert_eq!(tracker.pending_intents.len(), 0);
         assert_eq!(tracker.included_intents.len(), 0);
         assert_eq!(tracker.cache_intent_inclusions.len(), 0);
+    }
+
+    #[test]
+    fn remove_pending_intent_returns_summary() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        let summary = make_summary(id);
+        let from = summary.from;
+        tracker.pending_intents.insert(id, summary);
+
+        let removed = tracker.remove_pending_intent(&id);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().from, from);
+        assert!(tracker.pending_intents.is_empty());
+    }
+
+    #[test]
+    fn remove_pending_intent_unknown_returns_none() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        tracker.pending_intents.insert(id, make_summary(id));
+
+        let removed = tracker.remove_pending_intent(&Uuid::new_v4());
+        assert!(removed.is_none());
+        // Original intent untouched
+        assert_eq!(tracker.pending_intents.len(), 1);
+    }
+
+    #[test]
+    fn is_intent_included_returns_correct_state() {
+        let mut tracker = DataIntentTracker::default();
+        let id_included = Uuid::new_v4();
+        let id_pending = Uuid::new_v4();
+        let tx_hash = H256::random();
+
+        tracker
+            .pending_intents
+            .insert(id_included, make_summary(id_included));
+        tracker
+            .pending_intents
+            .insert(id_pending, make_summary(id_pending));
+        tracker
+            .cache_intent_inclusions
+            .insert(id_included, vec![tx_hash]);
+
+        assert!(tracker.is_intent_included(&id_included));
+        assert!(!tracker.is_intent_included(&id_pending));
+    }
+
+    #[test]
+    fn is_intent_included_not_included_for_pending_only() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        tracker.pending_intents.insert(id, make_summary(id));
+
+        // Pending-only intent is not considered "included"
+        assert!(!tracker.is_intent_included(&id));
+        // Unknown ID is also not included
+        assert!(!tracker.is_intent_included(&Uuid::new_v4()));
+    }
+
+    #[test]
+    fn remove_pending_intent_restores_balance_calculation() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        let summary = make_summary(id);
+        let from = summary.from;
+        let cost = summary.max_cost();
+        tracker.pending_intents.insert(id, summary);
+
+        // Before cancel: cost is counted
+        assert_eq!(tracker.non_included_intents_total_cost(&from), cost);
+
+        // After cancel: cost is no longer counted
+        tracker.remove_pending_intent(&id);
+        assert_eq!(tracker.non_included_intents_total_cost(&from), 0);
     }
 }

@@ -68,7 +68,7 @@ A reliable, self-operated blob bundling service where:
 
 ## Phase 2: Operational Features
 
-### [ ] 2.1 Cancel data intent endpoint
+### [x] 2.1 Cancel data intent endpoint
 - **Files:** `bundler/src/routes/mod.rs`, new `bundler/src/routes/delete_data.rs`, `bundler/src/data_intent_tracker.rs`, `bundler/src/app.rs`
 - Add `DELETE /v1/data/{id}` — requires signed request (same ECDSA scheme as POST) proving ownership
 - Validates intent is still pending (not already packed into a TX)

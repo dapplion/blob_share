@@ -20,5 +20,8 @@ ethereum_serde_utils = "0.5"
 hex = "0.4.3"
 chrono = { version = "0.4.31", default-features = false, features = ["clock", "serde"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
 
 

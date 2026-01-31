@@ -7,9 +7,9 @@ use url::Url;
 
 use crate::{
     types::{
-        BlobGasPrice, BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus,
-        DataIntentSummary, PostDataIntentV1, PostDataIntentV1Signed, PostDataResponse,
-        SenderDetails, SyncStatus,
+        BlobGasPrice, BlockGasSummary, CancelDataIntentSigned, DataIntentFull, DataIntentId,
+        DataIntentStatus, DataIntentSummary, PostDataIntentV1, PostDataIntentV1Signed,
+        PostDataResponse, SenderDetails, SyncStatus,
     },
     utils::{address_to_hex_lowercase, is_ok_response, unix_timestamps_millis},
 };
@@ -134,6 +134,26 @@ impl Client {
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
+    }
+
+    pub async fn cancel_data_intent(&self, cancel: &CancelDataIntentSigned) -> Result<()> {
+        let response = self
+            .client
+            .delete(self.url(&format!("v1/data/{}", cancel.id)))
+            .json(cancel)
+            .send()
+            .await?;
+        is_ok_response(response).await?;
+        Ok(())
+    }
+
+    pub async fn cancel_data_intent_with_wallet(
+        &self,
+        wallet: &LocalWallet,
+        id: DataIntentId,
+    ) -> Result<()> {
+        let cancel = CancelDataIntentSigned::with_signature(wallet, wallet.address(), id).await?;
+        self.cancel_data_intent(&cancel).await
     }
 
     /// `path` must not start with /

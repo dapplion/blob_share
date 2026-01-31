@@ -24,8 +24,8 @@ use crate::{
     metrics::{get_metrics, push_metrics_task},
     remote_node_tracker_task::remote_node_tracker_task,
     routes::{
-        get_balance_by_address, get_data, get_data_by_id, get_gas, get_health, get_sender,
-        get_status_by_id, get_sync, post_data::post_data,
+        delete_data::delete_data, get_balance_by_address, get_data, get_data_by_id, get_gas,
+        get_health, get_sender, get_status_by_id, get_sync, post_data::post_data,
     },
     sync::{BlockSync, BlockSyncConfig},
     trusted_setup::TrustedSetup,
@@ -364,6 +364,7 @@ impl App {
                 .service(get_sync)
                 .service(get_gas)
                 .service(post_data)
+                .service(delete_data)
                 .service(get_data)
                 .service(get_data_by_id)
                 .service(get_status_by_id)

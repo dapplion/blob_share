@@ -19,8 +19,9 @@ use crate::{
     data_intent_tracker::{
         delete_intent_inclusions_by_tx_hash, fetch_all_intents_with_inclusion_not_finalized,
         fetch_data_intent_db_full, fetch_data_intent_db_is_known, fetch_data_intent_inclusion,
-        fetch_many_data_intent_db_full, mark_data_intents_as_inclusion_finalized,
-        store_data_intent, DataIntentDbRowFull, DataIntentTracker,
+        fetch_data_intent_is_cancelled, fetch_data_intent_owner, fetch_many_data_intent_db_full,
+        mark_data_intent_cancelled, mark_data_intents_as_inclusion_finalized, store_data_intent,
+        DataIntentDbRowFull, DataIntentTracker,
     },
     eth_provider::EthProvider,
     info,
@@ -268,6 +269,11 @@ impl AppData {
 
     #[tracing::instrument(skip(self))]
     pub async fn status_by_id(&self, id: &DataIntentId) -> Result<DataIntentStatus> {
+        // Check if cancelled first
+        if fetch_data_intent_is_cancelled(&self.db_pool, id).await? {
+            return Ok(DataIntentStatus::Cancelled);
+        }
+
         let inclusions = fetch_data_intent_inclusion(&self.db_pool, id).await?;
 
         let status = if let Some(inclusion) = inclusions.last().copied() {
@@ -296,6 +302,46 @@ impl AppData {
             }
         };
         Ok(status)
+    }
+
+    /// Cancel a pending data intent. Validates ownership and that the intent is not yet
+    /// included in any transaction.
+    #[tracing::instrument(skip(self))]
+    pub async fn cancel_data_intent(&self, id: &DataIntentId, from: &Address) -> Result<()> {
+        // First check if the intent is already cancelled
+        if fetch_data_intent_is_cancelled(&self.db_pool, id).await? {
+            bail!("data intent {id} is already cancelled");
+        }
+
+        // Verify ownership: check the DB for the intent's owner address
+        let owner = fetch_data_intent_owner(&self.db_pool, id)
+            .await?
+            .ok_or_else(|| eyre!("data intent {id} not found"))?;
+
+        if &owner != from {
+            bail!("address {from} does not own data intent {id}");
+        }
+
+        // Check if the intent has been included in a transaction
+        {
+            let tracker = self.data_intent_tracker.read().await;
+            if tracker.is_intent_included(id) {
+                bail!(
+                    "data intent {id} is already included in a transaction and cannot be cancelled"
+                );
+            }
+        }
+
+        // Mark as cancelled in DB
+        mark_data_intent_cancelled(&self.db_pool, id).await?;
+
+        // Remove from in-memory tracker
+        {
+            let mut tracker = self.data_intent_tracker.write().await;
+            tracker.remove_pending_intent(id);
+        }
+
+        Ok(())
     }
 
     pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentFull> {

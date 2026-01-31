@@ -103,6 +103,7 @@ impl PostDataIntentV1Signed {
 pub enum DataIntentStatus {
     Unknown,
     Pending,
+    Cancelled,
     InPendingTx { tx_hash: TxHash },
     InConfirmedTx { tx_hash: TxHash, block_hash: H256 },
 }
@@ -112,14 +113,17 @@ impl DataIntentStatus {
         match self {
             DataIntentStatus::InConfirmedTx { .. }
             | DataIntentStatus::InPendingTx { .. }
-            | DataIntentStatus::Pending => true,
+            | DataIntentStatus::Pending
+            | DataIntentStatus::Cancelled => true,
             DataIntentStatus::Unknown => false,
         }
     }
 
     pub fn is_in_tx(&self) -> Option<TxHash> {
         match self {
-            DataIntentStatus::Unknown | DataIntentStatus::Pending => None,
+            DataIntentStatus::Unknown | DataIntentStatus::Pending | DataIntentStatus::Cancelled => {
+                None
+            }
             DataIntentStatus::InPendingTx { tx_hash, .. } => Some(*tx_hash),
             DataIntentStatus::InConfirmedTx { tx_hash, .. } => Some(*tx_hash),
         }
@@ -129,6 +133,7 @@ impl DataIntentStatus {
         match self {
             DataIntentStatus::Unknown
             | DataIntentStatus::Pending
+            | DataIntentStatus::Cancelled
             | DataIntentStatus::InPendingTx { .. } => None,
             DataIntentStatus::InConfirmedTx {
                 tx_hash,
@@ -244,11 +249,69 @@ pub(crate) fn data_intent_max_cost(data_len: usize, max_blob_gas_price: BlobGasP
     chargeable_len as u128 * max_blob_gas_price as u128
 }
 
+/// Signed request to cancel a data intent
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CancelDataIntentSigned {
+    /// Address that owns the data intent
+    pub from: Address,
+    /// ID of the data intent to cancel
+    pub id: DataIntentId,
+    /// Signature over := id_bytes | "cancel"
+    #[serde(with = "hex_vec")]
+    pub signature: Vec<u8>,
+}
+
+impl CancelDataIntentSigned {
+    pub async fn with_signature(
+        wallet: &LocalWallet,
+        from: Address,
+        id: DataIntentId,
+    ) -> Result<Self> {
+        if wallet.address() != from {
+            bail!(
+                "from {} does not match wallet address {}",
+                from,
+                wallet.address()
+            );
+        }
+
+        let sign_hash = Self::sign_hash(id);
+        let signature: Signature = wallet.sign_message(sign_hash).await?;
+
+        Ok(Self {
+            from,
+            id,
+            signature: signature.into(),
+        })
+    }
+
+    fn sign_hash(id: DataIntentId) -> Vec<u8> {
+        let mut signed_data = id.as_bytes().to_vec();
+        signed_data.extend_from_slice(b"cancel");
+        signed_data
+    }
+
+    pub fn verify_signature(&self) -> Result<()> {
+        let signature = deserialize_signature(&self.signature)?;
+        let sign_hash = Self::sign_hash(self.id);
+        signature.verify(sign_hash, self.from)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
+    use ethers::signers::{LocalWallet, Signer};
+
     use super::*;
+
+    const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
+
+    fn get_wallet() -> Result<LocalWallet> {
+        Ok(LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?)
+    }
 
     #[test]
     fn data_intent_id_str_serde() {
@@ -261,5 +324,66 @@ mod tests {
         let id_from_json = serde_json::from_str(&id_as_json).unwrap();
         assert_eq!(id, id_from_json);
         assert_eq!(serde_json::to_string(&id).unwrap(), id_as_json);
+    }
+
+    #[tokio::test]
+    async fn cancel_data_intent_signature_valid() -> Result<()> {
+        let wallet = get_wallet()?;
+        let id = DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483")?;
+
+        let cancel = CancelDataIntentSigned::with_signature(&wallet, wallet.address(), id).await?;
+        cancel.verify_signature()?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_data_intent_signature_wrong_address() -> Result<()> {
+        let wallet = get_wallet()?;
+        let id = DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483")?;
+
+        let mut cancel =
+            CancelDataIntentSigned::with_signature(&wallet, wallet.address(), id).await?;
+        // Tamper with the from address
+        cancel.from = Address::zero();
+
+        assert!(cancel.verify_signature().is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_data_intent_wallet_mismatch() -> Result<()> {
+        let wallet = get_wallet()?;
+        let id = DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483")?;
+
+        let result = CancelDataIntentSigned::with_signature(&wallet, Address::zero(), id).await;
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_data_intent_serde_roundtrip() -> Result<()> {
+        let wallet = get_wallet()?;
+        let id = DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483")?;
+
+        let cancel = CancelDataIntentSigned::with_signature(&wallet, wallet.address(), id).await?;
+        let json = serde_json::to_string(&cancel)?;
+        let cancel_deserialized: CancelDataIntentSigned = serde_json::from_str(&json)?;
+
+        assert_eq!(cancel.from, cancel_deserialized.from);
+        assert_eq!(cancel.id, cancel_deserialized.id);
+        assert_eq!(cancel.signature, cancel_deserialized.signature);
+        cancel_deserialized.verify_signature()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn data_intent_status_cancelled_is_known() {
+        assert!(DataIntentStatus::Cancelled.is_known());
+        assert!(DataIntentStatus::Cancelled.is_in_tx().is_none());
+        assert!(DataIntentStatus::Cancelled.is_in_block().is_none());
     }
 }
