@@ -385,6 +385,17 @@ Phase 4 (mostly independent)
     - `deserialize_signature`: valid 65-byte signature, too short, too long, empty, roundtrip.
 - **Why:** `data_intent.rs` is a core type used across the bundler — it had tests only for cost/length calculation but none for the `WithSignature` variant, accessor methods, async signature construction, or serde serialization. `bundler_client/src/utils.rs` contains functions used by the client library for hex encoding, address formatting, signature deserialization, and timestamp generation, but had zero test coverage. Error paths in `deserialize_signature` (wrong-length input) were completely untested.
 
+### [x] 5.15 Add unit tests for gas.rs, bundler_client option_hex_vec.rs, and client.rs
+- **Files:** `bundler/src/gas.rs`, `bundler_client/src/option_hex_vec.rs`, `bundler_client/src/client.rs`
+- **Changes:**
+  - Added 7 unit tests to `gas.rs` for the previously untested `block_gas_summary_from_block` function:
+    - Valid block with all fields present, zero-value block, missing `base_fee_per_gas`, missing `blob_gas_used`, missing `excess_blob_gas`, all fields missing, and blob price consistency check with zero excess.
+  - Added 12 unit tests to `bundler_client/src/option_hex_vec.rs` which previously had zero test coverage:
+    - Serialize Some bytes, None, and empty vec. Deserialize with 0x prefix, null, and empty hex. Roundtrip Some, None, and single byte. Error cases: invalid hex, odd-length hex. Zero byte preservation.
+  - Added 12 unit tests to `bundler_client/src/client.rs` which previously had zero test coverage:
+    - `Client::new()`: valid URL, valid URL without trailing slash, invalid URL. URL helper: with/without trailing slash, with path prefix, data by ID format, balance format. Enum variants: `GasPreference::Value`, `GasPreference::RelativeToHead`, `NoncePreference::Value`. `FACTOR_RESOLUTION` constant.
+- **Why:** `block_gas_summary_from_block` is the bridge between raw Ethereum blocks and the internal gas model — its error paths (missing post-London/post-4844 fields) had no test coverage. `option_hex_vec.rs` implements custom serde for `Option<Vec<u8>>` used in API serialization of data intent signatures, but had zero tests. `client.rs` contains the public SDK client constructor and URL building logic used by all API consumers, but URL path joining and error handling were untested.
+
 ---
 
 ## Key Files Modified Across All Phases

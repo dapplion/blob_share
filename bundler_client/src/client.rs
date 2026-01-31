@@ -194,3 +194,100 @@ pub enum NoncePreference {
     Timebased,
     Value(u64),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_new_valid_url() {
+        let client = Client::new("http://localhost:8080/");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn client_new_valid_url_no_trailing_slash() {
+        let client = Client::new("http://localhost:8080");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn client_new_invalid_url() {
+        let client = Client::new("not-a-url");
+        assert!(client.is_err());
+    }
+
+    #[test]
+    fn client_url_helper_with_trailing_slash() {
+        let client = Client::new("http://localhost:8080/").unwrap();
+        assert_eq!(client.url("v1/health"), "http://localhost:8080/v1/health");
+    }
+
+    #[test]
+    fn client_url_helper_without_trailing_slash() {
+        let client = Client::new("http://localhost:8080").unwrap();
+        // Url::parse normalizes the path
+        assert_eq!(client.url("v1/health"), "http://localhost:8080/v1/health");
+    }
+
+    #[test]
+    fn client_url_helper_with_path_prefix() {
+        let client = Client::new("http://localhost:8080/api/").unwrap();
+        assert_eq!(
+            client.url("v1/health"),
+            "http://localhost:8080/api/v1/health"
+        );
+    }
+
+    #[test]
+    fn gas_preference_value_stores_price() {
+        let pref = GasPreference::Value(42);
+        match pref {
+            GasPreference::Value(v) => assert_eq!(v, 42),
+            _ => panic!("expected Value variant"),
+        }
+    }
+
+    #[test]
+    fn gas_preference_relative_stores_factor() {
+        let pref = GasPreference::RelativeToHead(1.5);
+        match pref {
+            GasPreference::RelativeToHead(f) => assert!((f - 1.5).abs() < f64::EPSILON),
+            _ => panic!("expected RelativeToHead variant"),
+        }
+    }
+
+    #[test]
+    fn nonce_preference_value_stores_nonce() {
+        let pref = NoncePreference::Value(12345);
+        match pref {
+            NoncePreference::Value(v) => assert_eq!(v, 12345),
+            _ => panic!("expected Value variant"),
+        }
+    }
+
+    #[test]
+    fn factor_resolution_constant() {
+        assert_eq!(FACTOR_RESOLUTION, 1000);
+    }
+
+    #[test]
+    fn client_url_format_data_by_id() {
+        let client = Client::new("http://localhost:8080/").unwrap();
+        let id = "c4f1bdd0-3331-4470-b427-28a2c514f483";
+        assert_eq!(
+            client.url(&format!("v1/data/{}", id)),
+            format!("http://localhost:8080/v1/data/{}", id)
+        );
+    }
+
+    #[test]
+    fn client_url_format_balance() {
+        let client = Client::new("http://localhost:8080/").unwrap();
+        let addr = "0x0000000000000000000000000000000000000001";
+        assert_eq!(
+            client.url(&format!("v1/balance/{}", addr)),
+            format!("http://localhost:8080/v1/balance/{}", addr)
+        );
+    }
+}

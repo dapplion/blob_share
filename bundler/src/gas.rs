@@ -196,4 +196,69 @@ mod tests {
         assert_eq!(gas.max_fee_per_gas, 100_000_000_000);
         assert_eq!(gas.max_fee_per_blob_gas, 1000);
     }
+
+    // --- block_gas_summary_from_block tests ---
+
+    fn make_block(
+        base_fee: Option<u64>,
+        blob_gas_used: Option<u64>,
+        excess_blob_gas: Option<u64>,
+    ) -> Block<TxHash> {
+        Block {
+            base_fee_per_gas: base_fee.map(Into::into),
+            blob_gas_used: blob_gas_used.map(Into::into),
+            excess_blob_gas: excess_blob_gas.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_valid() {
+        let block = make_block(Some(15_000_000_000), Some(131072), Some(393216));
+        let summary = block_gas_summary_from_block(&block).unwrap();
+        assert_eq!(summary.base_fee_per_gas, 15_000_000_000);
+        assert_eq!(summary.blob_gas_used, 131072);
+        assert_eq!(summary.excess_blob_gas, 393216);
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_zero_values() {
+        let block = make_block(Some(0), Some(0), Some(0));
+        let summary = block_gas_summary_from_block(&block).unwrap();
+        assert_eq!(summary.base_fee_per_gas, 0);
+        assert_eq!(summary.blob_gas_used, 0);
+        assert_eq!(summary.excess_blob_gas, 0);
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_missing_base_fee() {
+        let block = make_block(None, Some(131072), Some(393216));
+        assert!(block_gas_summary_from_block(&block).is_err());
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_missing_blob_gas_used() {
+        let block = make_block(Some(15_000_000_000), None, Some(393216));
+        assert!(block_gas_summary_from_block(&block).is_err());
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_missing_excess_blob_gas() {
+        let block = make_block(Some(15_000_000_000), Some(131072), None);
+        assert!(block_gas_summary_from_block(&block).is_err());
+    }
+
+    #[test]
+    fn block_gas_summary_from_block_all_missing() {
+        let block = make_block(None, None, None);
+        assert!(block_gas_summary_from_block(&block).is_err());
+    }
+
+    #[test]
+    fn block_gas_summary_blob_price_consistent() {
+        let block = make_block(Some(10_000_000_000), Some(131072), Some(0));
+        let summary = block_gas_summary_from_block(&block).unwrap();
+        // With excess_blob_gas = 0, blob_gas_price should be the minimum (1)
+        assert_eq!(summary.blob_gas_price(), 1);
+    }
 }

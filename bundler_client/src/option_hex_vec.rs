@@ -54,3 +54,115 @@ impl<'de> Visitor<'de> for OptionPrefixedHexVisitor {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    /// Wrapper struct to exercise the custom serde module via `#[serde(with = ...)]`.
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct Wrapper {
+        #[serde(with = "super")]
+        value: Option<Vec<u8>>,
+    }
+
+    #[test]
+    fn serialize_some_bytes() {
+        let w = Wrapper {
+            value: Some(vec![0x00, 0x01, 0x02, 0xff]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"value":"0x000102ff"}"#);
+    }
+
+    #[test]
+    fn serialize_none() {
+        let w = Wrapper { value: None };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"value":null}"#);
+    }
+
+    #[test]
+    fn serialize_some_empty() {
+        let w = Wrapper {
+            value: Some(vec![]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"value":"0x"}"#);
+    }
+
+    #[test]
+    fn deserialize_some_with_prefix() {
+        let json = r#"{"value":"0xdeadbeef"}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(w.value, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+    }
+
+    #[test]
+    fn deserialize_null() {
+        let json = r#"{"value":null}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(w.value, None);
+    }
+
+    #[test]
+    fn deserialize_empty_hex() {
+        let json = r#"{"value":"0x"}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(w.value, Some(vec![]));
+    }
+
+    #[test]
+    fn roundtrip_some() {
+        let w = Wrapper {
+            value: Some(vec![0xaa, 0xbb, 0xcc]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let w2: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, w2);
+    }
+
+    #[test]
+    fn roundtrip_none() {
+        let w = Wrapper { value: None };
+        let json = serde_json::to_string(&w).unwrap();
+        let w2: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, w2);
+    }
+
+    #[test]
+    fn roundtrip_single_byte() {
+        let w = Wrapper {
+            value: Some(vec![0x42]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let w2: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, w2);
+    }
+
+    #[test]
+    fn deserialize_invalid_hex_fails() {
+        let json = r#"{"value":"0xZZZZ"}"#;
+        let result = serde_json::from_str::<Wrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_odd_length_hex_fails() {
+        // Odd number of hex chars after 0x prefix
+        let json = r#"{"value":"0xabc"}"#;
+        let result = serde_json::from_str::<Wrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn serialize_preserves_zero_bytes() {
+        let w = Wrapper {
+            value: Some(vec![0x00, 0x00, 0x00]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"value":"0x000000"}"#);
+        let w2: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, w2);
+    }
+}
