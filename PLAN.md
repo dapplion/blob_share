@@ -90,7 +90,7 @@ A reliable, self-operated blob bundling service where:
 - Consolidate anchor_block table to single row (anchor_block.rs:38 TODO)
 - CLI arg: `--prune-after-blocks` (default 1000, 0 = disabled)
 
-### [ ] 2.5 Evict underpriced intents
+### [x] 2.5 Evict underpriced intents
 - **File:** `bundler/src/data_intent_tracker.rs:22` (TODO)
 - If an intent has been pending longer than a configurable threshold and its max_blob_gas_price is below the current network price, evict it and refund balance
 - CLI arg: `--evict-stale-intent-hours` (default 24)

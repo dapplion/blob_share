@@ -366,6 +366,36 @@ impl AppData {
         Ok(())
     }
 
+    /// Evict pending intents that are stale and underpriced. Returns the number of evicted intents.
+    pub async fn evict_stale_underpriced_intents(
+        &self,
+        max_age: chrono::Duration,
+    ) -> Result<usize> {
+        let current_blob_gas_price = self.blob_gas_price_next_head_block().await;
+        let stale_ids = {
+            let tracker = self.data_intent_tracker.read().await;
+            tracker.find_stale_underpriced_intents(current_blob_gas_price as u64, max_age)
+        };
+
+        if stale_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Mark each as cancelled in DB and remove from in-memory tracker
+        for id in &stale_ids {
+            mark_data_intent_cancelled(&self.db_pool, id).await?;
+        }
+
+        {
+            let mut tracker = self.data_intent_tracker.write().await;
+            for id in &stale_ids {
+                tracker.remove_pending_intent(id);
+            }
+        }
+
+        Ok(stale_ids.len())
+    }
+
     pub async fn data_intent_by_id(&self, id: &DataIntentId) -> Result<DataIntentFull> {
         fetch_data_intent_db_full(&self.db_pool, id).await
     }

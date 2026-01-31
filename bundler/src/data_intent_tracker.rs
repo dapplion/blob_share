@@ -17,9 +17,9 @@
 //! replaced due to underpriced gas, those data intents may be re-included into a new transaction.
 //!
 //! Underpriced data intents will remain in the internal blob share pool consuming user balance. A
-//! user can cancel data intents by ID at any point.
-//!
-//! TODO: consider evicting underpriced data intents after some time.
+//! user can cancel data intents by ID at any point. Stale underpriced intents are automatically
+//! evicted by the `evict_stale_intents_task` background task (configurable via
+//! `--evict-stale-intent-hours`).
 //!
 //! # Cache
 //!
@@ -177,6 +177,26 @@ ORDER BY updated_at ASC
     /// in any transaction before calling this.
     pub fn remove_pending_intent(&mut self, id: &DataIntentId) -> Option<DataIntentSummary> {
         self.pending_intents.remove(id)
+    }
+
+    /// Returns IDs of pending intents that are stale (older than `max_age`) and underpriced
+    /// (max_blob_gas_price below `current_blob_gas_price`). Only considers intents that are
+    /// not currently included in any transaction.
+    pub fn find_stale_underpriced_intents(
+        &self,
+        current_blob_gas_price: u64,
+        max_age: chrono::Duration,
+    ) -> Vec<DataIntentId> {
+        let cutoff = Utc::now() - max_age;
+        self.pending_intents
+            .values()
+            .filter(|intent| {
+                !self.cache_intent_inclusions.contains_key(&intent.id)
+                    && intent.updated_at < cutoff
+                    && intent.max_blob_gas_price < current_blob_gas_price
+            })
+            .map(|intent| intent.id)
+            .collect()
     }
 
     pub async fn insert_many_intent_tx_inclusions(
@@ -575,7 +595,7 @@ mod tests {
     use std::str::FromStr;
 
     use bundler_client::types::DataIntentSummary;
-    use chrono::DateTime;
+    use chrono::{DateTime, Utc};
     use ethers::types::{Address, H256};
     use uuid::Uuid;
 
@@ -855,6 +875,129 @@ mod tests {
         assert!(deserialized.data.is_none());
         assert!(deserialized.data_hash_signature.is_none());
         assert_eq!(deserialized.data_len, 10);
+    }
+
+    fn make_summary_with_gas_and_time(
+        id: Uuid,
+        max_blob_gas_price: u64,
+        updated_at: DateTime<Utc>,
+    ) -> DataIntentSummary {
+        DataIntentSummary {
+            id,
+            from: Address::random(),
+            data_hash: vec![0xcc; 32],
+            data_len: 100,
+            max_blob_gas_price,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn find_stale_underpriced_returns_matching_intents() {
+        let mut tracker = DataIntentTracker::default();
+        let old_time = Utc::now() - chrono::Duration::hours(48);
+        let recent_time = Utc::now() - chrono::Duration::hours(1);
+
+        // Old + underpriced -> should be evicted
+        let id_stale = Uuid::new_v4();
+        tracker.pending_intents.insert(
+            id_stale,
+            make_summary_with_gas_and_time(id_stale, 100, old_time),
+        );
+
+        // Old + adequately priced -> should NOT be evicted
+        let id_old_good_price = Uuid::new_v4();
+        tracker.pending_intents.insert(
+            id_old_good_price,
+            make_summary_with_gas_and_time(id_old_good_price, 2000, old_time),
+        );
+
+        // Recent + underpriced -> should NOT be evicted (not old enough)
+        let id_recent = Uuid::new_v4();
+        tracker.pending_intents.insert(
+            id_recent,
+            make_summary_with_gas_and_time(id_recent, 100, recent_time),
+        );
+
+        let current_blob_gas_price = 1000;
+        let max_age = chrono::Duration::hours(24);
+        let stale = tracker.find_stale_underpriced_intents(current_blob_gas_price, max_age);
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0], id_stale);
+    }
+
+    #[test]
+    fn find_stale_underpriced_skips_included_intents() {
+        let mut tracker = DataIntentTracker::default();
+        let old_time = Utc::now() - chrono::Duration::hours(48);
+        let tx_hash = H256::random();
+
+        // Old + underpriced + included in tx -> should NOT be evicted
+        let id_included = Uuid::new_v4();
+        tracker.pending_intents.insert(
+            id_included,
+            make_summary_with_gas_and_time(id_included, 100, old_time),
+        );
+        tracker
+            .cache_intent_inclusions
+            .insert(id_included, vec![tx_hash]);
+
+        // Old + underpriced + not included -> should be evicted
+        let id_not_included = Uuid::new_v4();
+        tracker.pending_intents.insert(
+            id_not_included,
+            make_summary_with_gas_and_time(id_not_included, 100, old_time),
+        );
+
+        let stale = tracker.find_stale_underpriced_intents(1000, chrono::Duration::hours(24));
+
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0], id_not_included);
+    }
+
+    #[test]
+    fn find_stale_underpriced_empty_when_all_priced_ok() {
+        let mut tracker = DataIntentTracker::default();
+        let old_time = Utc::now() - chrono::Duration::hours(48);
+
+        let id = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id, make_summary_with_gas_and_time(id, 2000, old_time));
+
+        let stale = tracker.find_stale_underpriced_intents(1000, chrono::Duration::hours(24));
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn find_stale_underpriced_empty_when_all_recent() {
+        let mut tracker = DataIntentTracker::default();
+        let recent_time = Utc::now() - chrono::Duration::minutes(30);
+
+        let id = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id, make_summary_with_gas_and_time(id, 100, recent_time));
+
+        let stale = tracker.find_stale_underpriced_intents(1000, chrono::Duration::hours(24));
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn find_stale_underpriced_boundary_price_equal_not_evicted() {
+        // Intent whose max_blob_gas_price == current price should NOT be evicted
+        // (only strictly less than is underpriced)
+        let mut tracker = DataIntentTracker::default();
+        let old_time = Utc::now() - chrono::Duration::hours(48);
+
+        let id = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id, make_summary_with_gas_and_time(id, 1000, old_time));
+
+        let stale = tracker.find_stale_underpriced_intents(1000, chrono::Duration::hours(24));
+        assert!(stale.is_empty());
     }
 
     #[test]

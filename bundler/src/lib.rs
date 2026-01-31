@@ -20,6 +20,7 @@ use crate::{
     app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
+    evict_stale_intents_task::evict_stale_intents_task,
     explorer::register_explorer_service,
     metrics::{get_metrics, push_metrics_task},
     remote_node_tracker_task::remote_node_tracker_task,
@@ -42,6 +43,7 @@ pub mod consumer;
 mod data_intent;
 mod data_intent_tracker;
 pub mod eth_provider;
+mod evict_stale_intents_task;
 mod explorer;
 mod gas;
 mod kzg;
@@ -173,6 +175,11 @@ pub struct Args {
     /// Set to 0 to disable pruning.
     #[arg(env, long, default_value_t = 1000)]
     pub prune_after_blocks: u64,
+
+    /// Evict pending intents that have been underpriced for longer than this many hours.
+    /// Set to 0 to disable eviction.
+    #[arg(env, long, default_value_t = 24)]
+    pub evict_stale_intent_hours: u64,
 }
 
 impl Args {
@@ -190,6 +197,9 @@ struct AppConfig {
     /// Prune raw data from finalized intents after this many blocks past finalization.
     /// 0 means pruning is disabled.
     prune_after_blocks: u64,
+    /// Evict pending intents underpriced for longer than this duration.
+    /// Duration::ZERO means eviction is disabled.
+    pub evict_stale_intent_duration: Duration,
 }
 
 pub struct App {
@@ -263,6 +273,7 @@ impl App {
             panic_on_background_task_errors: args.panic_on_background_task_errors,
             node_poll_interval: Duration::from_secs(args.node_poll_interval_sec),
             prune_after_blocks: args.prune_after_blocks,
+            evict_stale_intent_duration: Duration::from_secs(args.evict_stale_intent_hours * 3600),
             metrics_server_bearer_token: args.metrics_bearer_token.clone(),
             metrics_push: if let Some(url) = &args.metrics_push_url {
                 Some(PushMetricsConfig {
@@ -408,6 +419,7 @@ impl App {
             remote_node_tracker_task(self.data.clone()),
             run_consistency_checks_task(self.data.clone()),
             push_metrics_task(self.data.config.metrics_push.clone()),
+            evict_stale_intents_task(self.data.clone()),
         )?;
         Ok(())
     }

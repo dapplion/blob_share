@@ -91,6 +91,8 @@ lazy_static! {
         register_gauge!("blobshare_pending_intents_cache", "pending intents cache").unwrap();
     pub(crate) static ref INCLUDED_INTENTS_CACHE: Gauge =
         register_gauge!("blobshare_included_intents_cache", "included intents cache").unwrap();
+    pub(crate) static ref EVICTED_STALE_INTENTS: Counter =
+        register_counter!("blobshare_evicted_stale_intents_total", "total stale underpriced intents evicted").unwrap();
     //
     // Metrics
     //
@@ -294,6 +296,7 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         PACKED_BLOB_ITEMS.observe(0.);
         PACKED_BLOB_USED_LEN.observe(0.);
         PUSH_REQ_HISTOGRAM.observe(0.);
+        EVICTED_STALE_INTENTS.inc();
 
         encode_metrics_plain_text(&prometheus::gather()).unwrap();
     }
