@@ -115,7 +115,7 @@ ORDER BY updated_at ASC
         self.pending_intents
             .values()
             .map(|intent| {
-                if &intent.from == from && self.cache_intent_inclusions.get(&intent.id).is_none() {
+                if &intent.from == from && !self.cache_intent_inclusions.contains_key(&intent.id) {
                     intent.max_cost()
                 } else {
                     0
@@ -129,7 +129,7 @@ ORDER BY updated_at ASC
         self.pending_intents
             .values()
             .map(|intent| {
-                if &intent.from == from && self.cache_intent_inclusions.get(&intent.id).is_none() {
+                if &intent.from == from && !self.cache_intent_inclusions.contains_key(&intent.id) {
                     intent.data_len
                 } else {
                     0

@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use ethers::signers::Signer;
 use eyre::Result;
-use tokio::time::{self, Duration};
+use tokio::time;
 
 use crate::{debug, error, metrics, utils::wei_to_f64, AppData};
 
 pub(crate) async fn remote_node_tracker_task(app_data: Arc<AppData>) -> Result<()> {
     debug!("starting remote node tracker task");
 
-    let mut interval = time::interval(Duration::from_secs(12));
+    let mut interval = time::interval(app_data.config.node_poll_interval);
 
     loop {
         tokio::select! {

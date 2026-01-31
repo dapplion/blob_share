@@ -17,8 +17,11 @@ use crate::{AppData, BlobGasPrice};
 // TODO: Add route to cancel data intents by ID
 
 #[get("/v1/health")]
-pub(crate) async fn get_health() -> impl Responder {
-    HttpResponse::Ok().finish()
+pub(crate) async fn get_health(
+    data: web::Data<Arc<AppData>>,
+) -> Result<HttpResponse, actix_web::Error> {
+    data.health_check().await.map_err(e500)?;
+    Ok(HttpResponse::Ok().finish())
 }
 
 #[get("/v1/sender")]

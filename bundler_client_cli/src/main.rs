@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         LocalWallet::from_bytes(&hex::decode(priv_key).wrap_err_with(|| "invalid priv_key format")?)
             .wrap_err_with(|| "priv_key bytes not valid")?
     } else {
-        panic!("Must set either mnemonic or priv_key");
+        eyre::bail!("Must set either --mnemonic or --priv-key");
     }
     .with_chain_id(chain_id);
     println!(

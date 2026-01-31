@@ -56,7 +56,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 #[derive(Debug)]
 pub(crate) enum SendResult {
     NoViableSet,
-    SentBlobTx(TxHash),
+    SentBlobTx(#[allow(dead_code)] TxHash),
     NoNonceAvailable,
 }
 

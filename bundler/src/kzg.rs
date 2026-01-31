@@ -24,6 +24,7 @@ use crate::{
 pub const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
 
 pub struct BlobTx {
+    #[allow(dead_code)]
     pub blob_tx_payload_body: Bytes,
     pub tx_hash: H256,
     pub blob_tx_networking: Bytes,

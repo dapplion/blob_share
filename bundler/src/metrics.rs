@@ -170,7 +170,7 @@ pub async fn push_metrics(config: &PushMetricsConfig) -> Result<String> {
     let mfs = prometheus::gather();
     let _timer = PUSH_REQ_HISTOGRAM.start_timer(); // drop as observe
 
-    let client = reqwest::ClientBuilder::new().build().unwrap();
+    let client = reqwest::ClientBuilder::new().build()?;
 
     let req = client.request(Method::POST, config.url.clone());
 
@@ -238,7 +238,7 @@ fn encode_metrics_protobuf<S: BuildHasher>(
 fn encode_metrics_plain_text(mfs: &[prometheus::proto::MetricFamily]) -> Result<(Vec<u8>, String)> {
     let mut buffer = vec![];
     let encoder = TextEncoder::new();
-    encoder.encode(mfs, &mut buffer).unwrap();
+    encoder.encode(mfs, &mut buffer)?;
     Ok((buffer, encoder.format_type().to_string()))
 }
 

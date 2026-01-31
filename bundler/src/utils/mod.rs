@@ -3,7 +3,7 @@ use actix_web::HttpRequest;
 use ethers::types::{Address, Transaction, TxHash, H160, H256, U256};
 use eyre::{bail, eyre, Context, Result};
 use reqwest::Response;
-use std::fmt::{self, Debug, Display};
+use std::fmt::{Debug, Display};
 
 use crate::reth_fork::tx_eip4844::TxEip4844;
 use crate::reth_fork::tx_sidecar::BlobTransaction;
@@ -21,7 +21,7 @@ where
 
 // Return a 400 with the user-representation of the validation error as body.
 // The error root cause is preserved for logging purposes.
-pub(crate) fn e400<T: std::fmt::Debug + std::fmt::Display>(e: T) -> actix_web::Error
+pub(crate) fn e400<T>(e: T) -> actix_web::Error
 where
     T: Debug + Display + 'static,
 {
@@ -145,22 +145,6 @@ pub(crate) fn parse_basic_auth(auth: &str) -> Result<BasicAuthentication> {
         })
     } else {
         bail!("Invalid auth format. Use 'username:password'")
-    }
-}
-
-trait ResultExt<T, E>
-where
-    E: fmt::Display,
-{
-    fn prefix_err(self, prefix: &str) -> eyre::Result<T>;
-}
-
-impl<T, E> ResultExt<T, E> for Result<T, E>
-where
-    E: fmt::Display,
-{
-    fn prefix_err(self, prefix: &str) -> eyre::Result<T> {
-        self.map_err(|e| eyre::eyre!("{}: {}", prefix, e.to_string().replace('\n', "; ")))
     }
 }
 

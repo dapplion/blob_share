@@ -1,3 +1,4 @@
+use actix_governor::{Governor, GovernorConfigBuilder};
 use actix_web::{dev::Server, middleware::Logger, web, HttpServer};
 use c_kzg::FIELD_ELEMENTS_PER_BLOB;
 use clap::Parser;
@@ -129,6 +130,22 @@ pub struct Args {
     #[arg(env, long)]
     pub database_url: String,
 
+    /// Maximum number of database connections in the pool
+    #[arg(env, long, default_value_t = 10)]
+    pub db_max_connections: u32,
+
+    /// Remote node polling interval in seconds
+    #[arg(env, long, default_value_t = 12)]
+    pub node_poll_interval_sec: u64,
+
+    /// Rate limit: requests per second per IP
+    #[arg(env, long, default_value_t = 10)]
+    pub rate_limit_per_second: u64,
+
+    /// Rate limit: burst size per IP
+    #[arg(env, long, default_value_t = 30)]
+    pub rate_limit_burst: u32,
+
     /// Enable serving metrics
     #[arg(env, long)]
     pub metrics: bool,
@@ -164,11 +181,13 @@ struct AppConfig {
     panic_on_background_task_errors: bool,
     metrics_server_bearer_token: Option<String>,
     metrics_push: Option<PushMetricsConfig>,
+    node_poll_interval: Duration,
 }
 
 pub struct App {
     port: u16,
     server: Server,
+    metrics_server: Option<Server>,
     data: Arc<AppData>,
 }
 
@@ -212,9 +231,8 @@ impl App {
             .await
             .wrap_err_with(|| "creating data dir")?;
 
-        // TODO: Should use connect_lazy_with
         let db_pool = MySqlPoolOptions::new()
-            .max_connections(5)
+            .max_connections(args.db_max_connections)
             .connect(&args.database_url)
             .await?;
 
@@ -235,6 +253,7 @@ impl App {
         let config = AppConfig {
             l1_inbox_address: Address::from_str(ADDRESS_ZERO)?,
             panic_on_background_task_errors: args.panic_on_background_task_errors,
+            node_poll_interval: Duration::from_secs(args.node_poll_interval_sec),
             metrics_server_bearer_token: args.metrics_bearer_token.clone(),
             metrics_push: if let Some(url) = &args.metrics_push_url {
                 Some(PushMetricsConfig {
@@ -293,29 +312,53 @@ impl App {
 
         let address = args.address();
         let listener = TcpListener::bind(address.clone())?;
-        let listener_port = listener.local_addr().unwrap().port();
+        let listener_port = listener.local_addr()?.port();
         info!("Binding server on {}:{}", args.bind_address, listener_port);
 
-        let register_get_metrics = if args.metrics {
+        let (register_get_metrics, metrics_server) = if args.metrics {
             if args.metrics_port == args.port {
                 info!("enabling metrics on server port");
                 if args.metrics_bearer_token.is_none() {
                     warn!("UNSAFE: metrics exposed on the server port without auth");
                 }
-                true
+                (true, None)
             } else {
-                todo!("serve metrics on different port");
+                let metrics_address = format!("{}:{}", args.bind_address, args.metrics_port);
+                let metrics_listener = TcpListener::bind(&metrics_address)
+                    .wrap_err_with(|| format!("binding metrics server on {metrics_address}"))?;
+                info!("Binding metrics server on {}", metrics_address);
+
+                let metrics_app_data = app_data.clone();
+                let metrics_srv = HttpServer::new(move || {
+                    actix_web::App::new()
+                        .app_data(web::Data::new(metrics_app_data.clone()))
+                        .service(get_metrics)
+                })
+                .listen(metrics_listener)?
+                .run();
+
+                (false, Some(metrics_srv))
             }
         } else {
-            false
+            (false, None)
         };
+
+        let governor_conf = GovernorConfigBuilder::default()
+            .per_second(args.rate_limit_per_second)
+            .burst_size(args.rate_limit_burst)
+            .finish()
+            .expect("invalid rate limit configuration");
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
+            // Limit JSON body to 256KB (enough for one blob + overhead)
+            let json_cfg = web::JsonConfig::default().limit(256 * 1024);
+
             let app = actix_web::App::new()
+                .wrap(Governor::new(&governor_conf))
                 .wrap(Logger::default())
+                .app_data(json_cfg)
                 .app_data(web::Data::new(app_data_clone.clone()))
-                // TODO: move to API service
                 .service(get_health)
                 .service(get_sender)
                 .service(get_sync)
@@ -340,6 +383,7 @@ impl App {
         Ok(App {
             port: listener_port,
             server,
+            metrics_server,
             data: app_data,
         })
     }
@@ -348,6 +392,7 @@ impl App {
     pub async fn run(self) -> Result<()> {
         tokio::try_join!(
             run_server(self.server),
+            run_optional_server(self.metrics_server),
             blob_sender_task(self.data.clone()),
             block_subscriber_task(self.data.clone()),
             remote_node_tracker_task(self.data.clone()),
@@ -368,6 +413,13 @@ impl App {
 
 pub async fn run_server(server: Server) -> Result<()> {
     Ok(server.await?)
+}
+
+async fn run_optional_server(server: Option<Server>) -> Result<()> {
+    if let Some(server) = server {
+        server.await?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {

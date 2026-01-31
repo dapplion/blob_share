@@ -28,13 +28,13 @@ type Nonce = u64;
 ///
 /// 1. Send tx with current head's next blob gas price
 /// 2. Wait for next block, tx included?
-///   2.1. Tx included => Ok
-///   2.2. Tx not included, blob gas price increase?
-///     2.2.1. Increase => allow to replace
-///     2.2.2. Same or decrease => Ok
+///    2.1. Tx included => Ok
+///    2.2. Tx not included, blob gas price increase?
+///    2.2.1. Increase => allow to replace
+///    2.2.2. Same or decrease => Ok
 /// 3. Wait for re-org
-///   3.1. Tx included in new head chain => Ok
-///   3.2. Tx dropped => jump to 2.2.
+///    3.1. Tx included in new head chain => Ok
+///    3.2. Tx dropped => jump to 2.2.
 ///
 /// # Tx replacement
 ///
@@ -50,9 +50,9 @@ type Nonce = u64;
 /// 2. Data intent included in tx    DataIntent(tx_hash = TxHash)
 /// 3. Tx becomes underpriced
 /// 4. Attempt to include in Tx
-/// 5a. New transaction gets included
-/// 5b. Previous transaction gets included
-/// 5c. Re-org an included transaction changes
+///    5a. New transaction gets included
+///    5b. Previous transaction gets included
+///    5c. Re-org an included transaction changes
 ///
 /// Re-priced transaction with nonce N can be safely forgotten when another transaction with
 /// nonce N is finalized.
@@ -82,6 +82,7 @@ pub trait BlockProvider {
     async fn get_transaction_count(&self, from: Address, block_hash: H256) -> Result<u64>;
 }
 
+#[allow(dead_code)]
 pub enum TxInclusion {
     Pending { tx_gas: GasConfig },
     Included { block_hash: H256 },
@@ -520,6 +521,7 @@ impl SyncBlockOutcome {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Reorg {
     pub depth: usize,
     pub reorged_blocks: Vec<SyncStatusBlock>,

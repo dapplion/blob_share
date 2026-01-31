@@ -431,6 +431,21 @@ impl AppData {
         }
     }
 
+    /// Verify that critical dependencies (database, eth provider) are reachable.
+    pub async fn health_check(&self) -> Result<()> {
+        // Verify database connectivity
+        sqlx::query("SELECT 1")
+            .execute(&self.db_pool)
+            .await
+            .map_err(|e| eyre!("database health check failed: {e}"))?;
+        // Verify eth provider connectivity
+        self.provider
+            .get_block_number()
+            .await
+            .map_err(|e| eyre!("eth provider health check failed: {e}"))?;
+        Ok(())
+    }
+
     pub async fn collect_metrics(&self) {
         self.sync.read().await.collect_metrics();
         self.data_intent_tracker.read().await.collect_metrics();

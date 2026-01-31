@@ -1,6 +1,6 @@
 use actix_web::{
     dev::{ServiceFactory, ServiceRequest},
-    web, HttpResponse, Responder,
+    web, HttpResponse,
 };
 use bundler_client::types::DataIntentId;
 use ethers::types::Address;
@@ -24,7 +24,9 @@ pub(crate) fn register_explorer_service<
         .route("/intent/{id}", web::get().to(get_intent))
 }
 
-pub(crate) async fn get_home(data: web::Data<Arc<AppData>>) -> impl Responder {
+pub(crate) async fn get_home(
+    data: web::Data<Arc<AppData>>,
+) -> Result<HttpResponse, actix_web::Error> {
     let head_gas = data.get_head_gas().await;
 
     let (mut data_intents, _) = data
@@ -38,15 +40,15 @@ pub(crate) async fn get_home(data: web::Data<Arc<AppData>>) -> impl Responder {
         "blob_gas_price": head_gas.blob_gas_price(),
         "base_fee_per_gas": head_gas.base_fee_per_gas,
     });
-    let body = data.handlebars.render("index", &values).unwrap();
+    let body = data.handlebars.render("index", &values).map_err(e500)?;
 
-    HttpResponse::Ok().body(body)
+    Ok(HttpResponse::Ok().body(body))
 }
 
 pub(crate) async fn get_address(
     data: web::Data<Arc<AppData>>,
     address: web::Path<Address>,
-) -> impl Responder {
+) -> Result<HttpResponse, actix_web::Error> {
     let balance_wei = data.balance_of_user(&address).await;
     let balance_eth = (balance_wei / 1_000_000_000) as f64 / 1_000_000_000.;
 
@@ -54,9 +56,9 @@ pub(crate) async fn get_address(
         "address": *address,
         "balance": balance_eth,
     });
-    let body = data.handlebars.render("address", &values).unwrap();
+    let body = data.handlebars.render("address", &values).map_err(e500)?;
 
-    HttpResponse::Ok().body(body)
+    Ok(HttpResponse::Ok().body(body))
 }
 
 pub(crate) async fn get_intent(
@@ -72,7 +74,7 @@ pub(crate) async fn get_intent(
         "data_hash": vec_to_hex_0x_prefix(&item.data_hash),
         "data": vec_to_hex_0x_prefix(&item.data),
     });
-    let body = data.handlebars.render("intent", &values).unwrap();
+    let body = data.handlebars.render("intent", &values).map_err(e500)?;
 
     Ok(HttpResponse::Ok().body(body))
 }

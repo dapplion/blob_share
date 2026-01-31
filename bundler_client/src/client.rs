@@ -74,30 +74,30 @@ impl Client {
     // Exposed API routes
 
     pub async fn health(&self) -> Result<()> {
-        let response = self.client.get(&self.url("v1/health")).send().await?;
+        let response = self.client.get(self.url("v1/health")).send().await?;
         is_ok_response(response).await?;
         Ok(())
     }
 
     pub async fn get_sender(&self) -> Result<SenderDetails> {
-        let response = self.client.get(&self.url("v1/sender")).send().await?;
+        let response = self.client.get(self.url("v1/sender")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn get_sync(&self) -> Result<SyncStatus> {
-        let response = self.client.get(&self.url("v1/sync")).send().await?;
+        let response = self.client.get(self.url("v1/sync")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn get_gas(&self) -> Result<BlockGasSummary> {
-        let response = self.client.get(&self.url("v1/gas")).send().await?;
+        let response = self.client.get(self.url("v1/gas")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn post_data(&self, data: &PostDataIntentV1Signed) -> Result<PostDataResponse> {
         let response = self
             .client
-            .post(&self.url("v1/data"))
+            .post(self.url("v1/data"))
             .json(data)
             .send()
             .await?;
@@ -105,14 +105,14 @@ impl Client {
     }
 
     pub async fn get_data(&self) -> Result<Vec<DataIntentSummary>> {
-        let response = self.client.get(&self.url("v1/data")).send().await?;
+        let response = self.client.get(self.url("v1/data")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
 
     pub async fn get_data_by_id(&self, id: &DataIntentId) -> Result<DataIntentFull> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/data/{}", id)))
+            .get(self.url(&format!("v1/data/{}", id)))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -121,7 +121,7 @@ impl Client {
     pub async fn get_status_by_id(&self, id: DataIntentId) -> Result<DataIntentStatus> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/status/{}", id)))
+            .get(self.url(&format!("v1/status/{}", id)))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -130,7 +130,7 @@ impl Client {
     pub async fn get_balance_by_address(&self, address: Address) -> Result<i128> {
         let response = self
             .client
-            .get(&self.url(&format!("v1/balance/{}", address_to_hex_lowercase(address))))
+            .get(self.url(&format!("v1/balance/{}", address_to_hex_lowercase(address))))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)

@@ -37,7 +37,7 @@ impl BeaconApiClient {
 
         let response = self
             .client
-            .get(&self.url(&format!("eth/v1/beacon/blob_sidecars/{}", block_id.0)))
+            .get(self.url(&format!("eth/v1/beacon/blob_sidecars/{}", block_id.0)))
             .query(&query_values)
             .send()
             .await?;
@@ -47,7 +47,7 @@ impl BeaconApiClient {
     pub async fn get_genesis(&self) -> Result<GetGenesisResponse> {
         let response = self
             .client
-            .get(&self.url("eth/v1/beacon/genesis"))
+            .get(self.url("eth/v1/beacon/genesis"))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
@@ -56,7 +56,7 @@ impl BeaconApiClient {
     pub async fn get_spec(&self) -> Result<GetSpecResponse> {
         let response = self
             .client
-            .get(&self.url("eth/v1/config/spec"))
+            .get(self.url("eth/v1/config/spec"))
             .send()
             .await?;
         Ok(is_ok_response(response).await?.json().await?)
