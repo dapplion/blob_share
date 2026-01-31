@@ -6,7 +6,10 @@ use actix_web::HttpRequest;
 use actix_web::{get, web, HttpResponse};
 use eyre::{bail, Result};
 use log::{debug, error};
-use prometheus::{register_gauge, Counter, Gauge, Histogram, TextEncoder};
+use prometheus::{
+    register_gauge, register_histogram_vec, register_int_counter_vec, Counter, Gauge, Histogram,
+    HistogramVec, IntCounterVec, TextEncoder,
+};
 
 use lazy_static::lazy_static;
 use prometheus::{labels, register_counter, register_histogram};
@@ -93,6 +96,21 @@ lazy_static! {
         register_gauge!("blobshare_included_intents_cache", "included intents cache").unwrap();
     pub(crate) static ref EVICTED_STALE_INTENTS: Counter =
         register_counter!("blobshare_evicted_stale_intents_total", "total stale underpriced intents evicted").unwrap();
+    //
+    // API endpoint metrics
+    //
+    pub(crate) static ref API_REQUESTS_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "blobshare_api_requests_total",
+        "Total API requests by method, path, and status code",
+        &["method", "path", "status"]
+    )
+    .unwrap();
+    pub(crate) static ref API_REQUEST_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "blobshare_api_request_duration_seconds",
+        "API request duration in seconds by method and path",
+        &["method", "path"]
+    )
+    .unwrap();
     //
     // Metrics
     //
@@ -297,6 +315,12 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         PACKED_BLOB_USED_LEN.observe(0.);
         PUSH_REQ_HISTOGRAM.observe(0.);
         EVICTED_STALE_INTENTS.inc();
+        API_REQUESTS_TOTAL
+            .with_label_values(&["GET", "/v1/health", "200"])
+            .inc();
+        API_REQUEST_DURATION_SECONDS
+            .with_label_values(&["GET", "/v1/health"])
+            .observe(0.);
 
         encode_metrics_plain_text(&prometheus::gather()).unwrap();
     }

@@ -17,6 +17,7 @@ use url::Url;
 
 use crate::{
     anchor_block::get_anchor_block,
+    api_metrics::ApiMetrics,
     app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
@@ -34,6 +35,7 @@ use crate::{
 };
 
 pub mod anchor_block;
+mod api_metrics;
 mod app;
 pub mod beacon_api_client;
 mod blob_sender_task;
@@ -377,6 +379,7 @@ impl App {
             let app = actix_web::App::new()
                 .wrap(Governor::new(&governor_conf))
                 .wrap(Logger::default())
+                .wrap(ApiMetrics)
                 .app_data(json_cfg)
                 .app_data(web::Data::new(app_data_clone.clone()))
                 .service(get_health)

@@ -95,7 +95,7 @@ A reliable, self-operated blob bundling service where:
 - If an intent has been pending longer than a configurable threshold and its max_blob_gas_price is below the current network price, evict it and refund balance
 - CLI arg: `--evict-stale-intent-hours` (default 24)
 
-### [ ] 2.6 Add API endpoint metrics
+### [x] 2.6 Add API endpoint metrics
 - **File:** `bundler/src/metrics.rs`, `bundler/src/lib.rs`
 - Add actix-web middleware using `actix-web-prom` or manual `Histogram` tracking request duration + status code per route
 - Add counters: `api_requests_total{method, path, status}`, `api_request_duration_seconds{method, path}`
