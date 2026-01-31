@@ -267,6 +267,25 @@ Phase 4 (mostly independent)
     - `Item::with_group` / `Item::new`: 2 tests — group_id stored correctly, new has no group.
 - **Why:** `blob_tx_data.rs` contains critical blob transaction parsing and cost calculation logic used across the API and sync paths, but error paths (`from_tx` with missing fields, invalid participant version) had zero test coverage. `packing.rs` had tests for brute_force and knapsack but none for the greedy algorithm (`pack_items_greedy_sorted`) which is the production path for >8 items, nor for helper functions like `sort_items` and `is_sorted_ascending`.
 
+### [x] 5.7 Add unit tests for reth_fork EIP-4844 transaction encoding
+- **Files:** `bundler/src/reth_fork/tx_eip4844.rs`, `bundler/src/reth_fork/tx_sidecar.rs`
+- **Changes:**
+  - Added 18 unit tests to `tx_eip4844.rs` covering:
+    - `fields_len`: 3 tests — default tx is nonzero, increases with input, increases with blob hashes.
+    - `encode_fields` / `decode_inner` roundtrip: 2 tests — minimal tx and tx with input/access_list.
+    - `encode_with_signature`: 2 tests — starts with tx type byte, with_header wraps without_header.
+    - `payload_len_with_signature`: 2 tests — with and without header match actual encoded length.
+    - `encode_for_signing` / `payload_len_for_signature`: 2 tests — starts with tx type, length matches.
+    - `signature_hash`: 3 tests — deterministic, changes with nonce, changes with chain_id.
+    - `tx_type`: 1 test — returns EIP4844.
+    - `size`: 1 test — increases with input.
+    - Error cases: 2 tests — truncated input, empty input.
+  - Added 16 unit tests to `tx_sidecar.rs` covering:
+    - `BlobTransactionSidecar`: 7 tests — new stores fields, size calculation (single blob and empty), encode/decode roundtrip, fields_len matches encoded length, Encodable/Decodable trait consistency, empty sidecar roundtrip.
+    - `BlobTransaction`: 6 tests — full encode/decode roundtrip with hash verification, payload_len with/without header matches encoded, with_header wraps without_header, hash equals keccak of signed encoding, rejects non-list outer RLP, payload_len consistency.
+    - Type conversions: 1 test — reth_rpc_types sidecar conversion roundtrip.
+- **Why:** The `reth_fork` module contains forked reth types for EIP-4844 blob transaction RLP encoding and decoding. This is critical infrastructure — encoding bugs would cause transaction rejections on the network. Both files had zero test coverage despite containing complex RLP serialization logic, signature handling, and unsafe transmute operations.
+
 ---
 
 ## Key Files Modified Across All Phases

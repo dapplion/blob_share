@@ -224,3 +224,249 @@ impl TxEip4844 {
         keccak256(&buf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::U256;
+
+    /// Build a minimal TxEip4844 for testing.
+    fn minimal_tx() -> TxEip4844 {
+        TxEip4844 {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 30_000_000_000,
+            gas_limit: 21_000,
+            to: Address::ZERO,
+            value: TxValue::from(0u64),
+            access_list: AccessList::default(),
+            blob_versioned_hashes: vec![B256::ZERO],
+            max_fee_per_blob_gas: 1_000_000_000,
+            input: Bytes::default(),
+        }
+    }
+
+    fn test_signature() -> Signature {
+        Signature {
+            r: U256::from(1u64),
+            s: U256::from(2u64),
+            odd_y_parity: false,
+        }
+    }
+
+    // -- fields_len --
+
+    #[test]
+    fn fields_len_default_tx_is_nonzero() {
+        let tx = TxEip4844::default();
+        // Even a default tx has non-zero field lengths from chain_id, addresses, etc.
+        assert!(tx.fields_len() > 0);
+    }
+
+    #[test]
+    fn fields_len_increases_with_input() {
+        let tx1 = minimal_tx();
+        let mut tx2 = minimal_tx();
+        tx2.input = Bytes::from(vec![0xaa; 100]);
+        assert!(tx2.fields_len() > tx1.fields_len());
+    }
+
+    #[test]
+    fn fields_len_increases_with_blob_hashes() {
+        let tx1 = minimal_tx();
+        let mut tx2 = minimal_tx();
+        tx2.blob_versioned_hashes = vec![B256::ZERO, B256::ZERO, B256::ZERO];
+        assert!(tx2.fields_len() > tx1.fields_len());
+    }
+
+    // -- encode_fields / decode_inner roundtrip --
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let tx = minimal_tx();
+
+        // Encode fields wrapped in a list header
+        let mut buf = BytesMut::new();
+        let header = Header {
+            list: true,
+            payload_length: tx.fields_len(),
+        };
+        header.encode(&mut buf);
+        tx.encode_fields(&mut buf);
+
+        // Decode: first consume the list header, then decode fields
+        let mut slice = buf.as_ref();
+        let decoded_header = Header::decode(&mut slice).unwrap();
+        assert!(decoded_header.list);
+        assert_eq!(decoded_header.payload_length, tx.fields_len());
+
+        let decoded = TxEip4844::decode_inner(&mut slice).unwrap();
+        assert_eq!(decoded, tx);
+        assert!(slice.is_empty(), "all bytes should be consumed");
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_with_input_and_access_list() {
+        let mut tx = minimal_tx();
+        tx.input = Bytes::from(vec![0x01, 0x02, 0x03]);
+        tx.nonce = 42;
+        tx.chain_id = 5;
+        tx.max_fee_per_gas = 100_000_000_000;
+        tx.blob_versioned_hashes = vec![B256::from([0xab; 32]), B256::from([0xcd; 32])];
+
+        let mut buf = BytesMut::new();
+        let header = Header {
+            list: true,
+            payload_length: tx.fields_len(),
+        };
+        header.encode(&mut buf);
+        tx.encode_fields(&mut buf);
+
+        let mut slice = buf.as_ref();
+        let _ = Header::decode(&mut slice).unwrap();
+        let decoded = TxEip4844::decode_inner(&mut slice).unwrap();
+        assert_eq!(decoded, tx);
+    }
+
+    // -- encode_with_signature --
+
+    #[test]
+    fn encode_with_signature_starts_with_tx_type() {
+        let tx = minimal_tx();
+        let sig = test_signature();
+
+        // Without header: raw bytes start with tx type byte (0x03)
+        let mut buf = Vec::new();
+        tx.encode_with_signature(&sig, &mut buf, false);
+        assert_eq!(buf[0], TxType::EIP4844 as u8);
+    }
+
+    #[test]
+    fn encode_with_signature_with_header_has_rlp_prefix() {
+        let tx = minimal_tx();
+        let sig = test_signature();
+
+        let mut with_header = Vec::new();
+        tx.encode_with_signature(&sig, &mut with_header, true);
+
+        let mut without_header = Vec::new();
+        tx.encode_with_signature(&sig, &mut without_header, false);
+
+        // With header should be longer (has the RLP string header wrapping it)
+        assert!(with_header.len() > without_header.len());
+        // The content after decoding the header should match
+        let mut slice = with_header.as_slice();
+        let header = Header::decode(&mut slice).unwrap();
+        assert!(!header.list); // byte string header, not list
+        assert_eq!(slice, &without_header);
+    }
+
+    // -- payload_len_with_signature --
+
+    #[test]
+    fn payload_len_with_signature_matches_encoded_len() {
+        let tx = minimal_tx();
+        let sig = test_signature();
+
+        let mut buf = Vec::new();
+        tx.encode_with_signature(&sig, &mut buf, true);
+
+        assert_eq!(tx.payload_len_with_signature(&sig), buf.len());
+    }
+
+    #[test]
+    fn payload_len_without_header_matches_encoded_len() {
+        let tx = minimal_tx();
+        let sig = test_signature();
+
+        let mut buf = Vec::new();
+        tx.encode_with_signature(&sig, &mut buf, false);
+
+        assert_eq!(
+            tx.payload_len_with_signature_without_header(&sig),
+            buf.len()
+        );
+    }
+
+    // -- encode_for_signing / payload_len_for_signature --
+
+    #[test]
+    fn encode_for_signing_starts_with_tx_type() {
+        let tx = minimal_tx();
+        let mut buf = BytesMut::new();
+        tx.encode_for_signing(&mut buf);
+        assert_eq!(buf[0], TxType::EIP4844 as u8);
+    }
+
+    #[test]
+    fn payload_len_for_signature_matches_encoded_len() {
+        let tx = minimal_tx();
+        let mut buf = BytesMut::new();
+        tx.encode_for_signing(&mut buf);
+        assert_eq!(tx.payload_len_for_signature(), buf.len());
+    }
+
+    // -- signature_hash --
+
+    #[test]
+    fn signature_hash_is_deterministic() {
+        let tx = minimal_tx();
+        assert_eq!(tx.signature_hash(), tx.signature_hash());
+    }
+
+    #[test]
+    fn signature_hash_changes_with_nonce() {
+        let tx1 = minimal_tx();
+        let mut tx2 = minimal_tx();
+        tx2.nonce = 999;
+        assert_ne!(tx1.signature_hash(), tx2.signature_hash());
+    }
+
+    #[test]
+    fn signature_hash_changes_with_chain_id() {
+        let tx1 = minimal_tx();
+        let mut tx2 = minimal_tx();
+        tx2.chain_id = 5;
+        assert_ne!(tx1.signature_hash(), tx2.signature_hash());
+    }
+
+    // -- tx_type --
+
+    #[test]
+    fn tx_type_is_eip4844() {
+        let tx = minimal_tx();
+        assert_eq!(tx.tx_type(), TxType::EIP4844);
+    }
+
+    // -- size --
+
+    #[test]
+    fn size_increases_with_input() {
+        let tx1 = minimal_tx();
+        let mut tx2 = minimal_tx();
+        tx2.input = Bytes::from(vec![0xff; 256]);
+        assert!(tx2.size() > tx1.size());
+    }
+
+    // -- decode_inner error cases --
+
+    #[test]
+    fn decode_inner_fails_on_truncated_input() {
+        // Encode a valid tx, then truncate the fields-only portion
+        let tx = minimal_tx();
+        let mut buf = BytesMut::new();
+        tx.encode_fields(&mut buf);
+
+        // Truncate to half: decode_inner should fail with incomplete data
+        let truncated = &buf[..buf.len() / 2];
+        let mut slice = truncated;
+        assert!(TxEip4844::decode_inner(&mut slice).is_err());
+    }
+
+    #[test]
+    fn decode_inner_fails_on_empty_input() {
+        let mut empty: &[u8] = &[];
+        assert!(TxEip4844::decode_inner(&mut empty).is_err());
+    }
+}

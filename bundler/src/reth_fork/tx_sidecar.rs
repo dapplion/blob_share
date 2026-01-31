@@ -378,3 +378,278 @@ impl BlobTransactionSidecarRlp {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::U256;
+    use alloy_rlp::Encodable;
+    use reth_primitives::{AccessList, Bytes as RethBytes, TxValue};
+
+    use super::super::tx_eip4844::TxEip4844;
+
+    fn minimal_tx() -> TxEip4844 {
+        TxEip4844 {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 30_000_000_000,
+            gas_limit: 21_000,
+            to: reth_primitives::Address::ZERO,
+            value: TxValue::from(0u64),
+            access_list: AccessList::default(),
+            blob_versioned_hashes: vec![reth_primitives::B256::ZERO],
+            max_fee_per_blob_gas: 1_000_000_000,
+            input: RethBytes::default(),
+        }
+    }
+
+    fn test_signature() -> Signature {
+        Signature {
+            r: U256::from(1u64),
+            s: U256::from(2u64),
+            odd_y_parity: false,
+        }
+    }
+
+    fn dummy_blob() -> Blob {
+        Blob::from_bytes(&[0u8; c_kzg::BYTES_PER_BLOB]).unwrap()
+    }
+
+    fn dummy_commitment() -> Bytes48 {
+        Bytes48::from_bytes(&[0xab; 48]).unwrap()
+    }
+
+    fn dummy_proof() -> Bytes48 {
+        Bytes48::from_bytes(&[0xcd; 48]).unwrap()
+    }
+
+    fn minimal_sidecar() -> BlobTransactionSidecar {
+        BlobTransactionSidecar::new(
+            vec![dummy_blob()],
+            vec![dummy_commitment()],
+            vec![dummy_proof()],
+        )
+    }
+
+    fn minimal_blob_tx() -> BlobTransaction {
+        let tx = minimal_tx();
+        let sig = test_signature();
+        let mut buf = Vec::new();
+        tx.encode_with_signature(&sig, &mut buf, false);
+        let hash = keccak256(&buf);
+        BlobTransaction {
+            hash,
+            transaction: tx,
+            signature: sig,
+            sidecar: minimal_sidecar(),
+        }
+    }
+
+    // -- BlobTransactionSidecar --
+
+    #[test]
+    fn sidecar_new_stores_fields() {
+        let blobs = vec![dummy_blob()];
+        let commitments = vec![dummy_commitment()];
+        let proofs = vec![dummy_proof()];
+        let sidecar =
+            BlobTransactionSidecar::new(blobs.clone(), commitments.clone(), proofs.clone());
+        assert_eq!(sidecar.blobs.len(), 1);
+        assert_eq!(sidecar.commitments.len(), 1);
+        assert_eq!(sidecar.proofs.len(), 1);
+    }
+
+    #[test]
+    fn sidecar_size_single_blob() {
+        let sidecar = minimal_sidecar();
+        assert_eq!(
+            sidecar.size(),
+            BYTES_PER_BLOB + BYTES_PER_COMMITMENT + BYTES_PER_PROOF
+        );
+    }
+
+    #[test]
+    fn sidecar_size_empty() {
+        let sidecar = BlobTransactionSidecar::new(vec![], vec![], vec![]);
+        assert_eq!(sidecar.size(), 0);
+    }
+
+    #[test]
+    fn sidecar_encode_decode_roundtrip() {
+        let sidecar = minimal_sidecar();
+
+        let mut buf = Vec::new();
+        sidecar.encode_inner(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = BlobTransactionSidecar::decode_inner(&mut slice).unwrap();
+        assert!(slice.is_empty(), "all bytes should be consumed");
+        assert_eq!(decoded, sidecar);
+    }
+
+    #[test]
+    fn sidecar_fields_len_matches_encoded_len() {
+        let sidecar = minimal_sidecar();
+        let mut buf = Vec::new();
+        sidecar.encode_inner(&mut buf);
+        assert_eq!(sidecar.fields_len(), buf.len());
+    }
+
+    #[test]
+    fn sidecar_encodable_trait_matches_encode_inner() {
+        let sidecar = minimal_sidecar();
+
+        let mut buf_inner = Vec::new();
+        sidecar.encode_inner(&mut buf_inner);
+
+        let mut buf_trait = Vec::new();
+        Encodable::encode(&sidecar, &mut buf_trait);
+
+        assert_eq!(buf_inner, buf_trait);
+    }
+
+    #[test]
+    fn sidecar_decodable_trait_matches_decode_inner() {
+        let sidecar = minimal_sidecar();
+        let mut buf = Vec::new();
+        sidecar.encode_inner(&mut buf);
+
+        let mut slice1 = buf.as_slice();
+        let decoded1 = BlobTransactionSidecar::decode_inner(&mut slice1).unwrap();
+
+        let mut slice2 = buf.as_slice();
+        let decoded2 = <BlobTransactionSidecar as Decodable>::decode(&mut slice2).unwrap();
+
+        assert_eq!(decoded1, decoded2);
+    }
+
+    #[test]
+    fn sidecar_empty_encode_decode_roundtrip() {
+        let sidecar = BlobTransactionSidecar::new(vec![], vec![], vec![]);
+        let mut buf = Vec::new();
+        sidecar.encode_inner(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = BlobTransactionSidecar::decode_inner(&mut slice).unwrap();
+        assert_eq!(decoded, sidecar);
+    }
+
+    // -- BlobTransaction --
+
+    #[test]
+    fn blob_tx_encode_decode_roundtrip() {
+        let blob_tx = minimal_blob_tx();
+
+        // Encode: tx_type || rlp(...)
+        let mut buf = Vec::new();
+        blob_tx.encode_with_type_inner(&mut buf, false);
+
+        // First byte is EIP-4844 tx type
+        assert_eq!(buf[0], EIP4844_TX_TYPE_ID);
+
+        // Decode (skip the tx type byte)
+        let mut slice = &buf[1..];
+        let decoded = BlobTransaction::decode_inner(&mut slice).unwrap();
+        assert!(slice.is_empty(), "all bytes should be consumed");
+
+        assert_eq!(decoded.transaction, blob_tx.transaction);
+        assert_eq!(decoded.signature, blob_tx.signature);
+        assert_eq!(decoded.sidecar, blob_tx.sidecar);
+        assert_eq!(decoded.hash, blob_tx.hash);
+    }
+
+    #[test]
+    fn blob_tx_payload_len_with_type_no_header_matches_encoded() {
+        let blob_tx = minimal_blob_tx();
+
+        let mut buf = Vec::new();
+        blob_tx.encode_with_type_inner(&mut buf, false);
+
+        assert_eq!(blob_tx.payload_len_with_type(false), buf.len());
+    }
+
+    #[test]
+    fn blob_tx_payload_len_with_type_with_header_matches_encoded() {
+        let blob_tx = minimal_blob_tx();
+
+        let mut buf = Vec::new();
+        blob_tx.encode_with_type_inner(&mut buf, true);
+
+        assert_eq!(blob_tx.payload_len_with_type(true), buf.len());
+    }
+
+    #[test]
+    fn blob_tx_with_header_wraps_without_header() {
+        let blob_tx = minimal_blob_tx();
+
+        let mut with_header = Vec::new();
+        blob_tx.encode_with_type_inner(&mut with_header, true);
+
+        let mut without_header = Vec::new();
+        blob_tx.encode_with_type_inner(&mut without_header, false);
+
+        // With header should be strictly longer
+        assert!(with_header.len() > without_header.len());
+
+        // Decode the outer RLP header to get the inner content
+        let mut slice = with_header.as_slice();
+        let header = alloy_rlp::Header::decode(&mut slice).unwrap();
+        assert!(!header.list); // byte string header
+        assert_eq!(slice, without_header.as_slice());
+    }
+
+    #[test]
+    fn blob_tx_hash_is_keccak_of_signed_encoding() {
+        let blob_tx = minimal_blob_tx();
+
+        // The hash should be keccak256(tx_type || rlp(tx_payload_body))
+        // which is what encode_with_signature produces (without header)
+        let mut buf = Vec::new();
+        blob_tx
+            .transaction
+            .encode_with_signature(&blob_tx.signature, &mut buf, false);
+        let expected_hash = keccak256(&buf);
+
+        assert_eq!(blob_tx.hash, expected_hash);
+    }
+
+    #[test]
+    fn blob_tx_decode_inner_rejects_non_list_outer() {
+        // Encode a byte string header instead of list header
+        let mut buf = Vec::new();
+        alloy_rlp::Header {
+            list: false,
+            payload_length: 10,
+        }
+        .encode(&mut buf);
+        buf.extend_from_slice(&[0; 10]);
+
+        let mut slice = buf.as_slice();
+        assert!(BlobTransaction::decode_inner(&mut slice).is_err());
+    }
+
+    #[test]
+    fn blob_tx_payload_len_consistency() {
+        let blob_tx = minimal_blob_tx();
+
+        // payload_len_with_type(true) should equal
+        // header_len + 1 (tx_type) + payload_len()
+        let inner_payload = blob_tx.payload_len();
+        let with_type_no_header = 1 + inner_payload;
+        assert_eq!(blob_tx.payload_len_with_type(false), with_type_no_header);
+    }
+
+    // -- reth_rpc_types conversion --
+
+    #[test]
+    fn sidecar_from_reth_rpc_types_roundtrip() {
+        let sidecar = minimal_sidecar();
+
+        // Convert to reth_rpc_types and back
+        let reth_sidecar: reth_rpc_types::BlobTransactionSidecar = sidecar.clone().into();
+        let roundtripped: BlobTransactionSidecar = reth_sidecar.into();
+
+        assert_eq!(roundtripped, sidecar);
+    }
+}
