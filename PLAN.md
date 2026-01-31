@@ -369,6 +369,22 @@ Phase 4 (mostly independent)
     - `pack_items_sorted_large_set_still_works`: sorted large set uses greedy path successfully.
 - **Why:** These were the last two `assert!()` calls in production code paths. While the current call site in `blob_sender_task.rs` always sorts items before calling `pack_items` and limits item count via `MAX_COUNT_FOR_BRUTEFORCE`, the public API of these functions could be called incorrectly from a future call site or if `MAX_COUNT_FOR_BRUTEFORCE` is changed. Returning `None` (no viable packing) is semantically correct and consistent with the functions' existing return type, whereas panicking would crash the entire service.
 
+### [x] 5.14 Add unit tests for data_intent.rs and bundler_client/utils.rs
+- **Files:** `bundler/src/data_intent.rs`, `bundler_client/src/utils.rs`
+- **Changes:**
+  - Added 20 unit tests to `data_intent.rs` covering previously untested methods and variants:
+    - Accessor methods on `NoSignature` variant: `from()`, `data()`, `data_hash()`, `data_hash_signature()` (returns None), `max_blob_gas_price()`.
+    - `WithSignature` variant: all accessors (`from`, `data`, `data_hash`, `data_hash_signature` returns Some, `max_blob_gas_price`, `data_len`, `chargeable_data_len`, `max_cost`).
+    - `with_signature` async constructor: creates valid intent with correct address/data/hash, returns `WithSignature` variant.
+    - Serde roundtrips: both `NoSignature` and `WithSignature` variants serialize/deserialize correctly.
+    - Edge cases: empty data intent (charged at minimum 31 bytes), zero gas price (zero cost), max gas price (no u128 overflow).
+  - Added 14 unit tests to `bundler_client/src/utils.rs` which previously had zero test coverage:
+    - `unix_timestamps_millis`: returns positive value, is after 2024-01-01.
+    - `address_to_hex_lowercase`: zero address, non-zero address, confirms lowercase output.
+    - `vec_to_hex_0x_prefix`: empty, single byte, multiple bytes, zero bytes.
+    - `deserialize_signature`: valid 65-byte signature, too short, too long, empty, roundtrip.
+- **Why:** `data_intent.rs` is a core type used across the bundler — it had tests only for cost/length calculation but none for the `WithSignature` variant, accessor methods, async signature construction, or serde serialization. `bundler_client/src/utils.rs` contains functions used by the client library for hex encoding, address formatting, signature deserialization, and timestamp generation, but had zero test coverage. Error paths in `deserialize_signature` (wrong-length input) were completely untested.
+
 ---
 
 ## Key Files Modified Across All Phases
