@@ -367,6 +367,19 @@ impl BlockSync {
                 }
                 self.cache_transactions_by_hash.remove(&tx.tx_hash);
             }
+
+            // Finalize repriced entries for non-blob sender txs (e.g. self-transfers
+            // that replaced an underpriced blob tx at the same nonce).
+            for tx in &block.sender_non_blob_txs {
+                if let Some(sender_repriced) = self.repriced_transactions.get_mut(&tx.from) {
+                    if let Some(txs) = sender_repriced.remove(&tx.nonce) {
+                        for repriced_tx in txs {
+                            self.cache_transactions_by_hash.remove(&repriced_tx.tx_hash);
+                            repriced_transactions.push(repriced_tx);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(Some(FinalizeResult {
@@ -509,13 +522,31 @@ impl BlockSync {
                 self.cache_transactions_by_hash
                     .insert(tx.tx_hash, TxInclusion::Pending { tx_gas: tx.gas });
             }
+
+            // Restore pending placeholders for non-blob sender txs that were removed
+            // during sync_block. On reorg these txs are no longer included, so the
+            // placeholder must go back into pending_transactions.
+            for tx in &reorged_block.sender_non_blob_txs {
+                if let Some(placeholder) = &tx.pending_placeholder {
+                    self.pending_transactions
+                        .entry(tx.from)
+                        .or_default()
+                        .insert(tx.nonce, placeholder.clone());
+                    self.cache_transactions_by_hash.insert(
+                        placeholder.tx_hash,
+                        TxInclusion::Pending {
+                            tx_gas: placeholder.gas,
+                        },
+                    );
+                }
+            }
         }
 
         reorged_blocks
     }
 
-    fn sync_block(&mut self, block: BlockSummary) {
-        // Drop pending transactions
+    fn sync_block(&mut self, mut block: BlockSummary) {
+        // Drop pending blob transactions
         for tx in &block.blob_txs {
             if let Some(sender_pending) = self.pending_transactions.get_mut(&tx.from) {
                 sender_pending.remove(&tx.nonce);
@@ -531,6 +562,24 @@ impl BlockSync {
                 tx.from, tx.nonce, tx.tx_hash
             );
         }
+
+        // Drop pending entries for non-blob sender transactions (e.g. self-transfers).
+        // These were registered as placeholder BlobTxSummary entries via
+        // register_sent_self_transfer and need to be cleared when included on-chain.
+        // Save the removed placeholder so it can be restored on reorg.
+        for tx in &mut block.sender_non_blob_txs {
+            if let Some(sender_pending) = self.pending_transactions.get_mut(&tx.from) {
+                if let Some(removed) = sender_pending.remove(&tx.nonce) {
+                    self.cache_transactions_by_hash.remove(&removed.tx_hash);
+                    info!(
+                        "pending non-blob tx included from {} nonce {} tx_hash {}",
+                        tx.from, tx.nonce, tx.tx_hash
+                    );
+                    tx.pending_placeholder = Some(removed);
+                }
+            }
+        }
+
         self.unfinalized_head_chain.push(block);
     }
 }
@@ -661,7 +710,23 @@ struct BlockSummary {
     parent_hash: H256,
     topup_txs: Vec<TopupTx>,
     blob_txs: Vec<BlobTxSummary>,
+    /// Non-blob transactions sent by target (sender) addresses. Tracked so that
+    /// `sync_block` can clear the corresponding entries from `pending_transactions`
+    /// (e.g. self-transfers sent to resolve nonce deadlocks).
+    sender_non_blob_txs: Vec<NonBlobSenderTx>,
     pub gas: BlockGasSummary,
+}
+
+/// Minimal record of a non-blob transaction from a sender address.
+/// Stored in [`BlockSummary`] for nonce-accounting purposes.
+#[derive(Clone, Debug)]
+struct NonBlobSenderTx {
+    from: Address,
+    nonce: u64,
+    tx_hash: TxHash,
+    /// The pending placeholder that was removed when this tx was included.
+    /// Populated by `sync_block` so it can be restored during a reorg.
+    pending_placeholder: Option<BlobTxSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -680,6 +745,7 @@ impl BlockSummary {
     fn from_block(block: BlockWithTxs, target_addresses: &HashSet<Address>) -> Result<Self> {
         let mut topup_txs = vec![];
         let mut blob_txs = vec![];
+        let mut sender_non_blob_txs = vec![];
 
         for tx in &block.transactions {
             if let Some(to) = tx.to {
@@ -695,9 +761,17 @@ impl BlockSummary {
             if target_addresses.contains(&tx.from) {
                 if let Some(blob_tx) = BlobTxSummary::from_tx(tx)? {
                     blob_txs.push(blob_tx)
+                } else {
+                    // Track non-blob transactions from sender addresses (e.g. self-transfers
+                    // sent to resolve nonce deadlocks) so sync_block can clear their
+                    // pending_transactions entries.
+                    sender_non_blob_txs.push(NonBlobSenderTx {
+                        from: tx.from,
+                        nonce: tx.nonce.as_u64(),
+                        tx_hash: tx.hash,
+                        pending_placeholder: None,
+                    });
                 }
-                // TODO: Handle target address sending non-blob transactions for correct nonce
-                // accounting
             }
         }
 
@@ -707,6 +781,7 @@ impl BlockSummary {
             parent_hash: block.parent_hash,
             topup_txs,
             blob_txs,
+            sender_non_blob_txs,
             gas: block.gas,
         })
     }
@@ -1641,5 +1716,232 @@ mod tests {
         // Should return one of the stuck senders at nonce 0
         assert_eq!(nonce, 0);
         assert!(addr == ADDRESS_SENDER || addr == ADDRESS_SENDER_2);
+    }
+
+    // --- Non-blob sender tx tracking tests ---
+
+    /// Helper: create a non-blob Transaction from a sender address at a given nonce.
+    fn generate_non_blob_sender_tx(sender: Address, nonce: u64, tx_hash: H256) -> Transaction {
+        let mut tx = Transaction::default();
+        tx.from = sender;
+        tx.nonce = nonce.into();
+        tx.to = Some(sender); // self-transfer
+        tx.value = 0.into();
+        tx.hash = tx_hash;
+        tx
+    }
+
+    #[test]
+    fn from_block_parses_non_blob_sender_txs() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let tx_hash = get_hash(0xaa);
+        block
+            .transactions
+            .push(generate_non_blob_sender_tx(ADDRESS_SENDER, 5, tx_hash));
+
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
+
+        assert_eq!(summary.sender_non_blob_txs.len(), 1);
+        assert_eq!(summary.sender_non_blob_txs[0].from, ADDRESS_SENDER);
+        assert_eq!(summary.sender_non_blob_txs[0].nonce, 5);
+        assert_eq!(summary.sender_non_blob_txs[0].tx_hash, tx_hash);
+        assert!(summary.sender_non_blob_txs[0].pending_placeholder.is_none());
+    }
+
+    #[test]
+    fn from_block_ignores_non_blob_tx_from_non_sender() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let random_addr = get_addr(99);
+        let tx_hash = get_hash(0xbb);
+        block
+            .transactions
+            .push(generate_non_blob_sender_tx(random_addr, 0, tx_hash));
+
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
+
+        // Should not be tracked — it's not from a sender address
+        assert!(summary.sender_non_blob_txs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_block_clears_pending_for_non_blob_sender_tx() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        // Register a self-transfer placeholder at nonce 0
+        let self_tx_hash = get_hash(0xcc);
+        let gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 200,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.write()
+            .await
+            .register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, gas);
+
+        // Verify it's in pending
+        assert_eq!(pending_tx_len(&sync).await, 1);
+
+        // Simulate the self-transfer being included in a block
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        let on_chain_hash = get_hash(0xdd);
+        block_1.transactions.push(generate_non_blob_sender_tx(
+            ADDRESS_SENDER,
+            0,
+            on_chain_hash,
+        ));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Pending should now be empty — the non-blob tx cleared the placeholder
+        assert_eq!(pending_tx_len(&sync).await, 0);
+
+        // The placeholder tx_hash should be removed from the cache
+        assert!(sync.read().await.get_tx_status(self_tx_hash).is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_block_no_op_when_no_matching_pending_for_non_blob_tx() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        // No pending entries registered. A non-blob sender tx in a block should be a no-op.
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_non_blob_sender_tx(
+            ADDRESS_SENDER,
+            0,
+            get_hash(0xee),
+        ));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        assert_eq!(pending_tx_len(&sync).await, 0);
+    }
+
+    #[tokio::test]
+    async fn reorg_restores_non_blob_sender_tx_placeholder() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_0, hash_2b, 2)]);
+
+        // Register a self-transfer placeholder at nonce 0
+        let self_tx_hash = get_hash(0xcc);
+        let gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 200,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.write()
+            .await
+            .register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, gas);
+        assert_eq!(pending_tx_len(&sync).await, 1);
+
+        // Block 1: includes the self-transfer => clears from pending
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_non_blob_sender_tx(
+            ADDRESS_SENDER,
+            0,
+            get_hash(0xdd),
+        ));
+        sync_next_block(&sync, &provider, block_1).await;
+        assert_eq!(pending_tx_len(&sync).await, 0);
+
+        // Block 2a builds on block 1
+        let block_2a = generate_block(hash_1, hash_2a, 2);
+        sync_next_block(&sync, &provider, block_2a).await;
+
+        // Now block 2b causes a reorg back to block 0 (replaces both block 1 and 2a).
+        // Block 2b does NOT include the self-transfer.
+        let block_2b = generate_block(hash_0, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // The self-transfer placeholder should be restored to pending
+        assert_eq!(pending_tx_len(&sync).await, 1);
+        let reader = sync.read().await;
+        let sender_pending = reader.pending_transactions.get(&ADDRESS_SENDER).unwrap();
+        assert!(sender_pending.contains_key(&0));
+        let restored = &sender_pending[&0];
+        assert_eq!(restored.tx_hash, self_tx_hash);
+    }
+
+    #[tokio::test]
+    async fn finalize_clears_repriced_for_non_blob_sender_tx() {
+        let hash_0 = get_hash(0);
+
+        // Use finalize_depth=2 so finalization happens quickly
+        let sync = RwLock::new(BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 2,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: hash_0,
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        ));
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        // Register a blob tx at nonce 0, then replace it with a self-transfer
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(0, user));
+        let self_tx_hash = get_hash(0xdd);
+        let self_gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 200,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.write()
+            .await
+            .register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, self_gas);
+
+        // The original blob tx should be in repriced_transactions
+        assert!(sync
+            .read()
+            .await
+            .repriced_transactions
+            .get(&ADDRESS_SENDER)
+            .map_or(false, |m| m.contains_key(&0)));
+
+        // Block 1: includes the self-transfer
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        block_1.transactions.push(generate_non_blob_sender_tx(
+            ADDRESS_SENDER,
+            0,
+            get_hash(0xee),
+        ));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Block 2 and 3: empty blocks to trigger finalization (depth=2)
+        let block_2 = generate_block(get_hash(1), get_hash(2), 2);
+        sync_next_block(&sync, &provider, block_2).await;
+        let block_3 = generate_block(get_hash(2), get_hash(3), 3);
+        sync_next_block(&sync, &provider, block_3).await;
+
+        // Trigger finalization
+        let result = sync.write().await.maybe_advance_anchor_block().unwrap();
+        assert!(result.is_some());
+        let finalize_result = result.unwrap();
+
+        // The repriced blob tx should appear in finalized_excluded_txs
+        assert_eq!(finalize_result.finalized_excluded_txs.len(), 1);
+        assert_eq!(finalize_result.finalized_excluded_txs[0].nonce, 0);
+
+        // Repriced transactions should now be cleared for this nonce
+        let reader = sync.read().await;
+        let sender_repriced = reader.repriced_transactions.get(&ADDRESS_SENDER);
+        assert!(sender_repriced.is_none() || !sender_repriced.unwrap().contains_key(&0));
     }
 }

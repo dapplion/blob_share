@@ -224,6 +224,17 @@ Phase 4 (mostly independent)
   - Add 10 unit tests for previously untested `DataIntentTracker` methods: `non_included_intents_total_cost` (3 tests), `non_included_intents_total_data_len` (2 tests), `get_all_intents` (2 tests), and `collect_metrics` (1 test).
 - **Why:** Unbounded `IN (...)` and `VALUES (...)` clauses could exceed MySQL's query size limits under production load. The `.fetch_all()` on UPDATE was also semantically incorrect.
 
+### [x] 5.4 Track non-blob sender transactions for correct nonce cleanup
+- **File:** `bundler/src/sync.rs`
+- **Changes:**
+  - Added `NonBlobSenderTx` struct and `sender_non_blob_txs` field to `BlockSummary` to track non-blob transactions from sender addresses (e.g. self-transfers sent to resolve nonce deadlocks).
+  - Updated `BlockSummary::from_block` to populate `sender_non_blob_txs` when a transaction from a target sender is not a blob transaction.
+  - Updated `sync_block` to clear `pending_transactions` entries for included non-blob sender txs, preventing stale placeholders from persisting after on-chain inclusion.
+  - Updated `drop_reorged_blocks` to restore pending placeholders when non-blob sender txs get reorged out.
+  - Updated `maybe_advance_anchor_block` to clean up `repriced_transactions` entries at nonces consumed by finalized non-blob sender txs.
+  - Added 5 unit tests: `from_block_parses_non_blob_sender_txs`, `from_block_ignores_non_blob_tx_from_non_sender`, `sync_block_clears_pending_for_non_blob_sender_tx`, `sync_block_no_op_when_no_matching_pending_for_non_blob_tx`, `reorg_restores_non_blob_sender_tx_placeholder`, `finalize_clears_repriced_for_non_blob_sender_tx`.
+- **Why:** When a self-transfer (or any non-blob tx) from a sender address was included on-chain, `sync_block` didn't clear the corresponding entry from `pending_transactions` because `BlockSummary` only tracked blob transactions. This caused stale placeholder entries to persist indefinitely, affecting `pending_tx_count_for_sender()`, `detect_nonce_deadlock()`, and `balance_with_pending()`.
+
 ---
 
 ## Key Files Modified Across All Phases
