@@ -138,12 +138,17 @@ ORDER BY updated_at ASC
             .sum()
     }
 
-    /// Drops all intents associated with transaction. Does not error if items not found
-    pub fn finalize_tx(&mut self, tx_hash: TxHash) {
+    /// Drops all intents associated with transaction. Returns the finalized intent IDs
+    /// so the caller can mark them as finalized in the database.
+    pub fn finalize_tx(&mut self, tx_hash: TxHash) -> Vec<DataIntentId> {
         if let Some(ids) = self.included_intents.remove(&tx_hash) {
-            for id in ids {
-                self.pending_intents.remove(&id);
+            for id in &ids {
+                self.pending_intents.remove(id);
+                self.cache_intent_inclusions.remove(id);
             }
+            ids
+        } else {
+            vec![]
         }
     }
 
@@ -162,6 +167,12 @@ ORDER BY updated_at ASC
                 .or_default()
                 .push(blob_tx.tx_hash);
         }
+
+        // Populate reverse mapping (tx_hash -> intent IDs) for finalize_tx lookups
+        self.included_intents
+            .entry(blob_tx.tx_hash)
+            .or_default()
+            .extend(data_intent_ids.iter().copied());
 
         Ok(())
     }
@@ -433,10 +444,23 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
 mod tests {
     use std::str::FromStr;
 
+    use bundler_client::types::DataIntentSummary;
     use chrono::DateTime;
+    use ethers::types::{Address, H256};
     use uuid::Uuid;
 
-    use super::DataIntentDbRowFull;
+    use super::{DataIntentDbRowFull, DataIntentTracker};
+
+    fn make_summary(id: Uuid) -> DataIntentSummary {
+        DataIntentSummary {
+            id,
+            from: Address::random(),
+            data_hash: vec![0xcc; 32],
+            data_len: 100,
+            max_blob_gas_price: 1000,
+            updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+        }
+    }
 
     #[test]
     fn serde_data_intent_db_row_full() {
@@ -457,5 +481,93 @@ mod tests {
         let item_recv: DataIntentDbRowFull = serde_json::from_str(expected_item_str).unwrap();
         // test eq of dedicated serde fiels with Option<Vec<u8>>
         assert_eq!(item_recv.data_hash_signature, item.data_hash_signature);
+    }
+
+    #[test]
+    fn finalize_tx_returns_ids_and_cleans_caches() {
+        let mut tracker = DataIntentTracker::default();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let tx_hash = H256::random();
+
+        // Populate pending intents
+        tracker.pending_intents.insert(id1, make_summary(id1));
+        tracker.pending_intents.insert(id2, make_summary(id2));
+
+        // Populate inclusion maps (as insert_many_intent_tx_inclusions would)
+        tracker.included_intents.insert(tx_hash, vec![id1, id2]);
+        tracker.cache_intent_inclusions.insert(id1, vec![tx_hash]);
+        tracker.cache_intent_inclusions.insert(id2, vec![tx_hash]);
+
+        let finalized = tracker.finalize_tx(tx_hash);
+
+        assert_eq!(finalized.len(), 2);
+        assert!(finalized.contains(&id1));
+        assert!(finalized.contains(&id2));
+        assert!(tracker.pending_intents.is_empty());
+        assert!(tracker.included_intents.is_empty());
+        assert!(tracker.cache_intent_inclusions.is_empty());
+    }
+
+    #[test]
+    fn finalize_tx_unknown_hash_returns_empty() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        tracker.pending_intents.insert(id, make_summary(id));
+
+        let finalized = tracker.finalize_tx(H256::random());
+
+        assert!(finalized.is_empty());
+        // Pending intents are untouched
+        assert_eq!(tracker.pending_intents.len(), 1);
+    }
+
+    #[test]
+    fn finalize_tx_only_removes_intents_in_that_tx() {
+        let mut tracker = DataIntentTracker::default();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let tx_hash_a = H256::random();
+        let tx_hash_b = H256::random();
+
+        tracker.pending_intents.insert(id1, make_summary(id1));
+        tracker.pending_intents.insert(id2, make_summary(id2));
+
+        tracker.included_intents.insert(tx_hash_a, vec![id1]);
+        tracker.included_intents.insert(tx_hash_b, vec![id2]);
+        tracker.cache_intent_inclusions.insert(id1, vec![tx_hash_a]);
+        tracker.cache_intent_inclusions.insert(id2, vec![tx_hash_b]);
+
+        let finalized = tracker.finalize_tx(tx_hash_a);
+
+        assert_eq!(finalized, vec![id1]);
+        // id2 remains pending
+        assert_eq!(tracker.pending_intents.len(), 1);
+        assert!(tracker.pending_intents.contains_key(&id2));
+        // tx_hash_b still tracked
+        assert!(tracker.included_intents.contains_key(&tx_hash_b));
+        assert!(tracker.cache_intent_inclusions.contains_key(&id2));
+    }
+
+    #[test]
+    fn finalize_tx_metrics_reflect_state() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        let tx_hash = H256::random();
+
+        tracker.pending_intents.insert(id, make_summary(id));
+        tracker.included_intents.insert(tx_hash, vec![id]);
+        tracker.cache_intent_inclusions.insert(id, vec![tx_hash]);
+
+        // Before finalization: 1 pending, 1 included
+        assert_eq!(tracker.pending_intents.len(), 1);
+        assert_eq!(tracker.included_intents.len(), 1);
+
+        tracker.finalize_tx(tx_hash);
+
+        // After: empty
+        assert_eq!(tracker.pending_intents.len(), 0);
+        assert_eq!(tracker.included_intents.len(), 0);
+        assert_eq!(tracker.cache_intent_inclusions.len(), 0);
     }
 }

@@ -75,7 +75,7 @@ A reliable, self-operated blob bundling service where:
 - Removes from in-memory tracker and marks as cancelled in DB
 - Add corresponding `cancel_data_intent()` to `bundler_client`
 
-### [ ] 2.2 Mark intents as finalized
+### [x] 2.2 Mark intents as finalized
 - **File:** `bundler/src/app.rs:134` (TODO), `bundler/src/data_intent_tracker.rs`
 - When `maybe_advance_anchor_block()` finalizes blocks, update `inclusion_finalized = true` on included intents
 - This partially exists but the TODO indicates it's incomplete

@@ -126,12 +126,17 @@ impl AppData {
         let finalize_result = { self.sync.write().await.maybe_advance_anchor_block()? };
 
         if let Some(finalized_result) = finalize_result {
-            let mut data_intent_tracker = self.data_intent_tracker.write().await;
-            for tx in &finalized_result.finalized_included_txs {
-                data_intent_tracker.finalize_tx(tx.tx_hash);
-            }
+            let finalized_intent_ids = {
+                let mut data_intent_tracker = self.data_intent_tracker.write().await;
+                let mut ids = Vec::new();
+                for tx in &finalized_result.finalized_included_txs {
+                    ids.extend(data_intent_tracker.finalize_tx(tx.tx_hash));
+                }
+                ids
+            };
 
-            // TODO: Mark intents as finalzed
+            // Mark finalized intents in database
+            mark_data_intents_as_inclusion_finalized(&self.db_pool, &finalized_intent_ids).await?;
 
             // Forget about excluded transactions
             for _excluded_tx in finalized_result.finalized_excluded_txs {
