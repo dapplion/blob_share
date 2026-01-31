@@ -92,5 +92,6 @@ Before committing any change, always run this sequence:
 1. `cargo fmt`
 2. `SQLX_OFFLINE=true cargo clippy -- --deny warnings` — fix all warnings
 3. `SQLX_OFFLINE=true cargo test --lib` — unit tests, no DB required
-4. If SQL queries were added or modified, run `cargo sqlx prepare --workspace` to re-sync offline query metadata (requires a running DB), or verify the build passes with `SQLX_OFFLINE=true cargo check`
-5. If adding a new database migration, place it in `bundler/migrations/` with the naming convention `YYYYMMDD_description.sql`
+4. `codex review --uncommitted` — review your changes for bugs (review guidelines are in `AGENTS.md`). If Codex reports issues, fix them and repeat from step 1 until the review is clean.
+5. If SQL queries were added or modified, run `cargo sqlx prepare --workspace` to re-sync offline query metadata (requires a running DB), or verify the build passes with `SQLX_OFFLINE=true cargo check`
+6. If adding a new database migration, place it in `bundler/migrations/` with the naming convention `YYYYMMDD_description.sql`

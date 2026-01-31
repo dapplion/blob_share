@@ -306,7 +306,7 @@ pub(crate) async fn store_data_intent<'c>(
     let id = Uuid::new_v4();
     let eth_address = data_intent.from().to_fixed_bytes().to_vec();
     let data = data_intent.data();
-    let data_len = data.len() as u32;
+    let data_len = data_intent.data_len() as u32;
     let data_hash = data_intent.data_hash().to_vec();
     let max_blob_gas_price = BigDecimal::from_u64(data_intent.max_blob_gas_price());
     let data_hash_signature = data_intent.data_hash_signature().map(|sig| sig.to_vec());

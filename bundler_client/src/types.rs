@@ -233,9 +233,15 @@ impl DataIntentSummary {
     }
 }
 
-/// Max possible cost of data intent, billed cost prior to inclusion
+/// Minimum data length for cost calculation: one field element (31 bytes).
+/// Prevents too-small intents from being undercharged.
+pub const MIN_CHARGEABLE_DATA_LEN: usize = 31;
+
+/// Max possible cost of data intent, billed cost prior to inclusion.
+/// Applies minimum chargeable length floor of one field element (31 bytes).
 pub(crate) fn data_intent_max_cost(data_len: usize, max_blob_gas_price: BlobGasPrice) -> u128 {
-    data_len as u128 * max_blob_gas_price as u128
+    let chargeable_len = data_len.max(MIN_CHARGEABLE_DATA_LEN);
+    chargeable_len as u128 * max_blob_gas_price as u128
 }
 
 #[cfg(test)]

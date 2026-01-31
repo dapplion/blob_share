@@ -164,7 +164,7 @@ A reliable, self-operated blob bundling service where:
 - Add priority fee validation (`gas.rs:39` TODO)
 - Expose gas recommendation in `GET /v1/gas` response (suggested max_blob_gas_price for next-block inclusion)
 
-### [ ] 4.4 Minimum data charge
+### [x] 4.4 Minimum data charge
 - **File:** `bundler/src/data_intent.rs:55` (TODO)
 - Enforce minimum 31 bytes (one field element) for cost calculation, even if actual data is smaller
 - Prevents too-small intents that waste packing space

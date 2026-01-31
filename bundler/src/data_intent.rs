@@ -34,7 +34,7 @@ pub struct DataIntentWithSignature {
 
 impl DataIntent {
     pub fn max_cost(&self) -> u128 {
-        self.data_len() as u128 * self.max_blob_gas_price() as u128
+        self.chargeable_data_len() as u128 * self.max_blob_gas_price() as u128
     }
 
     pub fn max_blob_gas_price(&self) -> BlobGasPrice {
@@ -51,10 +51,16 @@ impl DataIntent {
         }
     }
 
+    /// Returns the actual byte length of the data, used for packing and capacity checks.
     pub fn data_len(&self) -> usize {
-        // TODO: charge and coerce data to at least 31 bytes to prevent too expensive packing
-        // rounds. Add consistency tests for signed data of coerced inputs
         self.data().len()
+    }
+
+    /// Returns the data length used for cost calculation, floored to one field element (31 bytes).
+    pub fn chargeable_data_len(&self) -> usize {
+        self.data()
+            .len()
+            .max(bundler_client::types::MIN_CHARGEABLE_DATA_LEN)
     }
 
     pub fn data(&self) -> &[u8] {
@@ -93,5 +99,59 @@ impl DataIntent {
             signature,
             max_blob_gas_price,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_intent(data: Vec<u8>, max_blob_gas_price: BlobGasPrice) -> DataIntent {
+        DataIntent::NoSignature(DataIntentNoSignature {
+            from: Address::zero(),
+            data_hash: DataHash::from_data(&data),
+            data,
+            max_blob_gas_price,
+        })
+    }
+
+    #[test]
+    fn data_len_returns_raw_length() {
+        let intent = make_intent(vec![0x42], 100);
+        assert_eq!(intent.data_len(), 1);
+    }
+
+    #[test]
+    fn chargeable_data_len_enforces_minimum() {
+        // 1 byte of data should be charged as 31 bytes
+        let intent = make_intent(vec![0x42], 100);
+        assert_eq!(intent.chargeable_data_len(), 31);
+    }
+
+    #[test]
+    fn chargeable_data_len_at_minimum_boundary() {
+        // Exactly 31 bytes should remain 31
+        let intent = make_intent(vec![0u8; 31], 100);
+        assert_eq!(intent.chargeable_data_len(), 31);
+    }
+
+    #[test]
+    fn chargeable_data_len_above_minimum() {
+        // 100 bytes should remain 100
+        let intent = make_intent(vec![0u8; 100], 100);
+        assert_eq!(intent.chargeable_data_len(), 100);
+    }
+
+    #[test]
+    fn max_cost_uses_chargeable_data_len() {
+        let intent = make_intent(vec![0x42], 100);
+        // Cost should be 31 * 100 = 3100, not 1 * 100
+        assert_eq!(intent.max_cost(), 31 * 100);
+    }
+
+    #[test]
+    fn max_cost_large_data_unchanged() {
+        let intent = make_intent(vec![0u8; 500], 200);
+        assert_eq!(intent.max_cost(), 500 * 200);
     }
 }
