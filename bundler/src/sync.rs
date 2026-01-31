@@ -207,16 +207,79 @@ impl BlockSync {
         self.cache_transactions_by_hash.get(&tx_hash)
     }
 
+    /// Check if there is a nonce deadlock: at least one pending transaction exists and all
+    /// pending transactions are underpriced relative to the current head gas. When this
+    /// happens, no reprice is possible because `pack_items` cannot find a viable set of
+    /// intents at current gas prices.
+    ///
+    /// Returns `Some((nonce, gas))` for the lowest underpriced nonce if deadlocked, or `None`.
+    pub fn detect_nonce_deadlock(&self) -> Option<(u64, GasConfig)> {
+        if self.pending_transactions.is_empty() {
+            return None;
+        }
+
+        let head_gas = self.get_head_gas();
+
+        // All pending transactions must be underpriced for a deadlock
+        let all_underpriced = self
+            .pending_transactions
+            .values()
+            .all(|tx| tx.is_underpriced(head_gas));
+
+        if !all_underpriced {
+            return None;
+        }
+
+        // Return the lowest nonce that is underpriced - this is the one blocking progress
+        self.pending_transactions
+            .iter()
+            .min_by_key(|(nonce, _)| *nonce)
+            .map(|(nonce, tx)| (*nonce, tx.gas))
+    }
+
+    /// Register a self-transfer transaction sent to resolve a nonce deadlock.
+    /// This replaces the pending blob tx at the given nonce, moving it to repriced.
+    pub fn register_sent_self_transfer(&mut self, nonce: u64, tx_hash: TxHash, gas: GasConfig) {
+        // Move the old pending blob tx at this nonce (if any) to repriced
+        if let Some(old_tx) = self.pending_transactions.remove(&nonce) {
+            self.repriced_transactions
+                .entry(nonce)
+                .or_default()
+                .push(old_tx);
+        }
+
+        // Self-transfers don't consume blob gas, so set max_fee_per_blob_gas to MAX
+        // to ensure is_underpriced never fires on the blob gas dimension for this tx.
+        let effective_gas = GasConfig {
+            max_fee_per_blob_gas: u128::MAX,
+            ..gas
+        };
+
+        // Insert a placeholder BlobTxSummary with no participants for the self-transfer.
+        // This occupies the nonce slot so get_next_available_nonce works correctly.
+        let summary = BlobTxSummary {
+            participants: vec![],
+            tx_hash,
+            from: self.config.target_address,
+            nonce,
+            used_bytes: 0,
+            gas: effective_gas,
+        };
+
+        self.cache_transactions_by_hash.insert(
+            tx_hash,
+            TxInclusion::Pending {
+                tx_gas: effective_gas,
+            },
+        );
+
+        self.pending_transactions.insert(nonce, summary);
+    }
+
     /// Register valid accepted blob transaction by the EL node.
     ///
     /// Allows to replace transactions with the same nonce. Only valid accepted transactions should
     /// be added via this fn, which assumes that the re-pricing is correct.
-    ///
-    /// TODO: Note there's potential nonce deadlock,
-    /// where the blob sharing sends a viable transaction at gas price P, the network
-    /// base fee increases to 2*P and then there's no set of intents that can afford 2*P. In
-    /// that case the sender account is stuck because it can't send a profitable re-price
-    /// transaction. In that case it should send a self transfer to unlock the nonce.
     pub fn register_sent_blob_tx(&mut self, tx: BlobTxSummary) {
         // TODO: Handle multiple senders
         assert_eq!(tx.from, self.config.target_address);
@@ -971,6 +1034,10 @@ mod tests {
     }
 
     fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
+        new_block_sync_with_gas(hash, number, BlockGasSummary::default())
+    }
+
+    fn new_block_sync_with_gas(hash: H256, number: u64, gas: BlockGasSummary) -> RwLock<BlockSync> {
         RwLock::new(BlockSync::new(
             BlockSyncConfig {
                 target_address: ADDRESS_SENDER,
@@ -980,9 +1047,330 @@ mod tests {
             AnchorBlock {
                 hash,
                 number,
-                gas: BlockGasSummary::default(),
+                gas,
                 finalized_balances: <_>::default(),
             },
         ))
+    }
+
+    // --- Nonce deadlock detection tests ---
+
+    #[test]
+    fn detect_nonce_deadlock_no_pending_txs() {
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        // No pending transactions => no deadlock
+        assert!(sync.detect_nonce_deadlock().is_none());
+    }
+
+    #[test]
+    fn detect_nonce_deadlock_not_underpriced() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                // Block gas: base_fee=1, blob_gas_price=1
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 1,
+                    excess_blob_gas: 1,
+                    blob_gas_used: 1,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        // Register a pending tx with gas >= block gas => NOT underpriced
+        let user = get_addr(1);
+        sync.register_sent_blob_tx(generate_pending_blob_tx(0, user));
+
+        assert!(sync.detect_nonce_deadlock().is_none());
+    }
+
+    #[test]
+    fn detect_nonce_deadlock_all_underpriced() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                // Block gas: base_fee=100 => pending tx with max_fee=1 is underpriced
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 100,
+                    excess_blob_gas: 1,
+                    blob_gas_used: 1,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+        // Pending tx with max_fee_per_gas=1, but block base_fee=100 => underpriced
+        sync.register_sent_blob_tx(generate_pending_blob_tx(0, user));
+
+        let result = sync.detect_nonce_deadlock();
+        assert!(result.is_some());
+        let (nonce, gas) = result.unwrap();
+        assert_eq!(nonce, 0);
+        assert_eq!(gas.max_fee_per_gas, 1);
+    }
+
+    #[test]
+    fn detect_nonce_deadlock_mixed_returns_none() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 5,
+                    excess_blob_gas: 1,
+                    blob_gas_used: 1,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+
+        // First tx: max_fee_per_gas=1, underpriced against base_fee=5
+        sync.register_sent_blob_tx(generate_pending_blob_tx(0, user));
+
+        // Second tx: max_fee_per_gas=10, NOT underpriced against base_fee=5
+        let mut tx = generate_pending_blob_tx(1, user);
+        tx.gas = GasConfig {
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 10,
+            max_fee_per_blob_gas: 10,
+        };
+        sync.register_sent_blob_tx(tx);
+
+        // Mixed: one underpriced, one not => no deadlock
+        assert!(sync.detect_nonce_deadlock().is_none());
+    }
+
+    #[test]
+    fn detect_nonce_deadlock_returns_lowest_nonce() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 100,
+                    excess_blob_gas: 1,
+                    blob_gas_used: 1,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+        // Both underpriced (max_fee=1 vs base_fee=100)
+        sync.register_sent_blob_tx(generate_pending_blob_tx(5, user));
+        sync.register_sent_blob_tx(generate_pending_blob_tx(3, user));
+
+        let result = sync.detect_nonce_deadlock();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, 3); // Should return lowest nonce
+    }
+
+    // --- Self-transfer registration tests ---
+
+    #[test]
+    fn register_self_transfer_replaces_pending_tx() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+        let blob_tx = generate_pending_blob_tx(0, user);
+        let old_tx_hash = blob_tx.tx_hash;
+        sync.register_sent_blob_tx(blob_tx);
+
+        // Now register a self-transfer at the same nonce
+        let self_tx_hash = get_hash(0xff);
+        let new_gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 100,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.register_sent_self_transfer(0, self_tx_hash, new_gas);
+
+        // The pending tx at nonce 0 should now be the self-transfer
+        let pending = sync.pending_transactions.get(&0).unwrap();
+        assert_eq!(pending.tx_hash, self_tx_hash);
+        assert_eq!(pending.participants.len(), 0);
+        // EVM gas fields should match, blob gas is set to MAX for self-transfers
+        assert_eq!(pending.gas.max_fee_per_gas, new_gas.max_fee_per_gas);
+        assert_eq!(
+            pending.gas.max_priority_fee_per_gas,
+            new_gas.max_priority_fee_per_gas
+        );
+        assert_eq!(pending.gas.max_fee_per_blob_gas, u128::MAX);
+
+        // Old tx should be in repriced
+        let repriced = sync.repriced_transactions.get(&0).unwrap();
+        assert_eq!(repriced.len(), 1);
+        assert_eq!(repriced[0].tx_hash, old_tx_hash);
+
+        // Cache should have the self-transfer
+        assert!(sync.cache_transactions_by_hash.contains_key(&self_tx_hash));
+    }
+
+    #[test]
+    fn register_self_transfer_without_prior_pending() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_address: ADDRESS_SENDER,
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        // Register self-transfer at nonce 0 with no prior pending tx
+        let self_tx_hash = get_hash(0xaa);
+        let gas = GasConfig {
+            max_priority_fee_per_gas: 5,
+            max_fee_per_gas: 50,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.register_sent_self_transfer(0, self_tx_hash, gas);
+
+        // Should be registered as pending with blob gas set to MAX
+        let pending = sync.pending_transactions.get(&0).unwrap();
+        assert_eq!(pending.tx_hash, self_tx_hash);
+        assert_eq!(pending.gas.max_fee_per_blob_gas, u128::MAX);
+
+        // No repriced entries
+        assert!(sync.repriced_transactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nonce_deadlock_self_transfer_unblocks_nonce() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2 = get_hash(2);
+
+        // Blocks with high gas (base_fee=100)
+        let high_gas = BlockGasSummary {
+            base_fee_per_gas: 100,
+            excess_blob_gas: 1,
+            blob_gas_used: 1,
+        };
+
+        let sync = new_block_sync_with_gas(hash_0, 0, high_gas);
+        let provider = MockEthereumProvider::default();
+
+        let user = get_addr(1);
+
+        // Register a blob tx at nonce 0 with low gas (will be underpriced)
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(0, user));
+
+        // Verify deadlock is detected
+        assert!(sync.read().await.detect_nonce_deadlock().is_some());
+
+        // Send self-transfer at nonce 0
+        let self_tx_hash = get_hash(0xdd);
+        let self_gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 200,
+            max_fee_per_blob_gas: 0,
+        };
+        sync.write()
+            .await
+            .register_sent_self_transfer(0, self_tx_hash, self_gas);
+
+        // Self-transfer is NOT underpriced (max_fee=200 > base_fee=100)
+        // So deadlock should be resolved
+        assert!(sync.read().await.detect_nonce_deadlock().is_none());
+
+        // Simulate self-transfer being included in a block
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.gas = high_gas;
+        // The self-transfer appears as a regular tx from sender with nonce 0
+        let mut self_transfer_tx = Transaction::default();
+        self_transfer_tx.from = ADDRESS_SENDER;
+        self_transfer_tx.nonce = 0.into();
+        self_transfer_tx.to = Some(ADDRESS_SENDER);
+        self_transfer_tx.value = 0.into();
+        block_1.transactions.push(self_transfer_tx);
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Nonce 0 should no longer be in pending (sync_block drops it for non-blob txs
+        // only if they match our tracking, but non-blob txs aren't parsed as blob txs.
+        // The self-transfer occupies nonce 0 in pending_transactions. After the
+        // next get_next_available_nonce call, nonce 0's transaction_count moves past it.)
+
+        // Next available nonce should be 1 (provider returns 1 for tx count at head)
+        let provider_after = MockEthereumProviderWithCount { count: 1 };
+        let nonce_status = sync
+            .read()
+            .await
+            .get_next_available_nonce(&provider_after, ADDRESS_SENDER)
+            .await
+            .unwrap();
+        assert!(matches!(nonce_status, NonceStatus::Available(1)));
+    }
+
+    /// Mock provider that returns a configurable transaction count
+    struct MockEthereumProviderWithCount {
+        count: u64,
+    }
+
+    #[async_trait]
+    impl BlockProvider for MockEthereumProviderWithCount {
+        async fn get_block_by_hash(&self, _block_hash: &H256) -> Result<Option<BlockWithTxs>> {
+            Ok(None)
+        }
+        async fn get_transaction_count(&self, _from: Address, _block_hash: H256) -> Result<u64> {
+            Ok(self.count)
+        }
     }
 }

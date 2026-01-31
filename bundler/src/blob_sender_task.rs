@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use ethers::{signers::Signer, types::TxHash};
+use ethers::{
+    signers::Signer,
+    types::{
+        transaction::eip2718::TypedTransaction, Eip1559TransactionRequest, NameOrAddress, TxHash,
+    },
+};
 use eyre::{eyre, Context, Result};
 
 use crate::{
@@ -9,6 +14,7 @@ use crate::{
     data_intent_tracker::DataIntentDbRowFull,
     debug, error,
     gas::GasConfig,
+    info,
     kzg::{construct_blob_tx, BlobTx, TxParams},
     metrics,
     packing::{pack_items, Item},
@@ -37,6 +43,9 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                     match outcome {
                         // Loop again to try to create another blob transaction
                         SendResult::SentBlobTx(_) => continue,
+                        // Self-transfer sent to resolve nonce deadlock; break and wait
+                        // for the next block to confirm it before sending more blob txs
+                        SendResult::SentSelfTransfer(_) => break,
                         // Break out of inner loop and wait for new notification
                         SendResult::NoViableSet | SendResult::NoNonceAvailable => break,
                     }
@@ -68,6 +77,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 pub(crate) enum SendResult {
     NoViableSet,
     SentBlobTx(#[allow(dead_code)] TxHash),
+    SentSelfTransfer(#[allow(dead_code)] TxHash),
     NoNonceAvailable,
 }
 
@@ -114,6 +124,12 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
                 .map(|i| pending_data_intents[*i].clone())
                 .collect::<Vec<_>>()
         } else {
+            // No viable set of intents at current gas prices. Check if this is
+            // caused by a nonce deadlock: all pending blob txs are underpriced
+            // and cannot be repriced because no intents can afford current gas.
+            if let Some((stuck_nonce, prev_gas)) = app_data.detect_nonce_deadlock().await {
+                return send_self_transfer(app_data, stuck_nonce, prev_gas).await;
+            }
             return Ok(SendResult::NoViableSet);
         }
     };
@@ -275,4 +291,80 @@ async fn construct_and_send_tx(
     }
 
     Ok(blob_tx)
+}
+
+/// Send a 0-value self-transfer (EIP-1559) to resolve a nonce deadlock.
+///
+/// When all pending blob transactions are underpriced and no viable set of intents
+/// can afford current gas prices, the sender nonce becomes stuck. This function
+/// sends a minimal transaction (sender → sender, value 0) at the stuck nonce with
+/// gas prices bumped above the previous transaction, which advances the nonce and
+/// unblocks the pipeline.
+#[tracing::instrument(skip(app_data))]
+async fn send_self_transfer(
+    app_data: Arc<AppData>,
+    stuck_nonce: u64,
+    prev_gas: GasConfig,
+) -> Result<SendResult> {
+    let sender_address = app_data.sender_wallet.address();
+
+    // Estimate current gas prices
+    let (max_fee_per_gas, max_priority_fee_per_gas) =
+        app_data.provider.estimate_eip1559_fees().await?;
+
+    let mut gas_config = GasConfig {
+        max_fee_per_gas: max_fee_per_gas.as_u128(),
+        max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
+        // Not relevant for a non-blob tx, but keep for tracking
+        max_fee_per_blob_gas: 0,
+    };
+    // Ensure gas prices are at least 110% of the stuck transaction
+    gas_config.reprice_to_at_least(prev_gas);
+
+    warn!(
+        "nonce deadlock detected: sending self-transfer at nonce {} with gas {:?} (previous gas: {:?})",
+        stuck_nonce, gas_config, prev_gas
+    );
+
+    // Build an EIP-1559 self-transfer: sender → sender, value 0, empty data
+    let tx_request = Eip1559TransactionRequest {
+        from: Some(sender_address),
+        to: Some(NameOrAddress::Address(sender_address)),
+        gas: Some(21_000u64.into()), // Simple transfer gas cost
+        value: Some(0u64.into()),
+        data: None,
+        nonce: Some(stuck_nonce.into()),
+        access_list: Default::default(),
+        max_priority_fee_per_gas: Some(gas_config.max_priority_fee_per_gas.into()),
+        max_fee_per_gas: Some(gas_config.max_fee_per_gas.into()),
+        chain_id: Some(app_data.chain_id.into()),
+    };
+
+    let typed_tx: TypedTransaction = tx_request.into();
+    let signature = app_data
+        .sender_wallet
+        .sign_transaction(&typed_tx)
+        .await
+        .wrap_err("failed to sign self-transfer transaction")?;
+    let signed_tx = typed_tx.rlp_signed(&signature);
+
+    let tx_hash = app_data
+        .provider
+        .send_raw_transaction(signed_tx)
+        .await
+        .wrap_err("failed to send self-transfer transaction")?;
+
+    info!(
+        "sent self-transfer tx {} at nonce {} to resolve nonce deadlock",
+        tx_hash, stuck_nonce
+    );
+
+    // Register the self-transfer in BlockSync so nonce tracking stays consistent
+    app_data
+        .register_sent_self_transfer(stuck_nonce, tx_hash, gas_config)
+        .await;
+
+    metrics::NONCE_DEADLOCK_SELF_TRANSFERS.inc();
+
+    Ok(SendResult::SentSelfTransfer(tx_hash))
 }

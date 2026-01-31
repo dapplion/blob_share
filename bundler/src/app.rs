@@ -25,6 +25,7 @@ use crate::{
         DataIntentDbRowFull, DataIntentTracker,
     },
     eth_provider::EthProvider,
+    gas::GasConfig,
     info,
     sync::{BlockSync, BlockWithTxs, NonceStatus, SyncBlockError, SyncBlockOutcome, TxInclusion},
     utils::address_to_hex_lowercase,
@@ -266,6 +267,25 @@ impl AppData {
             .await
             .get_next_available_nonce(&self.provider, sender_address)
             .await
+    }
+
+    /// Detect if there is a nonce deadlock: all pending transactions are underpriced
+    /// and no viable intent set can reprice them.
+    pub async fn detect_nonce_deadlock(&self) -> Option<(u64, GasConfig)> {
+        self.sync.read().await.detect_nonce_deadlock()
+    }
+
+    /// Register a self-transfer transaction sent to resolve a nonce deadlock.
+    pub async fn register_sent_self_transfer(
+        &self,
+        nonce: u64,
+        tx_hash: ethers::types::TxHash,
+        gas: GasConfig,
+    ) {
+        self.sync
+            .write()
+            .await
+            .register_sent_self_transfer(nonce, tx_hash, gas);
     }
 
     #[tracing::instrument(skip(self))]

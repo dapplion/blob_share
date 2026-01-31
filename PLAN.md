@@ -105,7 +105,7 @@ A reliable, self-operated blob bundling service where:
 - Replace catch-all with categorized error handling: transient errors (network timeout, DB connection) → retry with backoff; permanent errors (invalid state) → log + skip; fatal errors → propagate
 - Add retry counter metrics
 
-### [ ] 2.8 Nonce deadlock resolution
+### [x] 2.8 Nonce deadlock resolution
 - **File:** `bundler/src/sync.rs:214-218` (TODO), `bundler/src/blob_sender_task.rs`
 - Detect when all pending intents are underpriced relative to current gas and the sender nonce is stuck
 - Send a self-transfer (0-value TX to self) to advance the nonce and unblock the pipeline

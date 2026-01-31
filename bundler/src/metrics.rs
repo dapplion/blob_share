@@ -100,6 +100,8 @@ lazy_static! {
         register_gauge!("blobshare_included_intents_cache", "included intents cache").unwrap();
     pub(crate) static ref EVICTED_STALE_INTENTS: Counter =
         register_counter!("blobshare_evicted_stale_intents_total", "total stale underpriced intents evicted").unwrap();
+    pub(crate) static ref NONCE_DEADLOCK_SELF_TRANSFERS: Counter =
+        register_counter!("blobshare_nonce_deadlock_self_transfers_total", "total self-transfer transactions sent to resolve nonce deadlocks").unwrap();
     //
     // API endpoint metrics
     //
@@ -321,6 +323,7 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         PACKED_BLOB_USED_LEN.observe(0.);
         PUSH_REQ_HISTOGRAM.observe(0.);
         EVICTED_STALE_INTENTS.inc();
+        NONCE_DEADLOCK_SELF_TRANSFERS.inc();
         API_REQUESTS_TOTAL
             .with_label_values(&["GET", "/v1/health", "200"])
             .inc();
