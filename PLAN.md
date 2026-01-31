@@ -235,6 +235,18 @@ Phase 4 (mostly independent)
   - Added 5 unit tests: `from_block_parses_non_blob_sender_txs`, `from_block_ignores_non_blob_tx_from_non_sender`, `sync_block_clears_pending_for_non_blob_sender_tx`, `sync_block_no_op_when_no_matching_pending_for_non_blob_tx`, `reorg_restores_non_blob_sender_tx_placeholder`, `finalize_clears_repriced_for_non_blob_sender_tx`.
 - **Why:** When a self-transfer (or any non-blob tx) from a sender address was included on-chain, `sync_block` didn't clear the corresponding entry from `pending_transactions` because `BlockSummary` only tracked blob transactions. This caused stale placeholder entries to persist indefinitely, affecting `pending_tx_count_for_sender()`, `detect_nonce_deadlock()`, and `balance_with_pending()`.
 
+### [x] 5.5 Add unit tests for untested BlockSync methods
+- **File:** `bundler/src/sync.rs`
+- **Changes:**
+  - Added 16 unit tests covering previously untested `BlockSync` methods:
+    - `maybe_advance_anchor_block`: 3 tests — finalization advances anchor and returns included txs, no-op when chain is too short, cleaning up repriced blob txs on finalization.
+    - `balance_with_pending`: 4 tests — no activity returns zero, finalized-only balance, unfinalized topups accumulate, pending txs subtract cost.
+    - `pending_txs_data_len`: 3 tests — no pending returns zero, sums participant data across txs, ignores other participants.
+    - `get_head` / `get_head_gas`: 2 tests — returns anchor when chain is empty, returns latest block when chain has blocks.
+    - `SyncBlockOutcome::from_many`: 3 tests — all-known collapses to BlockKnown, mixed known+synced returns Synced with merged hashes, reorg is preserved.
+    - `collect_metrics`: 1 test — does not panic with blocks in chain.
+- **Why:** These core `BlockSync` methods had no direct unit tests. The finalization path (`maybe_advance_anchor_block`) is critical for correctness — it advances the anchor, cleans up repriced transactions, and computes finalized balances. `balance_with_pending` and `pending_txs_data_len` are used for user-facing balance/quota checks. `SyncBlockOutcome::from_many` merges multi-block sync results.
+
 ---
 
 ## Key Files Modified Across All Phases

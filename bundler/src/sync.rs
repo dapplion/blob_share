@@ -1944,4 +1944,442 @@ mod tests {
         let sender_repriced = reader.repriced_transactions.get(&ADDRESS_SENDER);
         assert!(sender_repriced.is_none() || !sender_repriced.unwrap().contains_key(&0));
     }
+
+    // --- maybe_advance_anchor_block tests ---
+
+    #[tokio::test]
+    async fn finalize_advances_anchor_and_returns_included_txs() {
+        // Use finalize_depth=2
+        let hash_0 = get_hash(0);
+        let sync = RwLock::new(BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 2,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: hash_0,
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        ));
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        // Block 1 has a topup and a blob tx
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        block_1.transactions.push(generate_topup_tx(user, 1000));
+        block_1.transactions.push(generate_blob_tx(0, user));
+        // Register blob tx as pending first
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(0, user));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Blocks 2 and 3 to trigger finalization (depth=2)
+        let block_2 = generate_block(get_hash(1), get_hash(2), 2);
+        sync_next_block(&sync, &provider, block_2).await;
+        let block_3 = generate_block(get_hash(2), get_hash(3), 3);
+        sync_next_block(&sync, &provider, block_3).await;
+
+        // Finalize
+        let result = sync.write().await.maybe_advance_anchor_block().unwrap();
+        assert!(result.is_some());
+        let finalize = result.unwrap();
+
+        // Block 1 had one blob tx
+        assert_eq!(finalize.finalized_included_txs.len(), 1);
+        assert_eq!(finalize.finalized_included_txs[0].nonce, 0);
+        assert!(finalize.finalized_excluded_txs.is_empty());
+        assert_eq!(finalize.new_anchor_block_number, 1);
+
+        // Anchor should have moved to block 1
+        let reader = sync.read().await;
+        assert_eq!(reader.anchor_block.number, 1);
+        assert_eq!(reader.anchor_block.hash, get_hash(1));
+        // User balance from topup should be finalized
+        assert!(reader.anchor_block.finalized_balances.contains_key(&user));
+    }
+
+    #[tokio::test]
+    async fn finalize_no_op_when_chain_too_short() {
+        let hash_0 = get_hash(0);
+        // finalize_depth=32, only add 2 blocks => no finalization
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        let block_1 = generate_block(hash_0, get_hash(1), 1);
+        sync_next_block(&sync, &provider, block_1).await;
+        let block_2 = generate_block(get_hash(1), get_hash(2), 2);
+        sync_next_block(&sync, &provider, block_2).await;
+
+        let result = sync.write().await.maybe_advance_anchor_block().unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn finalize_cleans_repriced_blob_txs() {
+        let hash_0 = get_hash(0);
+        let sync = RwLock::new(BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 2,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: hash_0,
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        ));
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        // Register a blob tx at nonce 0, then replace it (creating a repriced entry)
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(0, user));
+        let mut replacement = generate_pending_blob_tx(0, user);
+        replacement.tx_hash = get_hash(0xee);
+        replacement.gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 100,
+            max_fee_per_blob_gas: 100,
+        };
+        sync.write().await.register_sent_blob_tx(replacement);
+
+        // Verify repriced entry exists
+        assert!(sync
+            .read()
+            .await
+            .repriced_transactions
+            .get(&ADDRESS_SENDER)
+            .map_or(false, |m| m.contains_key(&0)));
+
+        // Block 1: includes the replacement tx
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        let mut blob_tx = generate_blob_tx(0, user);
+        blob_tx.hash = get_hash(0xee);
+        block_1.transactions.push(blob_tx);
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Blocks 2, 3 to trigger finalization
+        let block_2 = generate_block(get_hash(1), get_hash(2), 2);
+        sync_next_block(&sync, &provider, block_2).await;
+        let block_3 = generate_block(get_hash(2), get_hash(3), 3);
+        sync_next_block(&sync, &provider, block_3).await;
+
+        let result = sync.write().await.maybe_advance_anchor_block().unwrap();
+        assert!(result.is_some());
+        let finalize = result.unwrap();
+
+        // The repriced (original) tx should be in finalized_excluded_txs
+        assert_eq!(finalize.finalized_excluded_txs.len(), 1);
+        // The included (replacement) tx should be in finalized_included_txs
+        assert_eq!(finalize.finalized_included_txs.len(), 1);
+
+        // Repriced should now be cleaned up for nonce 0
+        let reader = sync.read().await;
+        let sender_repriced = reader.repriced_transactions.get(&ADDRESS_SENDER);
+        assert!(sender_repriced.is_none() || !sender_repriced.unwrap().contains_key(&0));
+    }
+
+    // --- balance_with_pending focused tests ---
+
+    #[test]
+    fn balance_with_pending_no_activity() {
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+        assert_eq!(sync.balance_with_pending(&user), 0);
+    }
+
+    #[test]
+    fn balance_with_pending_finalized_balance_only() {
+        let mut finalized = HashMap::new();
+        let user = get_addr(1);
+        finalized.insert(user, 5000_i128);
+
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: finalized,
+            },
+        );
+
+        assert_eq!(sync.balance_with_pending(&user), 5000);
+    }
+
+    #[tokio::test]
+    async fn balance_with_pending_includes_unfinalized_topups() {
+        let hash_0 = get_hash(0);
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        block_1.transactions.push(generate_topup_tx(user, 500));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        let mut block_2 = generate_block(get_hash(1), get_hash(2), 2);
+        block_2.transactions.push(generate_topup_tx(user, 300));
+        sync_next_block(&sync, &provider, block_2).await;
+
+        assert_eq!(sync.read().await.balance_with_pending(&user), 800);
+    }
+
+    #[tokio::test]
+    async fn balance_subtracts_cost_of_pending_txs() {
+        let hash_0 = get_hash(0);
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        // Add a large topup
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        block_1
+            .transactions
+            .push(generate_topup_tx(user, 10 * BYTES_PER_BLOB as i128));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        let balance_before = sync.read().await.balance_with_pending(&user);
+
+        // Register pending blob tx — should reduce balance
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(0, user));
+
+        let balance_after = sync.read().await.balance_with_pending(&user);
+        assert!(balance_after < balance_before);
+    }
+
+    // --- pending_txs_data_len tests ---
+
+    #[test]
+    fn pending_txs_data_len_no_pending() {
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+        assert_eq!(sync.pending_txs_data_len(&user), 0);
+    }
+
+    #[test]
+    fn pending_txs_data_len_sums_participant_data() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+
+        // Register two pending blob txs for the same user
+        sync.register_sent_blob_tx(generate_pending_blob_tx(0, user));
+        sync.register_sent_blob_tx(generate_pending_blob_tx(1, user));
+
+        assert_eq!(sync.pending_txs_data_len(&user), 2 * BYTES_PER_BLOB);
+    }
+
+    #[test]
+    fn pending_txs_data_len_ignores_other_participants() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user_a = get_addr(1);
+        let user_b = get_addr(2);
+
+        // tx at nonce 0 has user_a as participant
+        sync.register_sent_blob_tx(generate_pending_blob_tx(0, user_a));
+        // tx at nonce 1 has user_b as participant
+        sync.register_sent_blob_tx(generate_pending_blob_tx(1, user_b));
+
+        assert_eq!(sync.pending_txs_data_len(&user_a), BYTES_PER_BLOB);
+        assert_eq!(sync.pending_txs_data_len(&user_b), BYTES_PER_BLOB);
+    }
+
+    // --- get_head / get_head_gas tests ---
+
+    #[test]
+    fn get_head_returns_anchor_when_empty_chain() {
+        let sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(42),
+                number: 42,
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 10,
+                    excess_blob_gas: 20,
+                    blob_gas_used: 30,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let head = sync.get_head();
+        assert_eq!(head.number, 42);
+        assert_eq!(head.hash, get_hash(42));
+
+        let gas = sync.get_head_gas();
+        assert_eq!(gas.base_fee_per_gas, 10);
+        assert_eq!(gas.excess_blob_gas, 20);
+        assert_eq!(gas.blob_gas_used, 30);
+    }
+
+    #[tokio::test]
+    async fn get_head_returns_latest_block() {
+        let hash_0 = get_hash(0);
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        let mut block_1 = generate_block(hash_0, get_hash(1), 1);
+        block_1.gas = BlockGasSummary {
+            base_fee_per_gas: 100,
+            excess_blob_gas: 200,
+            blob_gas_used: 300,
+        };
+        sync_next_block(&sync, &provider, block_1).await;
+
+        let reader = sync.read().await;
+        let head = reader.get_head();
+        assert_eq!(head.number, 1);
+        assert_eq!(head.hash, get_hash(1));
+
+        let gas = reader.get_head_gas();
+        assert_eq!(gas.base_fee_per_gas, 100);
+    }
+
+    // --- SyncBlockOutcome::from_many tests ---
+
+    #[test]
+    fn sync_outcome_from_many_all_known() {
+        let outcomes = vec![SyncBlockOutcome::BlockKnown, SyncBlockOutcome::BlockKnown];
+        assert!(matches!(
+            SyncBlockOutcome::from_many(&outcomes),
+            SyncBlockOutcome::BlockKnown
+        ));
+    }
+
+    #[test]
+    fn sync_outcome_from_many_mixed_with_synced() {
+        let outcomes = vec![
+            SyncBlockOutcome::BlockKnown,
+            SyncBlockOutcome::Synced {
+                reorg: None,
+                blob_tx_hashes: vec![get_hash(1)],
+            },
+            SyncBlockOutcome::Synced {
+                reorg: None,
+                blob_tx_hashes: vec![get_hash(2)],
+            },
+        ];
+        match SyncBlockOutcome::from_many(&outcomes) {
+            SyncBlockOutcome::Synced {
+                reorg,
+                blob_tx_hashes,
+            } => {
+                assert!(reorg.is_none());
+                assert_eq!(blob_tx_hashes.len(), 2);
+            }
+            _ => panic!("expected Synced"),
+        }
+    }
+
+    #[test]
+    fn sync_outcome_from_many_with_reorg() {
+        let outcomes = vec![
+            SyncBlockOutcome::Synced {
+                reorg: Some(Reorg {
+                    depth: 3,
+                    reorged_blocks: vec![],
+                }),
+                blob_tx_hashes: vec![get_hash(1)],
+            },
+            SyncBlockOutcome::Synced {
+                reorg: None,
+                blob_tx_hashes: vec![get_hash(2)],
+            },
+        ];
+        match SyncBlockOutcome::from_many(&outcomes) {
+            SyncBlockOutcome::Synced {
+                reorg,
+                blob_tx_hashes,
+            } => {
+                assert!(reorg.is_some());
+                assert_eq!(reorg.unwrap().depth, 3);
+                assert_eq!(blob_tx_hashes.len(), 2);
+            }
+            _ => panic!("expected Synced"),
+        }
+    }
+
+    // --- collect_metrics test ---
+
+    #[tokio::test]
+    async fn collect_metrics_does_not_panic() {
+        let hash_0 = get_hash(0);
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        let block_1 = generate_block(hash_0, get_hash(1), 1);
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Should not panic regardless of metrics registry state
+        sync.read().await.collect_metrics();
+    }
 }
