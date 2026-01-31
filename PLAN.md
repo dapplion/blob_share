@@ -433,6 +433,25 @@ Phase 4 (mostly independent)
     - `Client::new()`: valid URL, valid URL without trailing slash, invalid URL. URL helper: with/without trailing slash, with path prefix, data by ID format, balance format. Enum variants: `GasPreference::Value`, `GasPreference::RelativeToHead`, `NoncePreference::Value`. `FACTOR_RESOLUTION` constant.
 - **Why:** `block_gas_summary_from_block` is the bridge between raw Ethereum blocks and the internal gas model — its error paths (missing post-London/post-4844 fields) had no test coverage. `option_hex_vec.rs` implements custom serde for `Option<Vec<u8>>` used in API serialization of data intent signatures, but had zero tests. `client.rs` contains the public SDK client constructor and URL building logic used by all API consumers, but URL path joining and error handling were untested.
 
+### [x] 5.19 Add unit tests for data_intent_tracker TryFrom conversion, metrics helpers, and lib.rs CLI/constants
+- **Files:** `bundler/src/data_intent_tracker.rs`, `bundler/src/metrics.rs`, `bundler/src/lib.rs`
+- **Changes:**
+  - Added 10 unit tests to `data_intent_tracker.rs` for the previously untested `TryFrom<DataIntentDbRowSummary> for DataIntentSummary` conversion:
+    - Valid 20-byte address, with group_id, invalid address (19/21/0 bytes), preserves id/data_hash, preserves updated_at, zero data_len, max u32 data_len, zero gas price.
+  - Added 16 unit tests to `metrics.rs` for previously untested helper functions:
+    - `format_influx_tags`: empty labels, single label, multiple labels.
+    - `write_influx_line`: with/without tags, zero value, negative value, appends to existing string.
+    - `write_influx_line_uint`: with/without tags, max u64 value.
+    - `format_f64`: normal integer, decimal, negative (supplementing existing special-values test).
+    - `encode_metrics_influx_line`: empty metric families.
+  - Added 17 unit tests to `lib.rs` (previously zero test coverage):
+    - `Args::address()`: combines bind_address+port, default values.
+    - CLI default values: finalize_depth, max_pending_transactions, db_max_connections, rate_limit_per_second/burst, prune_after_blocks, evict_stale_intent_hours, sender_count, max_data_size, metrics disabled, beacon_api_url not set.
+    - Custom CLI values: sender_count, beacon_api_url.
+    - Constants: MAX_USABLE_BLOB_DATA_LEN, MAX_PENDING_DATA_LEN_PER_USER.
+    - `load_kzg_settings()`: embedded trusted_setup.json loads successfully.
+- **Why:** `TryFrom<DataIntentDbRowSummary>` is the bridge between raw MySQL rows and in-memory `DataIntentSummary` structs used by the packing algorithm and balance calculations — its error path (invalid address length) had zero test coverage. The `metrics.rs` helper functions (`format_influx_tags`, `write_influx_line`, `write_influx_line_uint`) had only indirect coverage through higher-level integration tests; direct unit tests ensure edge cases like empty tags, negative values, and uint max are handled correctly. `lib.rs` had zero test coverage despite containing CLI argument parsing with 20+ configurable parameters, default values critical for production deployment, and the `load_kzg_settings` function that loads the embedded trusted setup at startup.
+
 ---
 
 ## Key Files Modified Across All Phases

@@ -494,6 +494,137 @@ async fn run_optional_server(server: Option<Server>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_address_combines_bind_address_and_port() {
+        let args = Args::parse_from([
+            "test",
+            "--database-url",
+            "mysql://test",
+            "--bind-address",
+            "0.0.0.0",
+            "--port",
+            "8080",
+        ]);
+        assert_eq!(args.address(), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn args_address_default_values() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.address(), "127.0.0.1:5000");
+    }
+
+    #[test]
+    fn args_default_finalize_depth() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.finalize_depth, 64);
+    }
+
+    #[test]
+    fn args_default_max_pending_transactions() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.max_pending_transactions, 6);
+    }
+
+    #[test]
+    fn args_default_db_max_connections() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.db_max_connections, 10);
+    }
+
+    #[test]
+    fn args_default_rate_limit() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.rate_limit_per_second, 10);
+        assert_eq!(args.rate_limit_burst, 30);
+    }
+
+    #[test]
+    fn args_default_prune_after_blocks() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.prune_after_blocks, 1000);
+    }
+
+    #[test]
+    fn args_default_evict_stale_intent_hours() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.evict_stale_intent_hours, 24);
+    }
+
+    #[test]
+    fn args_default_sender_count() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.sender_count, 1);
+    }
+
+    #[test]
+    fn args_default_max_data_size() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert_eq!(args.max_data_size, MAX_USABLE_BLOB_DATA_LEN * 6);
+    }
+
+    #[test]
+    fn args_custom_sender_count() {
+        let args = Args::parse_from([
+            "test",
+            "--database-url",
+            "mysql://test",
+            "--sender-count",
+            "4",
+        ]);
+        assert_eq!(args.sender_count, 4);
+    }
+
+    #[test]
+    fn args_beacon_api_url_not_set_by_default() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert!(args.beacon_api_url.is_none());
+    }
+
+    #[test]
+    fn args_beacon_api_url_when_set() {
+        let args = Args::parse_from([
+            "test",
+            "--database-url",
+            "mysql://test",
+            "--beacon-api-url",
+            "http://localhost:5052",
+        ]);
+        assert_eq!(
+            args.beacon_api_url.as_deref(),
+            Some("http://localhost:5052")
+        );
+    }
+
+    #[test]
+    fn args_metrics_disabled_by_default() {
+        let args = Args::parse_from(["test", "--database-url", "mysql://test"]);
+        assert!(!args.metrics);
+    }
+
+    #[test]
+    fn max_usable_blob_data_len_consistent_with_field_elements() {
+        // 31 bytes per field element * 4096 field elements = 126976
+        assert_eq!(MAX_USABLE_BLOB_DATA_LEN, 31 * 4096);
+    }
+
+    #[test]
+    fn max_pending_data_len_per_user_is_16_blobs() {
+        assert_eq!(MAX_PENDING_DATA_LEN_PER_USER, MAX_USABLE_BLOB_DATA_LEN * 16);
+    }
+
+    #[test]
+    fn load_kzg_settings_succeeds() {
+        // Verify the embedded trusted_setup.json can be loaded
+        let settings = load_kzg_settings();
+        assert!(settings.is_ok());
+    }
+}
+
 pub(crate) fn load_kzg_settings() -> Result<c_kzg::KzgSettings> {
     let trusted_setup: TrustedSetup = serde_json::from_reader(TRUSTED_SETUP_BYTES)?;
     Ok(c_kzg::KzgSettings::load_trusted_setup(

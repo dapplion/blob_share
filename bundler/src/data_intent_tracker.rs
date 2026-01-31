@@ -1306,4 +1306,123 @@ mod tests {
 
         tracker.collect_metrics();
     }
+
+    // --- TryFrom<DataIntentDbRowSummary> for DataIntentSummary tests ---
+
+    use super::DataIntentDbRowSummary;
+
+    fn make_db_row_summary(
+        eth_address: Vec<u8>,
+        data_len: u32,
+        max_blob_gas_price: u64,
+        group_id: Option<Uuid>,
+    ) -> DataIntentDbRowSummary {
+        DataIntentDbRowSummary {
+            id: Uuid::new_v4(),
+            eth_address,
+            data_len,
+            data_hash: vec![0xdd; 32],
+            max_blob_gas_price,
+            data_hash_signature: Some(vec![0xee; 65]),
+            updated_at: DateTime::from_str("2024-06-15T10:30:00Z").unwrap(),
+            group_id,
+        }
+    }
+
+    #[test]
+    fn try_from_db_row_summary_valid_20_byte_address() {
+        let row = make_db_row_summary(vec![0xaa; 20], 500, 2000, None);
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.data_len, 500);
+        assert_eq!(summary.max_blob_gas_price, 2000);
+        assert_eq!(summary.from, Address::from([0xaa; 20]));
+        assert!(summary.group_id.is_none());
+    }
+
+    #[test]
+    fn try_from_db_row_summary_with_group_id() {
+        let gid = Uuid::new_v4();
+        let row = make_db_row_summary(vec![0xbb; 20], 100, 1000, Some(gid));
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.group_id, Some(gid));
+    }
+
+    #[test]
+    fn try_from_db_row_summary_invalid_address_length_19_bytes() {
+        let row = make_db_row_summary(vec![0xaa; 19], 500, 2000, None);
+        let result: Result<bundler_client::types::DataIntentSummary, _> = row.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_from_db_row_summary_invalid_address_length_21_bytes() {
+        let row = make_db_row_summary(vec![0xaa; 21], 500, 2000, None);
+        let result: Result<bundler_client::types::DataIntentSummary, _> = row.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_from_db_row_summary_empty_address() {
+        let row = make_db_row_summary(vec![], 500, 2000, None);
+        let result: Result<bundler_client::types::DataIntentSummary, _> = row.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_from_db_row_summary_preserves_id_and_data_hash() {
+        let row = DataIntentDbRowSummary {
+            id: Uuid::from_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap(),
+            eth_address: vec![0x11; 20],
+            data_len: 31,
+            data_hash: vec![0xff; 32],
+            max_blob_gas_price: 999,
+            data_hash_signature: None,
+            updated_at: DateTime::from_str("2025-01-01T00:00:00Z").unwrap(),
+            group_id: None,
+        };
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(
+            summary.id,
+            Uuid::from_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap()
+        );
+        assert_eq!(summary.data_hash, vec![0xff; 32]);
+    }
+
+    #[test]
+    fn try_from_db_row_summary_preserves_updated_at() {
+        let ts = DateTime::from_str("2024-12-25T18:30:45Z").unwrap();
+        let row = DataIntentDbRowSummary {
+            id: Uuid::new_v4(),
+            eth_address: vec![0x22; 20],
+            data_len: 200,
+            data_hash: vec![0xaa; 32],
+            max_blob_gas_price: 5000,
+            data_hash_signature: Some(vec![0xbb; 65]),
+            updated_at: ts,
+            group_id: None,
+        };
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.updated_at, ts);
+    }
+
+    #[test]
+    fn try_from_db_row_summary_zero_data_len() {
+        let row = make_db_row_summary(vec![0xcc; 20], 0, 1000, None);
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.data_len, 0);
+    }
+
+    #[test]
+    fn try_from_db_row_summary_max_u32_data_len() {
+        let row = make_db_row_summary(vec![0xcc; 20], u32::MAX, 1000, None);
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.data_len, u32::MAX as usize);
+    }
+
+    #[test]
+    fn try_from_db_row_summary_zero_gas_price() {
+        let row = make_db_row_summary(vec![0xcc; 20], 100, 0, None);
+        let summary: bundler_client::types::DataIntentSummary = row.try_into().unwrap();
+        assert_eq!(summary.max_blob_gas_price, 0);
+    }
 }

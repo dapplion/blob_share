@@ -558,6 +558,112 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         assert_eq!(format_f64(0.0), "0");
     }
 
+    // --- Direct tests for helper functions ---
+
+    #[test]
+    fn format_influx_tags_empty_labels() {
+        let labels: Vec<prometheus::proto::LabelPair> = vec![];
+        assert_eq!(format_influx_tags(&labels), "");
+    }
+
+    #[test]
+    fn format_influx_tags_single_label() {
+        let mut lp = prometheus::proto::LabelPair::new();
+        lp.set_name("host".to_string());
+        lp.set_value("server1".to_string());
+        assert_eq!(format_influx_tags(&[lp]), "host=server1");
+    }
+
+    #[test]
+    fn format_influx_tags_multiple_labels() {
+        let mut lp1 = prometheus::proto::LabelPair::new();
+        lp1.set_name("method".to_string());
+        lp1.set_value("GET".to_string());
+        let mut lp2 = prometheus::proto::LabelPair::new();
+        lp2.set_name("path".to_string());
+        lp2.set_value("/api".to_string());
+        assert_eq!(format_influx_tags(&[lp1, lp2]), "method=GET,path=/api");
+    }
+
+    #[test]
+    fn write_influx_line_with_tags() {
+        let mut out = String::new();
+        write_influx_line(&mut out, "cpu_usage", "host=server1", "value", 85.5);
+        assert_eq!(out, "cpu_usage,host=server1 value=85.5\n");
+    }
+
+    #[test]
+    fn write_influx_line_without_tags() {
+        let mut out = String::new();
+        write_influx_line(&mut out, "cpu_usage", "", "value", 42.0);
+        assert_eq!(out, "cpu_usage value=42\n");
+    }
+
+    #[test]
+    fn write_influx_line_zero_value() {
+        let mut out = String::new();
+        write_influx_line(&mut out, "errors", "", "value", 0.0);
+        assert_eq!(out, "errors value=0\n");
+    }
+
+    #[test]
+    fn write_influx_line_negative_value() {
+        let mut out = String::new();
+        write_influx_line(&mut out, "temp", "sensor=1", "value", -10.5);
+        assert_eq!(out, "temp,sensor=1 value=-10.5\n");
+    }
+
+    #[test]
+    fn write_influx_line_uint_with_tags() {
+        let mut out = String::new();
+        write_influx_line_uint(&mut out, "requests_count", "method=POST", "value", 100);
+        assert_eq!(out, "requests_count,method=POST value=100u\n");
+    }
+
+    #[test]
+    fn write_influx_line_uint_without_tags() {
+        let mut out = String::new();
+        write_influx_line_uint(&mut out, "total", "", "value", 0);
+        assert_eq!(out, "total value=0u\n");
+    }
+
+    #[test]
+    fn write_influx_line_uint_max_value() {
+        let mut out = String::new();
+        write_influx_line_uint(&mut out, "big", "", "value", u64::MAX);
+        assert_eq!(out, format!("big value={}u\n", u64::MAX));
+    }
+
+    #[test]
+    fn write_influx_line_appends_to_existing_string() {
+        let mut out = String::from("existing_line\n");
+        write_influx_line(&mut out, "metric", "", "value", 1.0);
+        assert_eq!(out, "existing_line\nmetric value=1\n");
+    }
+
+    #[test]
+    fn format_f64_normal_integer() {
+        assert_eq!(format_f64(42.0), "42");
+    }
+
+    #[test]
+    fn format_f64_normal_decimal() {
+        assert_eq!(format_f64(3.14), "3.14");
+    }
+
+    #[test]
+    fn format_f64_negative() {
+        assert_eq!(format_f64(-1.5), "-1.5");
+    }
+
+    #[test]
+    fn encode_influx_line_empty_metric_families() {
+        let mfs: Vec<prometheus::proto::MetricFamily> = vec![];
+        let (buf, content_type) = encode_metrics_influx_line(&mfs);
+        assert_eq!(std::str::from_utf8(&buf).unwrap(), "");
+        assert_eq!(content_type, "text/plain");
+    }
+
     #[test]
     fn gather() {
         // By registering any value into all metrics this test checks that names are unique and
