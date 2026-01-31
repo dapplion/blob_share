@@ -216,7 +216,7 @@ async fn send_data_request(args: &Args, client: &Client, wallet: &LocalWallet) -
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum RandomData {
     Rand(Range<usize>),
     RandSameAlphanumeric(Range<usize>),
@@ -260,5 +260,192 @@ fn parse_range(range_str: &str) -> Result<std::ops::Range<usize>> {
             Ok(start..end)
         }
         _ => bail!("Invalid range format"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_range tests ---
+
+    #[test]
+    fn parse_range_single_value() {
+        let range = parse_range("42").unwrap();
+        assert_eq!(range, 42..43);
+    }
+
+    #[test]
+    fn parse_range_zero() {
+        let range = parse_range("0").unwrap();
+        assert_eq!(range, 0..1);
+    }
+
+    #[test]
+    fn parse_range_valid_range() {
+        let range = parse_range("10..100").unwrap();
+        assert_eq!(range, 10..100);
+    }
+
+    #[test]
+    fn parse_range_start_equals_end() {
+        let result = parse_range("5..5");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("start >= end"));
+    }
+
+    #[test]
+    fn parse_range_start_greater_than_end() {
+        let result = parse_range("10..5");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("start >= end"));
+    }
+
+    #[test]
+    fn parse_range_invalid_number() {
+        let result = parse_range("abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_range_invalid_start_in_range() {
+        let result = parse_range("abc..100");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_range_invalid_end_in_range() {
+        let result = parse_range("10..abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_range_too_many_dots() {
+        let result = parse_range("1..2..3");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid range format"));
+    }
+
+    #[test]
+    fn parse_range_empty_string() {
+        let result = parse_range("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_range_adjacent_values() {
+        let range = parse_range("5..6").unwrap();
+        assert_eq!(range, 5..6);
+    }
+
+    #[test]
+    fn parse_range_large_values() {
+        let range = parse_range("1000000..2000000").unwrap();
+        assert_eq!(range, 1000000..2000000);
+    }
+
+    // --- get_part tests ---
+
+    #[test]
+    fn get_part_first_element() {
+        let parts = vec!["a", "b", "c"];
+        assert_eq!(get_part(&parts, 0).unwrap(), "a");
+    }
+
+    #[test]
+    fn get_part_last_element() {
+        let parts = vec!["a", "b", "c"];
+        assert_eq!(get_part(&parts, 2).unwrap(), "c");
+    }
+
+    #[test]
+    fn get_part_out_of_bounds() {
+        let parts = vec!["a", "b"];
+        let result = get_part(&parts, 5);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no arg in position 5"));
+    }
+
+    #[test]
+    fn get_part_empty_slice() {
+        let parts: Vec<&str> = vec![];
+        let result = get_part(&parts, 0);
+        assert!(result.is_err());
+    }
+
+    // --- RandomData::from_str tests ---
+
+    #[test]
+    fn random_data_rand_single_value() {
+        let rd = RandomData::from_str("rand,100").unwrap();
+        match rd {
+            RandomData::Rand(range) => assert_eq!(range, 100..101),
+            _ => panic!("expected Rand variant"),
+        }
+    }
+
+    #[test]
+    fn random_data_rand_range() {
+        let rd = RandomData::from_str("rand,50..200").unwrap();
+        match rd {
+            RandomData::Rand(range) => assert_eq!(range, 50..200),
+            _ => panic!("expected Rand variant"),
+        }
+    }
+
+    #[test]
+    fn random_data_rand_same_alphanumeric_single() {
+        let rd = RandomData::from_str("rand_same_alphanumeric,500").unwrap();
+        match rd {
+            RandomData::RandSameAlphanumeric(range) => assert_eq!(range, 500..501),
+            _ => panic!("expected RandSameAlphanumeric variant"),
+        }
+    }
+
+    #[test]
+    fn random_data_rand_same_alphanumeric_range() {
+        let rd = RandomData::from_str("rand_same_alphanumeric,100..1000").unwrap();
+        match rd {
+            RandomData::RandSameAlphanumeric(range) => assert_eq!(range, 100..1000),
+            _ => panic!("expected RandSameAlphanumeric variant"),
+        }
+    }
+
+    #[test]
+    fn random_data_unknown_variant() {
+        let result = RandomData::from_str("unknown,100");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown RandomData variant"));
+    }
+
+    #[test]
+    fn random_data_missing_range_arg() {
+        let result = RandomData::from_str("rand");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no arg in position 1"));
+    }
+
+    #[test]
+    fn random_data_empty_string() {
+        let result = RandomData::from_str("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn random_data_invalid_range() {
+        let result = RandomData::from_str("rand,100..50");
+        assert!(result.is_err());
     }
 }

@@ -412,6 +412,16 @@ Phase 4 (mostly independent)
   - Existing coverage for this file: `DataIntentId` serde, `CancelDataIntentSigned` signature/serde, `HistoryEntry`/`HistoryResponse` serde, and one `DataIntentStatus::Cancelled` test. The new tests fill gaps in `DataHash` (zero coverage), `DataIntentStatus` methods for non-Cancelled variants, `data_intent_max_cost` edge cases, and `sign_hash` correctness.
 - **Why:** `types.rs` defines the API contract types shared between bundler and all clients. `DataIntentStatus` methods (`is_known`, `is_in_tx`, `is_in_block`) are used by the status endpoint and explorer UI but only the `Cancelled` variant had test coverage. `DataHash` is used for data integrity verification across the system but had zero test coverage for its `FromStr`, `Display`, `to_vec`, and serde implementations. `data_intent_max_cost` with its `MIN_CHARGEABLE_DATA_LEN` floor is critical for billing accuracy but had no direct tests. `sign_hash` is the foundation of the authentication scheme — verifying its structure prevents subtle signature bugs.
 
+### [x] 5.18 Add unit tests for bundler_client_cli/src/main.rs
+- **File:** `bundler_client_cli/src/main.rs`
+- **Changes:**
+  - Added 24 unit tests covering previously untested CLI utility functions:
+    - `parse_range`: 12 tests — single value, zero, valid range, start equals end, start greater than end, invalid number, invalid start/end in range, too many dots, empty string, adjacent values, large values.
+    - `get_part`: 4 tests — first element, last element, out of bounds, empty slice.
+    - `RandomData::from_str`: 8 tests — rand with single value, rand with range, rand_same_alphanumeric with single value and range, unknown variant, missing range arg, empty string, invalid range.
+  - Added `Debug` derive to `RandomData` enum (required for test assertions).
+- **Why:** `bundler_client_cli/src/main.rs` had zero test coverage despite containing user input parsing logic (`RandomData::from_str`, `parse_range`, `get_part`) that converts CLI arguments into runtime data structures. `parse_range` handles range syntax (`N` or `N..M`) used for random data generation in testing, with boundary validation. `RandomData::from_str` parses a comma-separated format (`variant,range`) used by the `--test-data-random` flag. Error paths (invalid variant names, missing arguments, malformed ranges) were completely untested.
+
 ### [x] 5.15 Add unit tests for gas.rs, bundler_client option_hex_vec.rs, and client.rs
 - **Files:** `bundler/src/gas.rs`, `bundler_client/src/option_hex_vec.rs`, `bundler_client/src/client.rs`
 - **Changes:**
