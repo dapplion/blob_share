@@ -247,6 +247,26 @@ Phase 4 (mostly independent)
     - `collect_metrics`: 1 test — does not panic with blocks in chain.
 - **Why:** These core `BlockSync` methods had no direct unit tests. The finalization path (`maybe_advance_anchor_block`) is critical for correctness — it advances the anchor, cleans up repriced transactions, and computes finalized balances. `balance_with_pending` and `pending_txs_data_len` are used for user-facing balance/quota checks. `SyncBlockOutcome::from_many` merges multi-block sync results.
 
+### [x] 5.6 Add unit tests for blob_tx_data.rs and packing.rs
+- **Files:** `bundler/src/blob_tx_data.rs`, `bundler/src/packing.rs`
+- **Changes:**
+  - Added 18 unit tests to `blob_tx_data.rs` covering previously untested methods and edge cases:
+    - `is_blob_tx`: 3 tests — type 3 returns true, type 2 returns false, None type returns false.
+    - `encode_blob_tx_data`: 2 tests — empty participants returns single zero byte, single participant encodes version/data_len/address correctly.
+    - `BlobTxParticipant::read`: 2 tests — invalid version returns error, truncated input returns error.
+    - `BlobTxSummary::from_tx`: 4 tests — non-blob tx returns None, missing max_fee_per_gas/max_priority_fee/max_fee_per_blob_gas each return error, empty input produces empty participants.
+    - `participation_count_from`: 3 tests — no match, single match, multiple matches.
+    - `cost_to_intent` with block gas: 2 tests — verifies block gas prices affect cost, full blob has no unused space attribution.
+    - `effective_gas_price` (indirect): 1 test — verifies effective gas uses priority+base_fee vs max_fee_per_gas.
+    - `is_underpriced` delegation: 1 test — verifies BlobTxSummary delegates to GasConfig.
+  - Added 16 unit tests to `packing.rs` covering previously untested functions:
+    - `pack_items_greedy_sorted`: 5 tests — empty items, single item fills space, underpriced rejected, skips underpriced selects expensive, stops at max_len.
+    - `pack_items` dispatching: 2 tests — uses brute force for small sets, uses greedy for large sets.
+    - `sort_items`: 1 test — sorts ascending by len.
+    - `is_sorted_ascending`: 5 tests — empty, single, sorted, equal elements, unsorted.
+    - `Item::with_group` / `Item::new`: 2 tests — group_id stored correctly, new has no group.
+- **Why:** `blob_tx_data.rs` contains critical blob transaction parsing and cost calculation logic used across the API and sync paths, but error paths (`from_tx` with missing fields, invalid participant version) had zero test coverage. `packing.rs` had tests for brute_force and knapsack but none for the greedy algorithm (`pack_items_greedy_sorted`) which is the production path for >8 items, nor for helper functions like `sort_items` and `is_sorted_ascending`.
+
 ---
 
 ## Key Files Modified Across All Phases

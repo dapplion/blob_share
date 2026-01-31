@@ -306,4 +306,280 @@ mod tests {
 
         assert_eq!(blob_tx_summary, expected_blob_tx_summary);
     }
+
+    // --- is_blob_tx ---
+
+    #[test]
+    fn is_blob_tx_true_for_type_3() {
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        assert!(is_blob_tx(&tx));
+    }
+
+    #[test]
+    fn is_blob_tx_false_for_type_2() {
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(2.into());
+        assert!(!is_blob_tx(&tx));
+    }
+
+    #[test]
+    fn is_blob_tx_false_for_none_type() {
+        let tx = Transaction::default();
+        assert!(!is_blob_tx(&tx));
+    }
+
+    // --- encode_blob_tx_data ---
+
+    #[test]
+    fn encode_blob_tx_data_empty_participants() {
+        // Encoding with no participants should return only the leading zero byte
+        let data = encode_blob_tx_data(&[]).unwrap();
+        assert_eq!(data, vec![0u8]);
+    }
+
+    #[test]
+    fn encode_blob_tx_data_single_participant() {
+        let participant = BlobTxParticipant {
+            address: gen_addr(0xAB),
+            data_len: 256,
+        };
+        let data = encode_blob_tx_data(&[participant]).unwrap();
+        // Cursor starts at position 0 in the vec, overwriting the initial zero.
+        // version(1) + data_len(4) + address(20) = 25 bytes per participant
+        assert_eq!(data.len(), 25);
+        // Version byte at position 0
+        assert_eq!(data[0], PARTICIPANT_VERSION_1);
+        // data_len as big-endian u32: 256 = 0x00000100
+        assert_eq!(&data[1..5], &[0x00, 0x00, 0x01, 0x00]);
+    }
+
+    // --- BlobTxParticipant::read ---
+
+    #[test]
+    fn participant_read_invalid_version() {
+        let mut buf = vec![0x02]; // Invalid version
+        buf.extend_from_slice(&[0; 24]); // Enough bytes for data_len + address
+        let result = BlobTxParticipant::read(&mut &buf[..]);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid participant version"),
+            "should report invalid version"
+        );
+    }
+
+    #[test]
+    fn participant_read_truncated_input() {
+        // Only version byte, no data_len or address
+        let buf = vec![PARTICIPANT_VERSION_1];
+        let result = BlobTxParticipant::read(&mut &buf[..]);
+        assert!(result.is_err());
+    }
+
+    // --- BlobTxSummary::from_tx ---
+
+    #[test]
+    fn from_tx_non_blob_returns_none() {
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(2.into());
+        let result = BlobTxSummary::from_tx(&tx).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn from_tx_missing_max_fee_per_gas() {
+        let participants = vec![BlobTxParticipant {
+            address: gen_addr(0xBB),
+            data_len: 1000,
+        }];
+        let input = encode_blob_tx_data(&participants).unwrap();
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.input = input.into();
+        // max_fee_per_gas is None
+        tx.max_priority_fee_per_gas = Some(1.into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
+
+        let result = BlobTxSummary::from_tx(&tx);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_tx_missing_max_priority_fee() {
+        let participants = vec![BlobTxParticipant {
+            address: gen_addr(0xBB),
+            data_len: 1000,
+        }];
+        let input = encode_blob_tx_data(&participants).unwrap();
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.input = input.into();
+        tx.max_fee_per_gas = Some(1.into());
+        // max_priority_fee_per_gas is None
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
+
+        let result = BlobTxSummary::from_tx(&tx);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_tx_missing_max_fee_per_blob_gas() {
+        let participants = vec![BlobTxParticipant {
+            address: gen_addr(0xBB),
+            data_len: 1000,
+        }];
+        let input = encode_blob_tx_data(&participants).unwrap();
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.input = input.into();
+        tx.max_fee_per_gas = Some(1.into());
+        tx.max_priority_fee_per_gas = Some(1.into());
+        // maxFeePerBlobGas not in `other`
+
+        let result = BlobTxSummary::from_tx(&tx);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_tx_empty_input() {
+        // Blob tx with empty input (no participants)
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.input = vec![].into();
+        tx.max_fee_per_gas = Some(1.into());
+        tx.max_priority_fee_per_gas = Some(1.into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
+
+        let result = BlobTxSummary::from_tx(&tx).unwrap().unwrap();
+        assert!(result.participants.is_empty());
+        assert_eq!(result.used_bytes, 0);
+    }
+
+    // --- participation_count_from ---
+
+    #[test]
+    fn participation_count_from_no_match() {
+        let summary = generate_blob_tx_summary(&[(2, 1000), (3, 2000)]);
+        assert_eq!(summary.participation_count_from(&gen_addr(1)), 0);
+    }
+
+    #[test]
+    fn participation_count_from_single_match() {
+        let summary = generate_blob_tx_summary(&[(1, 1000), (2, 2000)]);
+        assert_eq!(summary.participation_count_from(&gen_addr(1)), 1);
+    }
+
+    #[test]
+    fn participation_count_from_multiple_matches() {
+        let summary = generate_blob_tx_summary(&[(1, 1000), (2, 2000), (1, 3000)]);
+        assert_eq!(summary.participation_count_from(&gen_addr(1)), 2);
+    }
+
+    // --- cost_to_intent with block gas ---
+
+    #[test]
+    fn cost_to_intent_with_block_gas_uses_actual_prices() {
+        let summary = generate_blob_tx_summary(&[(1, BYTES_PER_BLOB)]);
+        let block_gas = BlockGasSummary {
+            base_fee_per_gas: 10,
+            excess_blob_gas: 0, // blob_gas_price() == 1
+            blob_gas_used: 0,
+        };
+
+        let cost_with_block = summary.cost_to_intent(BYTES_PER_BLOB, Some(block_gas));
+        let cost_without_block = summary.cost_to_intent(BYTES_PER_BLOB, None);
+
+        // With block gas: blob_gas_price=1 (from excess=0), effective_gas_price=priority(1)+base(10)=11
+        // Without block gas: blob_gas_price=max_fee_per_blob_gas(1), effective_gas_price=max_fee_per_gas(1)
+        // The EVM gas component differs: 11 * evm_gas vs 1 * evm_gas
+        assert!(
+            cost_with_block > cost_without_block,
+            "cost with base_fee=10 ({cost_with_block}) should exceed cost with max_fee=1 ({cost_without_block})"
+        );
+    }
+
+    #[test]
+    fn cost_to_intent_full_blob_no_unused_space() {
+        // When used_bytes == BYTES_PER_BLOB, attributable_unused_data = 0
+        let summary = generate_blob_tx_summary(&[(1, BYTES_PER_BLOB)]);
+        let cost = summary.cost_to_intent(BYTES_PER_BLOB, None);
+        // cost = data_len * blob_gas_price + evm_gas * effective_gas_price
+        // = BYTES_PER_BLOB * 1 + (16 * 24) * 1
+        let expected = BYTES_PER_BLOB as u128 + (16 * PARTICIPANT_DATA_SIZE) as u128;
+        assert_eq!(cost, expected);
+    }
+
+    // --- effective_gas_price (tested indirectly through cost_to_intent) ---
+
+    #[test]
+    fn cost_reflects_effective_gas_with_and_without_block_base_fee() {
+        let summary = BlobTxSummary {
+            participants: vec![BlobTxParticipant {
+                address: gen_addr(1),
+                data_len: BYTES_PER_BLOB,
+            }],
+            tx_hash: H256::default(),
+            from: Address::default(),
+            nonce: 0,
+            used_bytes: BYTES_PER_BLOB,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 5,
+                max_fee_per_gas: 100,
+                max_fee_per_blob_gas: 1,
+            },
+        };
+
+        let block_gas = BlockGasSummary {
+            base_fee_per_gas: 20,
+            excess_blob_gas: 0,
+            blob_gas_used: 0,
+        };
+
+        // With block gas: effective_gas_price = priority(5) + base_fee(20) = 25
+        let cost_with = summary.cost_to_intent(BYTES_PER_BLOB, Some(block_gas));
+        // Without block gas: effective_gas_price = max_fee_per_gas(100)
+        let cost_without = summary.cost_to_intent(BYTES_PER_BLOB, None);
+
+        let evm_gas = BlobTxParticipant::evm_gas() as u128;
+        // blob cost is identical in both (BYTES_PER_BLOB * 1)
+        // EVM cost differs: 25 * evm_gas vs 100 * evm_gas
+        assert_eq!(cost_with, BYTES_PER_BLOB as u128 + 25 * evm_gas);
+        assert_eq!(cost_without, BYTES_PER_BLOB as u128 + 100 * evm_gas);
+    }
+
+    // --- is_underpriced delegation ---
+
+    #[test]
+    fn blob_tx_summary_is_underpriced_delegates_to_gas_config() {
+        let summary = BlobTxSummary {
+            participants: vec![],
+            tx_hash: H256::default(),
+            from: Address::default(),
+            nonce: 0,
+            used_bytes: 0,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 1,
+                max_fee_per_gas: 10,
+                max_fee_per_blob_gas: 100,
+            },
+        };
+        let block_gas = BlockGasSummary {
+            base_fee_per_gas: 5,
+            excess_blob_gas: 0,
+            blob_gas_used: 0,
+        };
+        // max_fee(10) >= base(5) + priority(1) → not underpriced
+        assert!(!summary.is_underpriced(&block_gas));
+
+        let expensive_block = BlockGasSummary {
+            base_fee_per_gas: 50,
+            excess_blob_gas: 0,
+            blob_gas_used: 0,
+        };
+        // max_fee(10) < base(50) → underpriced
+        assert!(summary.is_underpriced(&expensive_block));
+    }
 }

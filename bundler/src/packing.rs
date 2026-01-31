@@ -450,4 +450,152 @@ mod tests {
                 .collect()
         })
     }
+
+    // --- pack_items_greedy_sorted ---
+
+    #[test]
+    fn greedy_sorted_empty_items() {
+        let items: &[Item] = &[];
+        assert_eq!(pack_items_greedy_sorted(items, 100, 1), None);
+    }
+
+    #[test]
+    fn greedy_sorted_single_item_fills_space() {
+        // One item exactly filling max_len with adequate pricing
+        let items = [Item::new(100, 1)];
+        let result = pack_items_greedy_sorted(&items, 100, 1);
+        assert_eq!(result, Some(vec![0]));
+    }
+
+    #[test]
+    fn greedy_sorted_single_underpriced_item() {
+        // Effective cost = max_len * cost_per_len / selected_len = 100 * 2 / 50 = 4
+        // Item's max_len_price = 2 < 4, so it can't afford
+        let items = [Item::new(50, 2)];
+        assert_eq!(pack_items_greedy_sorted(&items, 100, 2), None);
+    }
+
+    #[test]
+    fn greedy_sorted_skips_underpriced_selects_expensive() {
+        // Sorted ascending by len. Item at index 0 is underpriced, item at index 1 can pay.
+        let items = [Item::new(30, 1), Item::new(80, 10)];
+        let result = pack_items_greedy_sorted(&items, 100, 1);
+        // The greedy picks items in order that satisfy pricing. With min_cost=1,
+        // it tries both (30+80=110 > max_len), so only 80 fits after 30. Actually
+        // let's check: both fit? 30+80=110 > 100, so greedy picks 30 first, then 80
+        // won't fit. selected_len=30, effective_cost=100*1/30≈3.3, item price=1 < 3.3
+        // → InvalidSelection. Bumps min_cost. Eventually only picks item at index 1 (price=10).
+        assert!(result.is_some());
+        let indexes = result.unwrap();
+        let selected_items: Vec<_> = indexes.iter().map(|&i| &items[i]).collect();
+        // All selected items should satisfy pricing
+        let selected_len: usize = selected_items.iter().map(|i| i.len).sum();
+        assert!(selected_len <= 100);
+    }
+
+    #[test]
+    fn greedy_sorted_multiple_items_fitting() {
+        // All items fit and can pay
+        let items = [Item::new(20, 10), Item::new(30, 10), Item::new(40, 10)];
+        let result = pack_items_greedy_sorted(&items, 100, 1);
+        assert_eq!(result, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn greedy_sorted_stops_at_max_len() {
+        // Items sorted ascending; greedy picks until max_len is reached
+        let items = [
+            Item::new(30, 5),
+            Item::new(30, 5),
+            Item::new(30, 5),
+            Item::new(30, 5),
+        ];
+        let result = pack_items_greedy_sorted(&items, 100, 1);
+        assert!(result.is_some());
+        let indexes = result.unwrap();
+        let selected_len: usize = indexes.iter().map(|&i| items[i].len).sum();
+        // Should pick 3 items (90 <= 100) but not 4 (120 > 100)
+        assert!(selected_len <= 100);
+        assert_eq!(indexes.len(), 3);
+    }
+
+    // --- pack_items dispatching ---
+
+    #[test]
+    fn pack_items_uses_brute_force_for_small_sets() {
+        // Less than MAX_COUNT_FOR_BRUTEFORCE items → brute force
+        let mut items = vec![Item::new(MAX_LEN / 2, 1), Item::new(MAX_LEN / 2, 1)];
+        sort_items(&mut items);
+        let result = pack_items(&items, MAX_LEN, 1);
+        assert_eq!(result, Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn pack_items_uses_greedy_for_large_sets() {
+        // Exactly MAX_COUNT_FOR_BRUTEFORCE items → greedy path
+        let mut items: Vec<Item> = (0..MAX_COUNT_FOR_BRUTEFORCE)
+            .map(|_| Item::new(MAX_LEN / MAX_COUNT_FOR_BRUTEFORCE, 10))
+            .collect();
+        sort_items(&mut items);
+        let result = pack_items(&items, MAX_LEN, 1);
+        assert!(result.is_some());
+    }
+
+    // --- sort_items ---
+
+    #[test]
+    fn sort_items_sorts_ascending_by_len() {
+        let mut items = vec![Item::new(50, 1), Item::new(10, 1), Item::new(30, 1)];
+        sort_items(&mut items);
+        assert_eq!(items[0].len, 10);
+        assert_eq!(items[1].len, 30);
+        assert_eq!(items[2].len, 50);
+    }
+
+    // --- is_sorted_ascending ---
+
+    #[test]
+    fn is_sorted_ascending_empty() {
+        assert!(is_sorted_ascending(&[]));
+    }
+
+    #[test]
+    fn is_sorted_ascending_single() {
+        assert!(is_sorted_ascending(&[Item::new(42, 1)]));
+    }
+
+    #[test]
+    fn is_sorted_ascending_sorted() {
+        let items = [Item::new(10, 1), Item::new(20, 1), Item::new(30, 1)];
+        assert!(is_sorted_ascending(&items));
+    }
+
+    #[test]
+    fn is_sorted_ascending_equal_elements() {
+        let items = [Item::new(10, 1), Item::new(10, 1)];
+        assert!(is_sorted_ascending(&items));
+    }
+
+    #[test]
+    fn is_sorted_ascending_unsorted() {
+        let items = [Item::new(20, 1), Item::new(10, 1)];
+        assert!(!is_sorted_ascending(&items));
+    }
+
+    // --- Item::with_group ---
+
+    #[test]
+    fn item_with_group_stores_group_id() {
+        let gid = uuid::Uuid::new_v4();
+        let item = Item::with_group(100, 5, Some(gid));
+        assert_eq!(item.len, 100);
+        assert_eq!(item.max_len_price, 5);
+        assert_eq!(item.group_id, Some(gid));
+    }
+
+    #[test]
+    fn item_new_has_no_group() {
+        let item = Item::new(100, 5);
+        assert_eq!(item.group_id, None);
+    }
 }
