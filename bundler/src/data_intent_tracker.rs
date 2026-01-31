@@ -72,7 +72,7 @@ impl DataIntentTracker {
 
         let mut stream = sqlx::query(
             r#"
-SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at, inclusion_finalized
+SELECT id, eth_address, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at, inclusion_finalized, group_id
 FROM data_intents
 WHERE (inclusion_finalized = FALSE) AND (cancelled = FALSE) AND (updated_at BETWEEN ? AND ?)
 ORDER BY updated_at ASC
@@ -250,6 +250,7 @@ pub struct DataIntentDbRowSummary {
     pub max_blob_gas_price: u64,              // BIGINT
     pub data_hash_signature: Option<Vec<u8>>, // BINARY(65), Optional
     pub updated_at: DateTime<Utc>,            // TIMESTAMP(3)
+    pub group_id: Option<Uuid>,               // BINARY(16), Optional
 }
 
 pub(crate) async fn fetch_data_intent_db_full(
@@ -360,6 +361,8 @@ ORDER BY nonce ASC, updated_at ASC
 pub(crate) async fn store_data_intent<'c>(
     db_tx: &mut sqlx::Transaction<'c, sqlx::MySql>,
     data_intent: DataIntent,
+    group_id: Option<Uuid>,
+    chunk_index: Option<u16>,
 ) -> Result<DataIntentId> {
     let id = Uuid::new_v4();
     let eth_address = data_intent.from().to_fixed_bytes().to_vec();
@@ -369,32 +372,25 @@ pub(crate) async fn store_data_intent<'c>(
     let max_blob_gas_price = BigDecimal::from_u64(data_intent.max_blob_gas_price());
     let data_hash_signature = data_intent.data_hash_signature().map(|sig| sig.to_vec());
 
-    // Persist data request
-    sqlx::query!(
-            r#"
-INSERT INTO data_intents (id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-            "#,
-            id,
-            eth_address,
-            data,
-            data_len,
-            data_hash,
-            max_blob_gas_price,
-            data_hash_signature
-        )
-        .execute(&mut **db_tx)
-        .await?;
-
-    // TODO: Prevent inserting duplicates
-
-    //        match self.pending_intents.get(&id) {
-    //            None => {}                          // Ok insert
-    //            // TODO: Handle bumping the registered max price
-    //            Some(DataIntentItem::Pending(_)) | Some(DataIntentItem::Included(_, _)) => {
-    //                bail!("data intent {id} already known")
-    //            }
-    //        };
+    // Persist data request. Uses runtime query instead of query! macro to support the
+    // optional group_id / chunk_index columns from the multi-blob splitting migration.
+    sqlx::query(
+        r#"
+INSERT INTO data_intents (id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, group_id, chunk_index)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(id)
+    .bind(eth_address)
+    .bind(data)
+    .bind(data_len)
+    .bind(data_hash)
+    .bind(max_blob_gas_price)
+    .bind(data_hash_signature)
+    .bind(group_id)
+    .bind(chunk_index)
+    .execute(&mut **db_tx)
+    .await?;
 
     Ok(id)
 }
@@ -685,6 +681,7 @@ impl TryFrom<DataIntentDbRowSummary> for DataIntentSummary {
             data_len: value.data_len.try_into()?,
             max_blob_gas_price: value.max_blob_gas_price,
             updated_at: value.updated_at,
+            group_id: value.group_id,
         })
     }
 }
@@ -708,6 +705,7 @@ mod tests {
             data_len: 100,
             max_blob_gas_price: 1000,
             updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+            group_id: None,
         }
     }
 
@@ -988,6 +986,7 @@ mod tests {
             data_len: 100,
             max_blob_gas_price,
             updated_at,
+            group_id: None,
         }
     }
 

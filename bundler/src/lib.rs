@@ -190,6 +190,13 @@ pub struct Args {
     /// such as blob retrieval and decoding when set.
     #[arg(env, long)]
     pub beacon_api_url: Option<String>,
+
+    /// Maximum data size accepted by POST /v1/data in bytes. Data larger than one blob
+    /// (MAX_USABLE_BLOB_DATA_LEN) will be split into multiple chunks linked by a group_id.
+    /// Default is MAX_USABLE_BLOB_DATA_LEN * 6 (~762KB, one full block of blobs).
+    /// Set to MAX_USABLE_BLOB_DATA_LEN to disable splitting.
+    #[arg(env, long, default_value_t = MAX_USABLE_BLOB_DATA_LEN * 6)]
+    pub max_data_size: usize,
 }
 
 impl Args {
@@ -210,6 +217,8 @@ struct AppConfig {
     /// Evict pending intents underpriced for longer than this duration.
     /// Duration::ZERO means eviction is disabled.
     pub evict_stale_intent_duration: Duration,
+    /// Maximum data size accepted by POST /v1/data in bytes.
+    pub max_data_size: usize,
 }
 
 pub struct App {
@@ -284,6 +293,7 @@ impl App {
             node_poll_interval: Duration::from_secs(args.node_poll_interval_sec),
             prune_after_blocks: args.prune_after_blocks,
             evict_stale_intent_duration: Duration::from_secs(args.evict_stale_intent_hours * 3600),
+            max_data_size: args.max_data_size,
             metrics_server_bearer_token: args.metrics_bearer_token.clone(),
             metrics_push: if let Some(url) = &args.metrics_push_url {
                 Some(PushMetricsConfig {
@@ -395,8 +405,10 @@ impl App {
 
         let app_data_clone = app_data.clone();
         let server = HttpServer::new(move || {
-            // Limit JSON body to 256KB (enough for one blob + overhead)
-            let json_cfg = web::JsonConfig::default().limit(256 * 1024);
+            // Limit JSON body size: hex encoding doubles the data size, plus JSON overhead.
+            // Use 2.5x max_data_size to account for hex encoding + JSON structure.
+            let json_cfg =
+                web::JsonConfig::default().limit(app_data_clone.config.max_data_size * 5 / 2);
 
             let app = actix_web::App::new()
                 .wrap(Governor::new(&governor_conf))

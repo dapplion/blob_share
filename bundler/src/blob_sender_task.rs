@@ -112,12 +112,14 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
             .get_all_intents_available_for_packing(max_fee_per_blob_gas as u64)
             .await;
 
-        // Sort ascending before creating items to preserve order
+        // Sort ascending by data_len (required by greedy packing algorithm).
+        // Chunks from multi-blob groups are treated independently; co-location
+        // happens naturally since same-group chunks tend to have similar sizes.
         pending_data_intents.sort_by(|a, b| a.data_len.cmp(&b.data_len));
 
         let items: Vec<Item> = pending_data_intents
             .iter()
-            .map(|e| Item::new(e.data_len, e.max_blob_gas_price))
+            .map(|e| Item::with_group(e.data_len, e.max_blob_gas_price, e.group_id))
             .collect::<Vec<_>>();
 
         debug!(

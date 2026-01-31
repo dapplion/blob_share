@@ -7,11 +7,26 @@ use crate::utils::increase_by_min_percent;
 pub struct Item {
     pub len: usize,
     pub max_len_price: u64,
+    /// Optional group identifier for co-location preference.
+    /// Items with the same group_id are preferably packed into the same blob TX.
+    pub group_id: Option<uuid::Uuid>,
 }
 
 impl Item {
     pub fn new(len: usize, max_len_price: u64) -> Self {
-        Self { len, max_len_price }
+        Self {
+            len,
+            max_len_price,
+            group_id: None,
+        }
+    }
+
+    pub fn with_group(len: usize, max_len_price: u64, group_id: Option<uuid::Uuid>) -> Self {
+        Self {
+            len,
+            max_len_price,
+            group_id,
+        }
     }
 }
 
@@ -355,10 +370,7 @@ mod tests {
     fn run_test_knapsack_equals_bruteforce(item_lens: &[usize], max_len: usize) -> bool {
         let items = item_lens
             .iter()
-            .map(|len| Item {
-                len: *len,
-                max_len_price: 10 * max_len as u64,
-            })
+            .map(|len| Item::new(*len, 10 * max_len as u64))
             .collect::<Vec<Item>>();
 
         let selected_indexes_knapsack = pack_items_knapsack(&items, max_len, 1).unwrap();

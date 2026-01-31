@@ -15,6 +15,7 @@ use futures::{stream, StreamExt, TryStreamExt};
 use handlebars::Handlebars;
 use sqlx::MySqlPool;
 use tokio::sync::{Notify, RwLock};
+use uuid::Uuid;
 
 use crate::{
     anchor_block::persist_anchor_block_to_db,
@@ -130,12 +131,63 @@ impl AppData {
         .execute(&mut *tx)
         .await?;
 
-        let id = store_data_intent(&mut tx, data_intent).await?;
+        let id = store_data_intent(&mut tx, data_intent, None, None).await?;
 
         // Commit transaction
         tx.commit().await?;
 
         Ok(id)
+    }
+
+    /// Atomically store multiple chunks from a single large data submission.
+    /// All chunks share the same `group_id` and are inserted in a single DB transaction.
+    /// Returns `(group_id, chunk_ids)`.
+    #[tracing::instrument(skip(self, chunks))]
+    pub async fn atomic_update_post_data_chunks(
+        &self,
+        chunks: Vec<DataIntent>,
+        nonce: u64,
+    ) -> Result<(DataIntentId, Vec<DataIntentId>)> {
+        let eth_address = address_to_hex_lowercase(*chunks[0].from());
+
+        let mut tx = self.db_pool.begin().await?;
+
+        // Fetch user row, may not have any records yet
+        let user_row = sqlx::query!(
+            "SELECT post_data_nonce FROM users WHERE eth_address = ? FOR UPDATE",
+            eth_address,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let last_nonce = user_row.and_then(|row| row.post_data_nonce);
+
+        if let Some(last_nonce) = last_nonce {
+            if nonce <= last_nonce.try_into()? {
+                bail!("Nonce not new, replay protection");
+            }
+        }
+
+        sqlx::query!(
+            "UPDATE users SET post_data_nonce = ? WHERE eth_address = ?",
+            Some(nonce),
+            eth_address,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let group_id = Uuid::new_v4();
+        let mut chunk_ids = Vec::with_capacity(chunks.len());
+
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+            let id =
+                store_data_intent(&mut tx, chunk, Some(group_id), Some(chunk_index as u16)).await?;
+            chunk_ids.push(id);
+        }
+
+        tx.commit().await?;
+
+        Ok((group_id, chunk_ids))
     }
 
     pub async fn maybe_advance_anchor_block(&self) -> Result<Option<(Vec<BlobTxSummary>, u64)>> {

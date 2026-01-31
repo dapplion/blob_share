@@ -150,7 +150,7 @@ A reliable, self-operated blob bundling service where:
 - `blob_sender_task` picks the sender with lowest pending TX count for each new blob TX
 - Balance topups go to any sender address (all are valid)
 
-### [ ] 4.2 Multi-blob data splitting
+### [x] 4.2 Multi-blob data splitting
 - **Files:** `bundler/src/routes/post_data.rs:23` (TODO), `bundler/src/data_intent.rs`, `bundler/src/packing.rs`, `bundler/src/blob_sender_task.rs`
 - Allow `POST /v1/data` to accept data larger than `MAX_USABLE_BLOB_DATA_LEN`
 - Split into chunks, each stored as a separate data intent linked by a `group_id`

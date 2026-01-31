@@ -26,6 +26,12 @@ pub type BlobGasPrice = u64;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PostDataResponse {
     pub id: DataIntentId,
+    /// When the submitted data was split across multiple blobs, `group_id` identifies the group
+    /// and `chunk_ids` lists all chunk intent IDs. For single-blob submissions these are `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<DataIntentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_ids: Option<Vec<DataIntentId>>,
 }
 
 /// TODO: Expose a "login with Ethereum" function an expose the non-signed variant
@@ -230,6 +236,9 @@ pub struct DataIntentSummary {
     pub data_len: usize,
     pub max_blob_gas_price: BlobGasPrice,
     pub updated_at: DateTime<Utc>,
+    /// Shared across all chunks from a single split submission. None for single-blob intents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<DataIntentId>,
 }
 
 impl DataIntentSummary {
