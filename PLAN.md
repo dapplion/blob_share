@@ -399,6 +399,19 @@ Phase 4 (mostly independent)
     - `quoted_u64` edge cases: 2 tests — u64::MAX value, accepts unquoted numbers.
 - **Why:** `beacon_api_client.rs` is the HTTP client for the Beacon Chain API, used by the blob consumer to retrieve blob sidecars for data extraction and the explorer. It had zero test coverage despite containing URL building logic, serde deserialization of Beacon API JSON responses with custom `quoted_u64` and `hex_vec` formats, and the `Slot` newtype. The serde types are critical — incorrect deserialization of blob sidecars or genesis/spec responses would cause silent data corruption or runtime failures in the blob retrieval path.
 
+### [x] 5.17 Add unit tests for types.rs DataIntentStatus, DataHash, and data_intent_max_cost
+- **File:** `bundler_client/src/types.rs`
+- **Changes:**
+  - Added 31 unit tests covering previously untested methods and types:
+    - `DataIntentStatus` methods: 6 tests — `is_known()`, `is_in_tx()`, `is_in_block()` for all 5 variants (Unknown, Pending, Cancelled, InPendingTx, InConfirmedTx), plus serde roundtrip of all variants.
+    - `DataHash`: 10 tests — `from_data` determinism, different inputs produce different hashes, empty input, `to_vec` length, `to_fixed_bytes`/`From` roundtrip, `Display` format with 0x prefix, `Debug` format, `FromStr` valid/invalid/wrong-length, serde roundtrip.
+    - `data_intent_max_cost`: 6 tests — zero gas price, zero data len charges minimum, small data charges minimum, exactly minimum len, above minimum uses actual len, large values no overflow.
+    - `PostDataIntentV1Signed::sign_hash`: 5 tests — deterministic, different nonce/gas_price/data produce different hashes, output contains data_hash+gas_price+nonce (48 bytes).
+    - `SyncStatusBlock`/`SyncStatus`/`SenderDetails` serde: 4 tests — roundtrip serialization for API contract types.
+    - `DataIntentSummary::max_cost`: 2 tests — delegates to `data_intent_max_cost`, small data uses minimum chargeable length.
+  - Existing coverage for this file: `DataIntentId` serde, `CancelDataIntentSigned` signature/serde, `HistoryEntry`/`HistoryResponse` serde, and one `DataIntentStatus::Cancelled` test. The new tests fill gaps in `DataHash` (zero coverage), `DataIntentStatus` methods for non-Cancelled variants, `data_intent_max_cost` edge cases, and `sign_hash` correctness.
+- **Why:** `types.rs` defines the API contract types shared between bundler and all clients. `DataIntentStatus` methods (`is_known`, `is_in_tx`, `is_in_block`) are used by the status endpoint and explorer UI but only the `Cancelled` variant had test coverage. `DataHash` is used for data integrity verification across the system but had zero test coverage for its `FromStr`, `Display`, `to_vec`, and serde implementations. `data_intent_max_cost` with its `MIN_CHARGEABLE_DATA_LEN` floor is critical for billing accuracy but had no direct tests. `sign_hash` is the foundation of the authentication scheme — verifying its structure prevents subtle signature bugs.
+
 ### [x] 5.15 Add unit tests for gas.rs, bundler_client option_hex_vec.rs, and client.rs
 - **Files:** `bundler/src/gas.rs`, `bundler_client/src/option_hex_vec.rs`, `bundler_client/src/client.rs`
 - **Changes:**

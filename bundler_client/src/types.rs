@@ -425,6 +425,351 @@ mod tests {
     }
 
     #[test]
+    fn data_intent_status_unknown() {
+        let status = DataIntentStatus::Unknown;
+        assert!(!status.is_known());
+        assert!(status.is_in_tx().is_none());
+        assert!(status.is_in_block().is_none());
+    }
+
+    #[test]
+    fn data_intent_status_pending() {
+        let status = DataIntentStatus::Pending;
+        assert!(status.is_known());
+        assert!(status.is_in_tx().is_none());
+        assert!(status.is_in_block().is_none());
+    }
+
+    #[test]
+    fn data_intent_status_in_pending_tx() {
+        let tx_hash = TxHash::from([0xab; 32]);
+        let status = DataIntentStatus::InPendingTx { tx_hash };
+        assert!(status.is_known());
+        assert_eq!(status.is_in_tx(), Some(tx_hash));
+        assert!(status.is_in_block().is_none());
+    }
+
+    #[test]
+    fn data_intent_status_in_confirmed_tx() {
+        let tx_hash = TxHash::from([0xcd; 32]);
+        let block_hash = H256::from([0xef; 32]);
+        let status = DataIntentStatus::InConfirmedTx {
+            tx_hash,
+            block_hash,
+        };
+        assert!(status.is_known());
+        assert_eq!(status.is_in_tx(), Some(tx_hash));
+        assert_eq!(status.is_in_block(), Some((tx_hash, block_hash)));
+    }
+
+    #[test]
+    fn data_intent_status_serde_all_variants() {
+        let variants = vec![
+            DataIntentStatus::Unknown,
+            DataIntentStatus::Pending,
+            DataIntentStatus::Cancelled,
+            DataIntentStatus::InPendingTx {
+                tx_hash: TxHash::zero(),
+            },
+            DataIntentStatus::InConfirmedTx {
+                tx_hash: TxHash::zero(),
+                block_hash: H256::zero(),
+            },
+        ];
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let deserialized: DataIntentStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant.is_known(), deserialized.is_known());
+        }
+    }
+
+    // --- DataHash tests ---
+
+    #[test]
+    fn data_hash_from_data_deterministic() {
+        let data = vec![0xaa, 0xbb, 0xcc];
+        let hash1 = DataHash::from_data(&data);
+        let hash2 = DataHash::from_data(&data);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn data_hash_from_data_different_input_different_hash() {
+        let hash1 = DataHash::from_data(&[0x01]);
+        let hash2 = DataHash::from_data(&[0x02]);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn data_hash_from_data_empty() {
+        // Empty data should still produce a valid keccak256 hash
+        let hash = DataHash::from_data(&[]);
+        assert_ne!(hash.to_fixed_bytes(), [0u8; 32]);
+    }
+
+    #[test]
+    fn data_hash_to_vec_length() {
+        let hash = DataHash::from_data(&[0x42]);
+        assert_eq!(hash.to_vec().len(), 32);
+    }
+
+    #[test]
+    fn data_hash_to_fixed_bytes_roundtrip() {
+        let hash = DataHash::from_data(&[0xde, 0xad]);
+        let bytes = hash.to_fixed_bytes();
+        let hash2 = DataHash::from(bytes);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn data_hash_display_has_0x_prefix() {
+        let hash = DataHash::from([0; 32]);
+        let display = format!("{hash}");
+        assert!(display.starts_with("0x"));
+        assert_eq!(display.len(), 66); // "0x" + 64 hex chars
+    }
+
+    #[test]
+    fn data_hash_debug_format() {
+        let hash = DataHash::from([0; 32]);
+        let debug = format!("{hash:?}");
+        assert!(debug.starts_with("DataHash("));
+        assert!(debug.ends_with(')'));
+    }
+
+    #[test]
+    fn data_hash_from_str_valid() {
+        let hex_str = "aa".repeat(32);
+        let hash = DataHash::from_str(&hex_str).unwrap();
+        assert_eq!(hash.to_fixed_bytes(), [0xaa; 32]);
+    }
+
+    #[test]
+    fn data_hash_from_str_wrong_length() {
+        let hex_str = "aa".repeat(16); // 16 bytes, not 32
+        assert!(DataHash::from_str(&hex_str).is_err());
+    }
+
+    #[test]
+    fn data_hash_from_str_invalid_hex() {
+        assert!(DataHash::from_str("not_valid_hex").is_err());
+    }
+
+    #[test]
+    fn data_hash_serde_roundtrip() {
+        let hash = DataHash::from_data(&[0x01, 0x02, 0x03]);
+        let json = serde_json::to_string(&hash).unwrap();
+        let deserialized: DataHash = serde_json::from_str(&json).unwrap();
+        assert_eq!(hash, deserialized);
+    }
+
+    // --- data_intent_max_cost tests ---
+
+    #[test]
+    fn max_cost_zero_gas_price() {
+        assert_eq!(data_intent_max_cost(100, 0), 0);
+    }
+
+    #[test]
+    fn max_cost_zero_data_len_charges_minimum() {
+        // Even 0-length data should be charged at MIN_CHARGEABLE_DATA_LEN
+        let cost = data_intent_max_cost(0, 1000);
+        assert_eq!(cost, MIN_CHARGEABLE_DATA_LEN as u128 * 1000);
+    }
+
+    #[test]
+    fn max_cost_small_data_charges_minimum() {
+        // Data smaller than 31 bytes should still be charged at 31 bytes
+        let cost = data_intent_max_cost(10, 500);
+        assert_eq!(cost, MIN_CHARGEABLE_DATA_LEN as u128 * 500);
+    }
+
+    #[test]
+    fn max_cost_exactly_minimum_len() {
+        let cost = data_intent_max_cost(MIN_CHARGEABLE_DATA_LEN, 100);
+        assert_eq!(cost, MIN_CHARGEABLE_DATA_LEN as u128 * 100);
+    }
+
+    #[test]
+    fn max_cost_above_minimum_uses_actual_len() {
+        let cost = data_intent_max_cost(1000, 200);
+        assert_eq!(cost, 1000u128 * 200);
+    }
+
+    #[test]
+    fn max_cost_large_values_no_overflow() {
+        // Large data len and gas price should not overflow u128
+        let cost = data_intent_max_cost(usize::MAX / 2, u64::MAX);
+        assert!(cost > 0);
+    }
+
+    // --- PostDataIntentV1Signed::sign_hash tests ---
+
+    #[test]
+    fn sign_hash_deterministic() {
+        let intent = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0xaa; 10],
+            max_blob_gas_price: 1000,
+        };
+        let hash1 = PostDataIntentV1Signed::sign_hash(&intent, 42);
+        let hash2 = PostDataIntentV1Signed::sign_hash(&intent, 42);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn sign_hash_different_nonce_different_hash() {
+        let intent = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0xbb; 10],
+            max_blob_gas_price: 1000,
+        };
+        let hash1 = PostDataIntentV1Signed::sign_hash(&intent, 1);
+        let hash2 = PostDataIntentV1Signed::sign_hash(&intent, 2);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn sign_hash_different_gas_price_different_hash() {
+        let intent1 = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0xcc; 10],
+            max_blob_gas_price: 1000,
+        };
+        let intent2 = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0xcc; 10],
+            max_blob_gas_price: 2000,
+        };
+        let hash1 = PostDataIntentV1Signed::sign_hash(&intent1, 1);
+        let hash2 = PostDataIntentV1Signed::sign_hash(&intent2, 1);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn sign_hash_different_data_different_hash() {
+        let intent1 = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0x01; 10],
+            max_blob_gas_price: 1000,
+        };
+        let intent2 = PostDataIntentV1 {
+            from: Address::zero(),
+            data: vec![0x02; 10],
+            max_blob_gas_price: 1000,
+        };
+        let hash1 = PostDataIntentV1Signed::sign_hash(&intent1, 1);
+        let hash2 = PostDataIntentV1Signed::sign_hash(&intent2, 1);
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn sign_hash_contains_data_hash_gas_price_and_nonce() {
+        let data = vec![0xdd; 20];
+        let gas_price: u64 = 12345;
+        let nonce: u64 = 67890;
+        let intent = PostDataIntentV1 {
+            from: Address::zero(),
+            data: data.clone(),
+            max_blob_gas_price: gas_price,
+        };
+        let hash = PostDataIntentV1Signed::sign_hash(&intent, nonce);
+
+        // sign_hash = data_hash(32) + gas_price_be(8) + nonce_be(8) = 48 bytes
+        assert_eq!(hash.len(), 48);
+
+        // First 32 bytes should be the keccak256 of the data
+        let expected_data_hash = DataHash::from_data(&data);
+        assert_eq!(&hash[..32], &expected_data_hash.to_vec());
+    }
+
+    // --- SyncStatus / SenderDetails serde tests ---
+
+    #[test]
+    fn sync_status_block_serde_roundtrip() {
+        let block = SyncStatusBlock {
+            hash: H256::from([0xab; 32]),
+            number: 42,
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let deserialized: SyncStatusBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.hash, block.hash);
+        assert_eq!(deserialized.number, 42);
+    }
+
+    #[test]
+    fn sync_status_serde_roundtrip() {
+        let status = SyncStatus {
+            anchor_block: SyncStatusBlock {
+                hash: H256::from([0x01; 32]),
+                number: 100,
+            },
+            synced_head: SyncStatusBlock {
+                hash: H256::from([0x02; 32]),
+                number: 200,
+            },
+            node_head: SyncStatusBlock {
+                hash: H256::from([0x03; 32]),
+                number: 300,
+            },
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let deserialized: SyncStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.anchor_block.number, 100);
+        assert_eq!(deserialized.synced_head.number, 200);
+        assert_eq!(deserialized.node_head.number, 300);
+    }
+
+    #[test]
+    fn sender_details_serde_roundtrip() {
+        let details = SenderDetails {
+            addresses: vec![Address::zero(), Address::from([0xff; 20])],
+        };
+        let json = serde_json::to_string(&details).unwrap();
+        let deserialized: SenderDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.addresses.len(), 2);
+        assert_eq!(deserialized.addresses[0], Address::zero());
+    }
+
+    #[test]
+    fn sender_details_empty_addresses() {
+        let details = SenderDetails { addresses: vec![] };
+        let json = serde_json::to_string(&details).unwrap();
+        let deserialized: SenderDetails = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.addresses.is_empty());
+    }
+
+    // --- DataIntentSummary::max_cost tests ---
+
+    #[test]
+    fn data_intent_summary_max_cost_uses_data_intent_max_cost() {
+        let summary = DataIntentSummary {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            from: Address::zero(),
+            data_hash: vec![0; 32],
+            data_len: 100,
+            max_blob_gas_price: 500,
+            updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+            group_id: None,
+        };
+        assert_eq!(summary.max_cost(), data_intent_max_cost(100, 500));
+    }
+
+    #[test]
+    fn data_intent_summary_max_cost_small_data_uses_minimum() {
+        let summary = DataIntentSummary {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            from: Address::zero(),
+            data_hash: vec![0; 32],
+            data_len: 5, // smaller than MIN_CHARGEABLE_DATA_LEN
+            max_blob_gas_price: 1000,
+            updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+            group_id: None,
+        };
+        assert_eq!(summary.max_cost(), MIN_CHARGEABLE_DATA_LEN as u128 * 1000);
+    }
+
+    #[test]
     fn history_entry_pending_serde_roundtrip() {
         let entry = HistoryEntry {
             id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
