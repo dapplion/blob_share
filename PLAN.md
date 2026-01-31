@@ -169,7 +169,7 @@ A reliable, self-operated blob bundling service where:
 - Enforce minimum 31 bytes (one field element) for cost calculation, even if actual data is smaller
 - Prevents too-small intents that waste packing space
 
-### [ ] 4.5 Grafana Cloud push metrics
+### [x] 4.5 Grafana Cloud push metrics
 - **File:** `bundler/src/metrics.rs:139` (TODO)
 - Add `InfluxLine` variant to `PushMetricsFormat` enum
 - Implement InfluxDB line protocol encoding for push gateway

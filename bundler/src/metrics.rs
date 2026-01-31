@@ -162,8 +162,7 @@ pub struct PushMetricsConfig {
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum PushMetricsFormat {
     Protobuf,
-    // TODO: Support InfluxLine for Grafana Cloud push
-    // InfluxLine,
+    InfluxLine,
     PlainText,
 }
 
@@ -209,6 +208,7 @@ pub async fn push_metrics(config: &PushMetricsConfig) -> Result<String> {
     let grouping = labels! {};
     let (buf, format_type) = match config.format {
         PushMetricsFormat::Protobuf => encode_metrics_protobuf(grouping, mfs)?,
+        PushMetricsFormat::InfluxLine => encode_metrics_influx_line(&mfs),
         PushMetricsFormat::PlainText => encode_metrics_plain_text(&mfs)?,
     };
 
@@ -268,6 +268,155 @@ fn encode_metrics_plain_text(mfs: &[prometheus::proto::MetricFamily]) -> Result<
     Ok((buffer, encoder.format_type().to_string()))
 }
 
+/// Encode metrics in InfluxDB line protocol format for Grafana Cloud push.
+///
+/// Format: `measurement,tag1=val1 field1=value1`
+///
+/// Each Prometheus metric becomes one or more lines depending on its type:
+/// - Counter/Gauge/Untyped: single line with `value=<val>`
+/// - Histogram: one line per bucket (`le` tag, `bucket=<count>`), plus `_sum` and `_count` lines
+/// - Summary: one line per quantile (`quantile` tag, `value=<val>`), plus `_sum` and `_count` lines
+fn encode_metrics_influx_line(mfs: &[prometheus::proto::MetricFamily]) -> (Vec<u8>, String) {
+    use prometheus::proto::MetricType;
+    use std::fmt::Write;
+
+    let mut out = String::new();
+
+    for mf in mfs {
+        let name = mf.get_name();
+        let metric_type = mf.get_field_type();
+
+        for m in mf.get_metric() {
+            let tags = format_influx_tags(m.get_label());
+
+            match metric_type {
+                MetricType::COUNTER => {
+                    let val = m.get_counter().get_value();
+                    write_influx_line(&mut out, name, &tags, "value", val);
+                }
+                MetricType::GAUGE => {
+                    let val = m.get_gauge().get_value();
+                    write_influx_line(&mut out, name, &tags, "value", val);
+                }
+                MetricType::HISTOGRAM => {
+                    let h = m.get_histogram();
+                    for b in h.get_bucket() {
+                        let le = b.get_upper_bound();
+                        let le_str = format_f64(le);
+                        let bucket_tags = if tags.is_empty() {
+                            format!("le={le_str}")
+                        } else {
+                            format!("{tags},le={le_str}")
+                        };
+                        let _ = writeln!(
+                            out,
+                            "{name}_bucket,{bucket_tags} value={}u",
+                            b.get_cumulative_count()
+                        );
+                    }
+                    // +Inf bucket
+                    let inf_tags = if tags.is_empty() {
+                        "le=+Inf".to_string()
+                    } else {
+                        format!("{tags},le=+Inf")
+                    };
+                    let _ = writeln!(
+                        out,
+                        "{name}_bucket,{inf_tags} value={}u",
+                        h.get_sample_count()
+                    );
+                    let sum_name = format!("{name}_sum");
+                    write_influx_line(&mut out, &sum_name, &tags, "value", h.get_sample_sum());
+                    let count_name = format!("{name}_count");
+                    write_influx_line_uint(
+                        &mut out,
+                        &count_name,
+                        &tags,
+                        "value",
+                        h.get_sample_count(),
+                    );
+                }
+                MetricType::SUMMARY => {
+                    let s = m.get_summary();
+                    for q in s.get_quantile() {
+                        let quantile_str = format_f64(q.get_quantile());
+                        let q_tags = if tags.is_empty() {
+                            format!("quantile={quantile_str}")
+                        } else {
+                            format!("{tags},quantile={quantile_str}")
+                        };
+                        write_influx_line(&mut out, name, &q_tags, "value", q.get_value());
+                    }
+                    let sum_name = format!("{name}_sum");
+                    write_influx_line(&mut out, &sum_name, &tags, "value", s.get_sample_sum());
+                    let count_name = format!("{name}_count");
+                    write_influx_line_uint(
+                        &mut out,
+                        &count_name,
+                        &tags,
+                        "value",
+                        s.get_sample_count(),
+                    );
+                }
+                MetricType::UNTYPED => {
+                    let val = m.get_untyped().get_value();
+                    write_influx_line(&mut out, name, &tags, "value", val);
+                }
+            }
+        }
+    }
+
+    (out.into_bytes(), "text/plain".to_string())
+}
+
+/// Format an f64 for InfluxDB line protocol, using "+Inf" / "-Inf" / "NaN" for special values.
+fn format_f64(v: f64) -> String {
+    if v == f64::INFINITY {
+        "+Inf".to_string()
+    } else if v == f64::NEG_INFINITY {
+        "-Inf".to_string()
+    } else if v.is_nan() {
+        "NaN".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// Format Prometheus labels as InfluxDB tag set (comma-separated key=value pairs).
+fn format_influx_tags(labels: &[prometheus::proto::LabelPair]) -> String {
+    labels
+        .iter()
+        .map(|lp| format!("{}={}", lp.get_name(), lp.get_value()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Write a single InfluxDB line protocol entry with a float value.
+fn write_influx_line(out: &mut String, measurement: &str, tags: &str, field: &str, value: f64) {
+    use std::fmt::Write;
+    if tags.is_empty() {
+        let _ = writeln!(out, "{measurement} {field}={value}");
+    } else {
+        let _ = writeln!(out, "{measurement},{tags} {field}={value}");
+    }
+}
+
+/// Write a single InfluxDB line protocol entry with an unsigned integer value.
+fn write_influx_line_uint(
+    out: &mut String,
+    measurement: &str,
+    tags: &str,
+    field: &str,
+    value: u64,
+) {
+    use std::fmt::Write;
+    if tags.is_empty() {
+        let _ = writeln!(out, "{measurement} {field}={value}u");
+    } else {
+        let _ = writeln!(out, "{measurement},{tags} {field}={value}u");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -297,6 +446,116 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         let counter = Counter::new("test_counter", "test counter help").unwrap();
         registry.register(Box::new(counter.clone())).unwrap();
         registry
+    }
+
+    #[test]
+    fn test_encode_influx_line_counter() {
+        let registry = get_sample_metrics();
+        let (buf, content_type) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        assert_eq!(content_type, "text/plain");
+        assert_eq!(output, "myprefix_test_counter,mykey=myvalue value=0\n");
+    }
+
+    #[test]
+    fn test_encode_influx_line_counter_no_labels() {
+        let registry = Registry::new_custom(Some("test".to_string()), None).unwrap();
+        let counter = Counter::new("requests", "total requests").unwrap();
+        registry.register(Box::new(counter.clone())).unwrap();
+        counter.inc_by(42.0);
+
+        let (buf, _) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        assert_eq!(output, "test_requests value=42\n");
+    }
+
+    #[test]
+    fn test_encode_influx_line_gauge() {
+        let registry = Registry::new_custom(Some("test".to_string()), None).unwrap();
+        let gauge = prometheus::Gauge::new("temperature", "current temperature").unwrap();
+        registry.register(Box::new(gauge.clone())).unwrap();
+        gauge.set(36.6);
+
+        let (buf, _) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        assert_eq!(output, "test_temperature value=36.6\n");
+    }
+
+    #[test]
+    fn test_encode_influx_line_histogram() {
+        let registry = Registry::new_custom(Some("test".to_string()), None).unwrap();
+        let hist = prometheus::Histogram::with_opts(
+            prometheus::HistogramOpts::new("duration", "request duration").buckets(vec![0.1, 0.5]),
+        )
+        .unwrap();
+        registry.register(Box::new(hist.clone())).unwrap();
+        hist.observe(0.05);
+        hist.observe(0.3);
+
+        let (buf, _) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        // Should have bucket lines for 0.1, 0.5, +Inf, plus _sum and _count
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "test_duration_bucket,le=0.1 value=1u");
+        assert_eq!(lines[1], "test_duration_bucket,le=0.5 value=2u");
+        assert_eq!(lines[2], "test_duration_bucket,le=+Inf value=2u");
+        assert_eq!(lines[3], "test_duration_sum value=0.35");
+        assert_eq!(lines[4], "test_duration_count value=2u");
+    }
+
+    #[test]
+    fn test_encode_influx_line_labeled_histogram() {
+        let registry = Registry::new_custom(Some("test".to_string()), None).unwrap();
+        let hist_vec = prometheus::HistogramVec::new(
+            prometheus::HistogramOpts::new("latency", "latency by method").buckets(vec![1.0]),
+            &["method"],
+        )
+        .unwrap();
+        registry.register(Box::new(hist_vec.clone())).unwrap();
+        hist_vec.with_label_values(&["GET"]).observe(0.5);
+
+        let (buf, _) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0], "test_latency_bucket,method=GET,le=1 value=1u");
+        assert_eq!(lines[1], "test_latency_bucket,method=GET,le=+Inf value=1u");
+        assert_eq!(lines[2], "test_latency_sum,method=GET value=0.5");
+        assert_eq!(lines[3], "test_latency_count,method=GET value=1u");
+    }
+
+    #[test]
+    fn test_encode_influx_line_multiple_metrics() {
+        let registry = Registry::new_custom(Some("app".to_string()), None).unwrap();
+
+        let counter = Counter::new("errors", "error count").unwrap();
+        registry.register(Box::new(counter.clone())).unwrap();
+        counter.inc_by(5.0);
+
+        let gauge = prometheus::Gauge::new("uptime", "uptime seconds").unwrap();
+        registry.register(Box::new(gauge.clone())).unwrap();
+        gauge.set(1000.0);
+
+        let (buf, _) = encode_metrics_influx_line(&registry.gather());
+        let output = std::str::from_utf8(&buf).unwrap();
+
+        assert!(output.contains("app_errors value=5\n"));
+        assert!(output.contains("app_uptime value=1000\n"));
+    }
+
+    #[test]
+    fn test_format_f64_special_values() {
+        assert_eq!(format_f64(f64::INFINITY), "+Inf");
+        assert_eq!(format_f64(f64::NEG_INFINITY), "-Inf");
+        assert_eq!(format_f64(f64::NAN), "NaN");
+        assert_eq!(format_f64(1.5), "1.5");
+        assert_eq!(format_f64(0.0), "0");
     }
 
     #[test]
