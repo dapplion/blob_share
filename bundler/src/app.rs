@@ -131,15 +131,9 @@ impl AppData {
             }
         }
 
-        // Update balance and nonce
-        // TODO: Should assert that 1 row was affected?
-        sqlx::query!(
-            "UPDATE users SET post_data_nonce = ? WHERE eth_address = ?",
-            Some(nonce),
-            eth_address,
-        )
-        .execute(&mut *tx)
-        .await?;
+        // Upsert user row: creates the row for first-time users, updates nonce for existing ones.
+        // Uses INSERT ... ON DUPLICATE KEY UPDATE to handle both cases atomically.
+        upsert_user_nonce(&mut tx, &eth_address, nonce).await?;
 
         let id = store_data_intent(&mut tx, data_intent, None, None).await?;
 
@@ -178,13 +172,7 @@ impl AppData {
             }
         }
 
-        sqlx::query!(
-            "UPDATE users SET post_data_nonce = ? WHERE eth_address = ?",
-            Some(nonce),
-            eth_address,
-        )
-        .execute(&mut *tx)
-        .await?;
+        upsert_user_nonce(&mut tx, &eth_address, nonce).await?;
 
         let group_id = Uuid::new_v4();
         let mut chunk_ids = Vec::with_capacity(chunks.len());
@@ -273,8 +261,7 @@ impl AppData {
         let mut ids_with_inclusion_finalized = vec![];
 
         for (id, tx_hash) in intents {
-            // TODO: cache fetch of the same transaction
-
+            // Cache: only fetch each tx_hash once from the provider
             if let Entry::Vacant(e) = tx_cache.entry(tx_hash) {
                 let tx = self.provider.get_transaction(tx_hash).await?;
                 e.insert(tx.and_then(|tx| tx.block_number.map(|n| n.as_u64())));
@@ -713,5 +700,85 @@ impl AppData {
     pub async fn collect_metrics(&self) {
         self.sync.read().await.collect_metrics();
         self.data_intent_tracker.read().await.collect_metrics();
+    }
+}
+
+/// Insert a new user row or update the nonce of an existing user.
+///
+/// Uses `INSERT ... ON DUPLICATE KEY UPDATE` to handle both first-time users (who have no
+/// row in the `users` table) and returning users atomically. Without the INSERT, the UPDATE
+/// would silently affect 0 rows for new users, breaking nonce replay protection.
+async fn upsert_user_nonce(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    eth_address: &str,
+    nonce: u64,
+) -> Result<()> {
+    let nonce_i64: i64 = nonce_u64_to_i64(nonce)?;
+    let result = sqlx::query(
+        "INSERT INTO users (eth_address, post_data_nonce) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE post_data_nonce = VALUES(post_data_nonce)",
+    )
+    .bind(eth_address)
+    .bind(nonce_i64)
+    .execute(&mut **tx)
+    .await?;
+
+    // INSERT ... ON DUPLICATE KEY UPDATE reports:
+    // - 1 row affected for a new insert
+    // - 2 rows affected for an update (MySQL convention)
+    // - 0 rows affected only if the value is unchanged (same nonce)
+    let rows = result.rows_affected();
+    if rows == 0 {
+        bail!("user nonce upsert affected 0 rows for {eth_address} nonce {nonce}");
+    }
+
+    Ok(())
+}
+
+/// Convert a u64 nonce to i64 for MySQL BIGINT storage.
+/// Returns an error if the nonce exceeds i64::MAX.
+fn nonce_u64_to_i64(nonce: u64) -> Result<i64> {
+    nonce
+        .try_into()
+        .map_err(|_| eyre!("nonce {nonce} exceeds maximum supported value {}", i64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonce_conversion_zero() {
+        assert_eq!(nonce_u64_to_i64(0).unwrap(), 0i64);
+    }
+
+    #[test]
+    fn nonce_conversion_typical_values() {
+        assert_eq!(nonce_u64_to_i64(1).unwrap(), 1i64);
+        assert_eq!(nonce_u64_to_i64(1000).unwrap(), 1000i64);
+        assert_eq!(nonce_u64_to_i64(u32::MAX as u64).unwrap(), u32::MAX as i64);
+    }
+
+    #[test]
+    fn nonce_conversion_max_i64() {
+        assert_eq!(nonce_u64_to_i64(i64::MAX as u64).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn nonce_conversion_overflow_returns_error() {
+        // i64::MAX + 1 should fail
+        let result = nonce_u64_to_i64(i64::MAX as u64 + 1);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds maximum supported value"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn nonce_conversion_u64_max_returns_error() {
+        let result = nonce_u64_to_i64(u64::MAX);
+        assert!(result.is_err());
     }
 }

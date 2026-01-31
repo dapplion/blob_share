@@ -324,6 +324,17 @@ Phase 4 (mostly independent)
     - `reorg_with_topup_and_blob_tx_in_same_block`: edge case where a block containing both a topup AND a blob tx for the same user is reorged out — both credit and cost are correctly reversed.
 - **Why:** The stale TODO in `drop_reorged_blocks` implied a potential balance accounting bug that didn't actually exist. The misleading comment could cause future developers to waste time investigating a non-issue or attempt unnecessary changes. Replacing it with a clear explanation and backing it with comprehensive tests documents the correctness invariant and prevents regressions.
 
+### [x] 5.12 Fix user nonce upsert bug and resolve stale TODO in app.rs
+- **File:** `bundler/src/app.rs`
+- **Changes:**
+  - Fixed a bug where new users' nonce was never stored in the `users` table. Both `atomic_update_post_data_on_unsafe_channel` and `atomic_update_post_data_chunks` used `UPDATE users SET post_data_nonce = ?` which silently affected 0 rows for first-time users (no row to update), breaking nonce replay protection.
+  - Extracted `upsert_user_nonce()` function that uses `INSERT INTO users ... ON DUPLICATE KEY UPDATE` to atomically create the user row on first submission or update the nonce for returning users.
+  - Extracted `nonce_u64_to_i64()` with a descriptive error message for nonce overflow (u64 > i64::MAX).
+  - Resolved stale TODO at `initial_consistency_check_intents_with_inclusion_finalized` — the "cache fetch of the same transaction" was already implemented via `tx_cache` HashMap right below the comment.
+  - Removed unused sqlx offline metadata for the old UPDATE query.
+  - Added 5 unit tests for nonce conversion: zero, typical values, i64::MAX boundary, overflow, u64::MAX.
+- **Why:** Without the INSERT, a new user's first `POST /v1/data` request would succeed but the nonce would never be recorded. This meant all subsequent requests from that user could replay the same nonce, completely defeating the replay protection mechanism. The fix uses MySQL's upsert pattern to handle both new and existing users atomically.
+
 ### [x] 5.11 Add unit tests for trusted_setup.rs and resolve stale kzg.rs TODOs
 - **Files:** `bundler/src/trusted_setup.rs`, `bundler/src/kzg.rs`
 - **Changes:**
