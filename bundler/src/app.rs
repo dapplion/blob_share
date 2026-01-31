@@ -4,7 +4,7 @@ use ethers::types::TxHash;
 
 use bundler_client::types::{
     BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
-    SyncStatusBlock,
+    HistoryEntry, HistoryEntryStatus, HistoryResponse, SyncStatusBlock,
 };
 use ethers::{
     signers::LocalWallet,
@@ -20,9 +20,10 @@ use crate::{
     anchor_block::persist_anchor_block_to_db,
     consumer::BlobConsumer,
     data_intent_tracker::{
-        delete_intent_inclusions_by_tx_hash, fetch_all_intents_with_inclusion_not_finalized,
-        fetch_data_intent_db_full, fetch_data_intent_db_is_known, fetch_data_intent_inclusion,
-        fetch_data_intent_is_cancelled, fetch_data_intent_owner, fetch_many_data_intent_db_full,
+        count_history_for_address, delete_intent_inclusions_by_tx_hash,
+        fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
+        fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_data_intent_is_cancelled,
+        fetch_data_intent_owner, fetch_history_for_address, fetch_many_data_intent_db_full,
         mark_data_intent_cancelled, mark_data_intents_as_inclusion_finalized,
         prune_finalized_intent_data, set_finalized_block_number, store_data_intent,
         DataIntentDbRowFull, DataIntentTracker,
@@ -436,6 +437,56 @@ impl AppData {
         ids: &[DataIntentId],
     ) -> Result<Vec<DataIntentDbRowFull>> {
         fetch_many_data_intent_db_full(&self.db_pool, ids).await
+    }
+
+    /// Fetch paginated history for an address. Returns all intents (pending, included,
+    /// finalized, cancelled) with their current status and optional inclusion tx hash.
+    pub async fn history_for_address(
+        &self,
+        address: &Address,
+        limit: u32,
+        offset: u32,
+    ) -> Result<HistoryResponse> {
+        let address_bytes = address.to_fixed_bytes().to_vec();
+        let (rows, total) = tokio::try_join!(
+            fetch_history_for_address(&self.db_pool, &address_bytes, limit, offset),
+            count_history_for_address(&self.db_pool, &address_bytes),
+        )?;
+
+        let entries = rows
+            .into_iter()
+            .map(|row| {
+                let tx_hash = row
+                    .tx_hash
+                    .as_deref()
+                    .map(crate::utils::txhash_from_vec)
+                    .transpose()?;
+
+                let status = if row.cancelled {
+                    HistoryEntryStatus::Cancelled
+                } else if row.inclusion_finalized {
+                    HistoryEntryStatus::Finalized {
+                        tx_hash: tx_hash
+                            .ok_or_else(|| eyre!("finalized intent without tx_hash"))?,
+                    }
+                } else if let Some(tx_hash) = tx_hash {
+                    HistoryEntryStatus::Included { tx_hash }
+                } else {
+                    HistoryEntryStatus::Pending
+                };
+
+                Ok(HistoryEntry {
+                    id: row.id,
+                    data_len: row.data_len,
+                    data_hash: row.data_hash,
+                    max_blob_gas_price: row.max_blob_gas_price,
+                    status,
+                    updated_at: row.updated_at,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(HistoryResponse { entries, total })
     }
 
     pub async fn get_all_intents_available_for_packing(

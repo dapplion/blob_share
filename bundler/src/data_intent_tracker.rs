@@ -552,6 +552,69 @@ WHERE inclusion_finalized = TRUE
     Ok(result.rows_affected())
 }
 
+/// Row returned by the history query: intent metadata + optional inclusion tx_hash.
+#[derive(Debug, FromRow)]
+pub(crate) struct HistoryDbRow {
+    pub id: Uuid,
+    pub data_len: u32,
+    pub data_hash: Vec<u8>,
+    pub max_blob_gas_price: u64,
+    pub cancelled: bool,
+    pub inclusion_finalized: bool,
+    pub updated_at: DateTime<Utc>,
+    pub tx_hash: Option<Vec<u8>>,
+}
+
+/// Fetch paginated history for an address. Returns rows ordered by `updated_at DESC`.
+/// Each intent appears once; the most-recent inclusion tx_hash (if any) is joined via a
+/// lateral / correlated subquery so the result set stays one-row-per-intent.
+pub(crate) async fn fetch_history_for_address(
+    db_pool: &MySqlPool,
+    address: &[u8],
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<HistoryDbRow>> {
+    let rows = sqlx::query_as::<_, HistoryDbRow>(
+        r#"
+SELECT
+    di.id,
+    di.data_len,
+    di.data_hash,
+    di.max_blob_gas_price,
+    di.cancelled,
+    di.inclusion_finalized,
+    di.updated_at,
+    (
+        SELECT ii.tx_hash
+        FROM intent_inclusions ii
+        WHERE ii.id = di.id
+        ORDER BY ii.updated_at DESC
+        LIMIT 1
+    ) AS tx_hash
+FROM data_intents di
+WHERE di.eth_address = ?
+ORDER BY di.updated_at DESC
+LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(address)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db_pool)
+    .await?;
+
+    Ok(rows)
+}
+
+/// Count total intents for an address (for pagination metadata).
+pub(crate) async fn count_history_for_address(db_pool: &MySqlPool, address: &[u8]) -> Result<u64> {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM data_intents WHERE eth_address = ?")
+        .bind(address)
+        .fetch_one(db_pool)
+        .await?;
+    Ok(row.0 as u64)
+}
+
 // Private fn to ensure data consistency with local cache
 async fn insert_many_intent_tx_inclusions(
     db_pool: &MySqlPool,

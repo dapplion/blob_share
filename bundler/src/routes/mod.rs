@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub mod delete_data;
 pub mod get_blobs;
+pub mod get_history;
 pub mod post_data;
 
 use crate::eth_provider::EthProvider;

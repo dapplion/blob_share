@@ -299,6 +299,34 @@ impl CancelDataIntentSigned {
     }
 }
 
+/// A single entry in the address history response.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryEntry {
+    pub id: DataIntentId,
+    pub data_len: u32,
+    #[serde(with = "hex_vec")]
+    pub data_hash: Vec<u8>,
+    pub max_blob_gas_price: BlobGasPrice,
+    pub status: HistoryEntryStatus,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Status of a history entry, combining cancelled/finalized/inclusion info into one enum.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum HistoryEntryStatus {
+    Pending,
+    Cancelled,
+    Included { tx_hash: TxHash },
+    Finalized { tx_hash: TxHash },
+}
+
+/// Paginated response for address history.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HistoryResponse {
+    pub entries: Vec<HistoryEntry>,
+    pub total: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -385,5 +413,106 @@ mod tests {
         assert!(DataIntentStatus::Cancelled.is_known());
         assert!(DataIntentStatus::Cancelled.is_in_tx().is_none());
         assert!(DataIntentStatus::Cancelled.is_in_block().is_none());
+    }
+
+    #[test]
+    fn history_entry_pending_serde_roundtrip() {
+        let entry = HistoryEntry {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            data_len: 1024,
+            data_hash: vec![0xaa; 32],
+            max_blob_gas_price: 5000,
+            status: HistoryEntryStatus::Pending,
+            updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: HistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, entry.id);
+        assert_eq!(deserialized.data_len, 1024);
+        assert_eq!(deserialized.status, HistoryEntryStatus::Pending);
+    }
+
+    #[test]
+    fn history_entry_included_serde_roundtrip() {
+        let tx_hash = TxHash::zero();
+        let entry = HistoryEntry {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            data_len: 512,
+            data_hash: vec![0xbb; 32],
+            max_blob_gas_price: 3000,
+            status: HistoryEntryStatus::Included { tx_hash },
+            updated_at: DateTime::from_str("2024-02-01T12:00:00Z").unwrap(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: HistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.status,
+            HistoryEntryStatus::Included { tx_hash }
+        );
+    }
+
+    #[test]
+    fn history_entry_finalized_serde_roundtrip() {
+        let tx_hash = TxHash::zero();
+        let entry = HistoryEntry {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            data_len: 256,
+            data_hash: vec![0xcc; 32],
+            max_blob_gas_price: 1000,
+            status: HistoryEntryStatus::Finalized { tx_hash },
+            updated_at: DateTime::from_str("2024-03-01T00:00:00Z").unwrap(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: HistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.status,
+            HistoryEntryStatus::Finalized { tx_hash }
+        );
+    }
+
+    #[test]
+    fn history_entry_cancelled_serde_roundtrip() {
+        let entry = HistoryEntry {
+            id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+            data_len: 64,
+            data_hash: vec![0xdd; 32],
+            max_blob_gas_price: 2000,
+            status: HistoryEntryStatus::Cancelled,
+            updated_at: DateTime::from_str("2024-04-01T00:00:00Z").unwrap(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: HistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status, HistoryEntryStatus::Cancelled);
+    }
+
+    #[test]
+    fn history_response_serde_roundtrip() {
+        let response = HistoryResponse {
+            entries: vec![HistoryEntry {
+                id: DataIntentId::from_str("c4f1bdd0-3331-4470-b427-28a2c514f483").unwrap(),
+                data_len: 100,
+                data_hash: vec![0xee; 32],
+                max_blob_gas_price: 500,
+                status: HistoryEntryStatus::Pending,
+                updated_at: DateTime::from_str("2024-05-01T00:00:00Z").unwrap(),
+            }],
+            total: 42,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: HistoryResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.total, 42);
+        assert_eq!(deserialized.entries.len(), 1);
+    }
+
+    #[test]
+    fn history_response_empty_entries() {
+        let response = HistoryResponse {
+            entries: vec![],
+            total: 0,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: HistoryResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.total, 0);
+        assert!(deserialized.entries.is_empty());
     }
 }

@@ -126,7 +126,7 @@ A reliable, self-operated blob bundling service where:
 - `GET /v1/blobs/{tx_hash}` — given a blob TX hash, fetch blob sidecars from beacon API, decode participants, return structured data
 - Cache results in-memory (finalized blobs don't change)
 
-### [ ] 3.3 Add address history endpoint
+### [x] 3.3 Add address history endpoint
 - **Files:** `bundler/src/routes/mod.rs`, `bundler/src/data_intent_tracker.rs`
 - `GET /v1/history/{address}` — return all intents (pending + included + finalized) for an address, with inclusion TX hashes and status
 - Paginated with `?limit=N&offset=M`
