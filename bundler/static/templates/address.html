@@ -1,53 +1,59 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Bundler explorer</title>
-    <style>
-        html {
-            font-family: monospace, monospace;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        table, th, td {
-            border: 1px solid black;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
-        }
-    </style>
+    <title>Address {{address}} - Bundler explorer</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>Address {{address}}</h1>
-    <p>Balance: {{balance}}</p>
+    <nav>
+        <a href="/">Home</a>
+    </nav>
 
-    <h2>Pending intents</h2>
+    <h1>Address {{address}}</h1>
+    <p>Balance: {{balance}} ETH</p>
+
+    <h2>Intent history ({{total}} total)</h2>
+    {{#if intents}}
     <table>
         <thead>
             <tr>
                 <th>ID</th>
-                <th>From</th>
                 <th>Data len</th>
                 <th>Max blob gas price</th>
+                <th>Status</th>
+                <th>TX hash</th>
                 <th>Updated at</th>
             </tr>
         </thead>
         <tbody>
-	    {{#each data_intents}}
+            {{#each intents}}
             <tr>
-		<td>{{id}}</td>
+                <td><a href='/intent/{{id}}'>{{id}}</a></td>
+                <td>{{data_len}}</td>
+                <td>{{max_blob_gas_price}}</td>
+                <td><span class="{{status_class}}">{{status}}</span></td>
                 <td>
-                    <a href='/address/{{from}}'>{{from}}</a>
+                    {{#if tx_hash}}
+                    <a href='/tx/{{tx_hash}}'>{{tx_hash}}</a>
+                    {{else}}
+                    -
+                    {{/if}}
                 </td>
-		<td>{{data_len}}</td>
-		<td>{{max_blob_gas_price}}</td>
                 <td>{{updated_at}}</td>
-	    </tr>
-	    {{/each}}
+            </tr>
+            {{/each}}
         </tbody>
     </table>
+    <p>
+        {{#if has_prev}}
+        <a href='/address/{{address}}?limit={{limit}}&offset={{prev_offset}}'>Previous</a>
+        {{/if}}
+        {{#if has_next}}
+        <a href='/address/{{address}}?limit={{limit}}&offset={{next_offset}}'>Next</a>
+        {{/if}}
+    </p>
+    {{else}}
+    <p class="empty-msg">No intents for this address.</p>
+    {{/if}}
 </body>
 </html>
-

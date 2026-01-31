@@ -24,9 +24,10 @@ use crate::{
         fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
         fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_data_intent_is_cancelled,
         fetch_data_intent_owner, fetch_history_for_address, fetch_many_data_intent_db_full,
-        mark_data_intent_cancelled, mark_data_intents_as_inclusion_finalized,
-        prune_finalized_intent_data, set_finalized_block_number, store_data_intent,
-        DataIntentDbRowFull, DataIntentTracker,
+        fetch_recent_blob_txs, mark_data_intent_cancelled,
+        mark_data_intents_as_inclusion_finalized, prune_finalized_intent_data,
+        set_finalized_block_number, store_data_intent, DataIntentDbRowFull, DataIntentTracker,
+        RecentBlobTxRow,
     },
     eth_provider::EthProvider,
     gas::GasConfig,
@@ -487,6 +488,11 @@ impl AppData {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(HistoryResponse { entries, total })
+    }
+
+    /// Fetch recent published blob transactions for the explorer home page.
+    pub async fn recent_blob_txs(&self, limit: u32) -> Result<Vec<RecentBlobTxRow>> {
+        fetch_recent_blob_txs(&self.db_pool, limit).await
     }
 
     pub async fn get_all_intents_available_for_packing(

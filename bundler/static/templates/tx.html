@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TX {{tx_hash}} - Bundler explorer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+    </nav>
+
+    <h1>Blob Transaction</h1>
+
+    <div class="info-row"><strong>TX hash:</strong> {{tx_hash}}</div>
+    <div class="info-row"><strong>Participants:</strong> {{participant_count}}</div>
+    <div class="info-row"><strong>Total data:</strong> {{total_data_len}} bytes</div>
+
+    {{#if has_blob_data}}
+    <h2>Participants</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Address</th>
+                <th>Data size (bytes)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{#each participants}}
+            <tr>
+                <td><a href='/address/{{address}}'>{{address}}</a></td>
+                <td>{{data_len}}</td>
+            </tr>
+            {{/each}}
+        </tbody>
+    </table>
+    {{else}}
+    <p class="empty-msg">Blob data not available. Beacon API may not be configured or the transaction has not been included yet.</p>
+    {{/if}}
+</body>
+</html>

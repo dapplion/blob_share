@@ -552,6 +552,42 @@ WHERE inclusion_finalized = TRUE
     Ok(result.rows_affected())
 }
 
+/// Row returned by the recent published blob TXs query.
+#[derive(Debug, FromRow)]
+pub(crate) struct RecentBlobTxRow {
+    pub tx_hash: Vec<u8>,
+    pub participant_count: i64,
+    pub total_data_len: i64,
+    pub latest_update: Option<DateTime<Utc>>,
+}
+
+/// Fetch recent published blob transactions, aggregated from intent_inclusions.
+/// Returns unique tx_hashes with participant count and total data size.
+pub(crate) async fn fetch_recent_blob_txs(
+    db_pool: &MySqlPool,
+    limit: u32,
+) -> Result<Vec<RecentBlobTxRow>> {
+    let rows = sqlx::query_as::<_, RecentBlobTxRow>(
+        r#"
+SELECT
+    ii.tx_hash,
+    COUNT(DISTINCT di.eth_address) AS participant_count,
+    COALESCE(SUM(di.data_len), 0) AS total_data_len,
+    MAX(ii.updated_at) AS latest_update
+FROM intent_inclusions ii
+INNER JOIN data_intents di ON ii.id = di.id
+GROUP BY ii.tx_hash
+ORDER BY latest_update DESC
+LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(db_pool)
+    .await?;
+
+    Ok(rows)
+}
+
 /// Row returned by the history query: intent metadata + optional inclusion tx_hash.
 #[derive(Debug, FromRow)]
 pub(crate) struct HistoryDbRow {

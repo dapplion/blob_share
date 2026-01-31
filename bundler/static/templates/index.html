@@ -2,34 +2,45 @@
 <html>
 <head>
     <title>Bundler explorer</title>
-    <style>
-        html {
-            font-family: monospace, monospace;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        table, th, td {
-            border: 1px solid black;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
-        }
-        td {
-            max-width: 100px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <nav>
+        <a href="/">Home</a>
+    </nav>
+
+    <h1>Blob Share Explorer</h1>
     <p>Head blob gas price: {{blob_gas_price}}</p>
     <p>Head base fee per gas: {{base_fee_per_gas}}</p>
 
+    <h2>Recent published blob transactions</h2>
+    {{#if recent_txs}}
+    <table>
+        <thead>
+            <tr>
+                <th>TX hash</th>
+                <th>Participants</th>
+                <th>Total data (bytes)</th>
+                <th>Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{#each recent_txs}}
+            <tr>
+                <td><a href='/tx/{{tx_hash}}'>{{tx_hash}}</a></td>
+                <td>{{participant_count}}</td>
+                <td>{{total_data_len}}</td>
+                <td>{{updated_at}}</td>
+            </tr>
+            {{/each}}
+        </tbody>
+    </table>
+    {{else}}
+    <p class="empty-msg">No published blob transactions yet.</p>
+    {{/if}}
+
     <h2>Data intent pool</h2>
+    {{#if data_intents}}
     <table>
         <thead>
             <tr>
@@ -41,20 +52,19 @@
             </tr>
         </thead>
         <tbody>
-	    {{#each data_intents}}
+            {{#each data_intents}}
             <tr>
-		<td>
-                    <a href='/intent/{{id}}'>{{id}}</a>
-                </td>
-                <td>
-                    <a href='/address/{{from}}'>{{from}}</a>
-                </td>
-		<td>{{data_len}}</td>
-		<td>{{max_blob_gas_price}}</td>
+                <td><a href='/intent/{{id}}'>{{id}}</a></td>
+                <td><a href='/address/{{from}}'>{{from}}</a></td>
+                <td>{{data_len}}</td>
+                <td>{{max_blob_gas_price}}</td>
                 <td>{{updated_at}}</td>
-	    </tr>
-	    {{/each}}
+            </tr>
+            {{/each}}
         </tbody>
     </table>
+    {{else}}
+    <p class="empty-msg">No pending data intents.</p>
+    {{/if}}
 </body>
 </html>

@@ -1,0 +1,82 @@
+html {
+    font-family: monospace, monospace;
+    background: #fafafa;
+    color: #222;
+}
+body {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 16px;
+}
+nav {
+    margin-bottom: 16px;
+    padding: 8px 0;
+    border-bottom: 1px solid #ccc;
+}
+nav a {
+    margin-right: 16px;
+    color: #0366d6;
+    text-decoration: none;
+}
+nav a:hover {
+    text-decoration: underline;
+}
+h1 {
+    font-size: 1.4em;
+    margin: 16px 0 8px;
+}
+h2 {
+    font-size: 1.1em;
+    margin: 16px 0 8px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+}
+table, th, td {
+    border: 1px solid #ccc;
+}
+th, td {
+    padding: 6px 8px;
+    text-align: left;
+}
+th {
+    background: #f0f0f0;
+}
+td {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+a {
+    color: #0366d6;
+    text-decoration: none;
+}
+a:hover {
+    text-decoration: underline;
+}
+code {
+    word-wrap: break-word;
+    display: block;
+    background: #f0f0f0;
+    padding: 8px;
+    overflow-x: auto;
+}
+.status-pending { color: #b08800; }
+.status-included { color: #0366d6; }
+.status-finalized { color: #22863a; }
+.status-cancelled { color: #cb2431; }
+.info-row {
+    margin: 4px 0;
+}
+.info-row strong {
+    display: inline-block;
+    min-width: 160px;
+}
+.empty-msg {
+    color: #666;
+    font-style: italic;
+    padding: 8px;
+}

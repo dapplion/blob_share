@@ -1,37 +1,26 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Bundler explorer</title>
-    <style>
-        html {
-            font-family: monospace, monospace;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        table, th, td {
-            border: 1px solid black;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
-        }
-        code {
-            word-wrap: break-word;
-        }
-    </style>
+    <title>Intent {{id}} - Bundler explorer</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <nav>
+        <a href="/">Home</a>
+    </nav>
+
     <h1>Intent {{id}}</h1>
 
-    <p>From: <a href='/address/{{from}}'>{{address}}</a></p>
-    <p>Data length: {{data_len}}</p>
-    <p>Data hash: {{data_hash}}</p>
+    <div class="info-row"><strong>From:</strong> <a href='/address/{{from}}'>{{from}}</a></div>
+    <div class="info-row"><strong>Data length:</strong> {{data_len}} bytes</div>
+    <div class="info-row"><strong>Data hash:</strong> {{data_hash}}</div>
+    <div class="info-row"><strong>Max blob gas price:</strong> {{max_blob_gas_price}}</div>
+    <div class="info-row"><strong>Status:</strong> <span class="{{status_class}}">{{status}}</span></div>
+    {{#if tx_hash}}
+    <div class="info-row"><strong>TX hash:</strong> <a href='/tx/{{tx_hash}}'>{{tx_hash}}</a></div>
+    {{/if}}
 
     <h2>Raw data</h2>
     <code>{{data}}</code>
 </body>
 </html>
-
-

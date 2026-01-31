@@ -131,7 +131,7 @@ A reliable, self-operated blob bundling service where:
 - `GET /v1/history/{address}` — return all intents (pending + included + finalized) for an address, with inclusion TX hashes and status
 - Paginated with `?limit=N&offset=M`
 
-### [ ] 3.4 Enhance explorer UI
+### [x] 3.4 Enhance explorer UI
 - **Files:** `bundler/src/explorer/mod.rs`, `bundler/static/templates/*.html`
 - **Home page:** Add table of recent published blob TXs (from `intent_inclusion` table), show TX hash + block number + participant count + total data size
 - **Address page:** Show intent history (pending, included, finalized), add cancel button for pending intents
