@@ -385,6 +385,20 @@ Phase 4 (mostly independent)
     - `deserialize_signature`: valid 65-byte signature, too short, too long, empty, roundtrip.
 - **Why:** `data_intent.rs` is a core type used across the bundler — it had tests only for cost/length calculation but none for the `WithSignature` variant, accessor methods, async signature construction, or serde serialization. `bundler_client/src/utils.rs` contains functions used by the client library for hex encoding, address formatting, signature deserialization, and timestamp generation, but had zero test coverage. Error paths in `deserialize_signature` (wrong-length input) were completely untested.
 
+### [x] 5.16 Add unit tests for beacon_api_client.rs
+- **File:** `bundler/src/beacon_api_client.rs`
+- **Changes:**
+  - Added 23 unit tests covering the previously untested Beacon API client module:
+    - `BeaconApiClient::new()`: 4 tests — valid URL, valid URL with trailing slash, invalid URL, empty URL.
+    - `BeaconApiClient::url()`: 4 tests — without trailing slash, with trailing slash, blob sidecars path with slot, config spec path.
+    - `Slot` type: 2 tests — from u64, from zero.
+    - `GetGenesisResponse` serde: 3 tests — deserialize quoted u64, roundtrip, zero genesis time.
+    - `GetSpecResponse` serde: 3 tests — deserialize mainnet values, roundtrip, non-mainnet values.
+    - `GetBlobSidecarsResponse` serde: 4 tests — empty data array, single sidecar with all fields, multiple sidecars, empty hex bytes.
+    - `BlobSidecar` roundtrip: 1 test — serialize then deserialize preserves all fields.
+    - `quoted_u64` edge cases: 2 tests — u64::MAX value, accepts unquoted numbers.
+- **Why:** `beacon_api_client.rs` is the HTTP client for the Beacon Chain API, used by the blob consumer to retrieve blob sidecars for data extraction and the explorer. It had zero test coverage despite containing URL building logic, serde deserialization of Beacon API JSON responses with custom `quoted_u64` and `hex_vec` formats, and the `Slot` newtype. The serde types are critical — incorrect deserialization of blob sidecars or genesis/spec responses would cause silent data corruption or runtime failures in the blob retrieval path.
+
 ### [x] 5.15 Add unit tests for gas.rs, bundler_client option_hex_vec.rs, and client.rs
 - **Files:** `bundler/src/gas.rs`, `bundler_client/src/option_hex_vec.rs`, `bundler_client/src/client.rs`
 - **Changes:**
