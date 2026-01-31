@@ -75,14 +75,14 @@ pub(crate) fn construct_blob_tx(
 
     // TODO customize by participant request on include signature or not
     let input = encode_blob_tx_data(&participants)?;
+    let gas_limit = estimate_gas_limit(&input);
 
     let tx = TxEip4844 {
         chain_id: tx_params.chain_id,
         nonce: tx_params.nonce,
         max_priority_fee_per_gas: gas_config.max_priority_fee_per_gas,
         max_fee_per_gas: gas_config.max_fee_per_gas,
-        // TODO Adjust gas with input
-        gas_limit: 100_000_u64,
+        gas_limit,
         to: Address::from(l1_inbox_address.to_fixed_bytes()),
         value: <_>::default(),
         input: input.into(),
@@ -159,6 +159,35 @@ pub fn compute_blob_tx_hash(tx: &TxEip4844, signature: &Signature) -> ([u8; 32],
     (keccak256(&tx_rlp_with_sig), tx_rlp_with_sig)
 }
 
+/// Base EVM gas cost for a transaction (EIP-2028 intrinsic gas).
+const TX_BASE_GAS: u64 = 21_000;
+/// EVM calldata cost per zero byte.
+const CALLDATA_GAS_PER_ZERO_BYTE: u64 = 4;
+/// EVM calldata cost per non-zero byte.
+const CALLDATA_GAS_PER_NONZERO_BYTE: u64 = 16;
+/// Safety margin added to gas estimate to account for EVM execution overhead.
+const GAS_LIMIT_SAFETY_MARGIN: u64 = 5_000;
+
+/// Estimate the EVM gas limit for a blob transaction based on its calldata (input).
+///
+/// Gas = 21,000 (base) + calldata_cost + safety_margin
+///
+/// Calldata cost: 4 gas per zero byte, 16 gas per non-zero byte (EIP-2028).
+pub(crate) fn estimate_gas_limit(input: &[u8]) -> u64 {
+    let calldata_gas: u64 = input
+        .iter()
+        .map(|&b| {
+            if b == 0 {
+                CALLDATA_GAS_PER_ZERO_BYTE
+            } else {
+                CALLDATA_GAS_PER_NONZERO_BYTE
+            }
+        })
+        .sum();
+
+    TX_BASE_GAS + calldata_gas + GAS_LIMIT_SAFETY_MARGIN
+}
+
 // Chunk data in 31 bytes to ensure each field element is < BLS_MODULUS
 // TODO: Should use a more efficient encoding technique in the future
 // Reference: https://github.com/ethpandaops/goomy-blob/blob/e4b460b17b6e2748995ef3d7b75cbe967dc49da4/txbuilder/blob_encode.go#L36
@@ -198,7 +227,10 @@ mod tests {
         ADDRESS_ZERO, MAX_USABLE_BLOB_DATA_LEN,
     };
 
-    use super::{construct_blob_tx, encode_data_to_blob};
+    use super::{
+        construct_blob_tx, encode_data_to_blob, estimate_gas_limit, CALLDATA_GAS_PER_NONZERO_BYTE,
+        CALLDATA_GAS_PER_ZERO_BYTE, GAS_LIMIT_SAFETY_MARGIN, TX_BASE_GAS,
+    };
 
     const DEV_PRIVKEY: &str = "392a230386a19b84b6b865067d5493b158e987d28104ab16365854a8fd851bb0";
 
@@ -263,6 +295,125 @@ mod tests {
 
         // Assert participants
         assert_eq!(blob_tx.tx_summary.participants, participants);
+
+        Ok(())
+    }
+
+    #[test]
+    fn estimate_gas_limit_empty_input() {
+        // Empty input: only base gas + safety margin
+        assert_eq!(
+            estimate_gas_limit(&[]),
+            TX_BASE_GAS + GAS_LIMIT_SAFETY_MARGIN
+        );
+    }
+
+    #[test]
+    fn estimate_gas_limit_all_zero_bytes() {
+        let input = vec![0u8; 10];
+        assert_eq!(
+            estimate_gas_limit(&input),
+            TX_BASE_GAS + 10 * CALLDATA_GAS_PER_ZERO_BYTE + GAS_LIMIT_SAFETY_MARGIN
+        );
+    }
+
+    #[test]
+    fn estimate_gas_limit_all_nonzero_bytes() {
+        let input = vec![0xffu8; 10];
+        assert_eq!(
+            estimate_gas_limit(&input),
+            TX_BASE_GAS + 10 * CALLDATA_GAS_PER_NONZERO_BYTE + GAS_LIMIT_SAFETY_MARGIN
+        );
+    }
+
+    #[test]
+    fn estimate_gas_limit_mixed_bytes() {
+        // 3 zero bytes + 7 non-zero bytes
+        let mut input = vec![0u8; 3];
+        input.extend_from_slice(&[0x01; 7]);
+        assert_eq!(
+            estimate_gas_limit(&input),
+            TX_BASE_GAS
+                + 3 * CALLDATA_GAS_PER_ZERO_BYTE
+                + 7 * CALLDATA_GAS_PER_NONZERO_BYTE
+                + GAS_LIMIT_SAFETY_MARGIN
+        );
+    }
+
+    #[test]
+    fn estimate_gas_limit_realistic_participant_data() {
+        // Simulate encoded blob tx data for 3 participants.
+        // Each participant is 25 bytes: 1 version (0x01) + 4 data_len (BE) + 20 address.
+        use crate::blob_tx_data::encode_blob_tx_data;
+
+        let participants = (1..=3)
+            .map(|i| BlobTxParticipant {
+                address: [i; 20].into(),
+                data_len: 1000 * i as usize,
+            })
+            .collect::<Vec<_>>();
+        let input = encode_blob_tx_data(&participants).unwrap();
+
+        // 3 participants * 25 bytes = 75 bytes
+        assert_eq!(input.len(), 75);
+
+        // Compute expected gas by counting actual zero/non-zero bytes
+        let zero_count = input.iter().filter(|&&b| b == 0).count() as u64;
+        let nonzero_count = input.len() as u64 - zero_count;
+        let expected_gas = TX_BASE_GAS
+            + zero_count * CALLDATA_GAS_PER_ZERO_BYTE
+            + nonzero_count * CALLDATA_GAS_PER_NONZERO_BYTE
+            + GAS_LIMIT_SAFETY_MARGIN;
+        assert_eq!(estimate_gas_limit(&input), expected_gas);
+
+        // Gas limit should be well under 100k for 3 participants
+        assert!(expected_gas < 30_000);
+    }
+
+    #[tokio::test]
+    async fn construct_blob_tx_uses_dynamic_gas_limit() -> Result<()> {
+        use crate::blob_tx_data::encode_blob_tx_data;
+
+        let chain_id = 999;
+        let wallet = LocalWallet::from_bytes(&hex::decode(DEV_PRIVKEY)?)?.with_chain_id(chain_id);
+        let gas_config = GasConfig {
+            max_fee_per_gas: 1u128,
+            max_fee_per_blob_gas: 1u128,
+            max_priority_fee_per_gas: 1u128,
+        };
+
+        // 1 participant
+        let participant_wallet = LocalWallet::from_bytes(&[1; 32])?;
+        let participants = vec![BlobTxParticipant {
+            address: participant_wallet.address(),
+            data_len: 500,
+        }];
+        let datas = vec![vec![0xaa; 500]];
+
+        let blob_tx = construct_blob_tx(
+            &load_kzg_settings()?,
+            Address::from_str(ADDRESS_ZERO)?,
+            &gas_config,
+            &TxParams { chain_id, nonce: 0 },
+            &wallet,
+            participants.clone(),
+            datas,
+        )?;
+
+        // Decode the tx and verify gas_limit matches estimate_gas_limit
+        let mut blob_tx_networking = &blob_tx.blob_tx_networking[1..];
+        let decoded_tx = BlobTransaction::decode_inner(&mut blob_tx_networking)?;
+
+        let expected_input = encode_blob_tx_data(&participants)?;
+        let expected_gas_limit = estimate_gas_limit(&expected_input);
+        assert_eq!(decoded_tx.transaction.gas_limit, expected_gas_limit);
+
+        // Gas limit should be well below the old hardcoded 100k for a single participant
+        assert!(
+            expected_gas_limit < 100_000,
+            "gas limit {} should be less than 100k for 1 participant",
+            expected_gas_limit
+        );
 
         Ok(())
     }

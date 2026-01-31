@@ -201,6 +201,15 @@ Phase 4 (mostly independent)
   4.5 (Grafana push) — independent
 ```
 
+## Phase 5: Post-Plan Improvements
+
+### [x] 5.1 Dynamic gas limit for blob transactions
+- **File:** `bundler/src/kzg.rs`
+- **Change:** Replace hardcoded `gas_limit: 100_000` in `construct_blob_tx` with dynamic calculation based on actual calldata size. Gas = 21,000 (base) + calldata cost (4 per zero byte, 16 per non-zero byte) + 5,000 safety margin.
+- **Why:** Hardcoded 100k gas wastes gas for small payloads and could be insufficient for very large participant lists. Dynamic calculation matches actual EVM intrinsic gas rules.
+
+---
+
 ## Key Files Modified Across All Phases
 
 | File | Phases |
