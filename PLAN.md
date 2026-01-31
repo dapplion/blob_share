@@ -295,6 +295,23 @@ Phase 4 (mostly independent)
   - Added 4 unit tests: `from_block_skips_malformed_blob_tx_from_sender`, `from_block_malformed_blob_tx_does_not_affect_valid_txs`, `from_block_malformed_blob_tx_from_non_sender_ignored`, `sync_block_clears_pending_for_malformed_blob_tx`.
 - **Why:** A single malformed blob transaction from a sender address (e.g., a third party sending a blob tx with unexpected input encoding) would cause `from_block` to return an error, crashing the entire block sync loop. The fix gracefully handles the error by logging a warning and still tracking the transaction for nonce accounting, preventing sync stalls.
 
+### [x] 5.10 Add unit tests for utils/mod.rs utility functions
+- **File:** `bundler/src/utils/mod.rs`
+- **Changes:**
+  - Added 42 unit tests covering previously untested utility functions:
+    - `vec_to_hex_0x_prefix`: 4 tests — empty input, single byte, multiple bytes, zero bytes.
+    - `hex_0x_prefix_to_vec`: 6 tests — with/without 0x prefix, empty strings, invalid hex, odd-length hex.
+    - Hex roundtrip: 1 test — encode then decode preserves data.
+    - `address_to_hex_lowercase`: 2 tests — zero address, non-zero address produces lowercase hex.
+    - `address_from_vec`: 4 tests — valid 20 bytes, too short, too long, empty input.
+    - `txhash_from_vec`: 4 tests — valid 32 bytes, too short, too long, empty input.
+    - `parse_basic_auth`: 5 tests — valid auth, password with colons, empty password, no colon, empty string.
+    - `wei_to_f64`: 4 tests — zero, one ETH, one gwei, sub-gwei truncation.
+    - `get_max_fee_per_blob_gas`: 3 tests — present (hex), missing field, hex string format.
+    - `extract_bearer_token`: 4 tests — valid token, missing header, wrong scheme, empty token.
+    - `tx_reth_to_ethers`: 5 tests — preserves chain_id, nonce, gas fields (including max_fee_per_blob_gas roundtrip), input, to address.
+- **Why:** `utils/mod.rs` contains core utility functions used across the entire bundler — hex encoding/decoding, address/hash byte conversion, authentication parsing, gas field extraction, and transaction format conversion. Despite being foundational infrastructure, only 3 of its 14 functions had test coverage. Error paths in `address_from_vec`, `txhash_from_vec`, `hex_0x_prefix_to_vec`, and `parse_basic_auth` were completely untested, risking silent breakage if these functions were ever modified.
+
 ### [x] 5.9 Resolve stale TODO in drop_reorged_blocks and add reorg balance accounting tests
 - **File:** `bundler/src/sync.rs`
 - **Changes:**
