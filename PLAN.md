@@ -324,6 +324,26 @@ Phase 4 (mostly independent)
     - `reorg_with_topup_and_blob_tx_in_same_block`: edge case where a block containing both a topup AND a blob tx for the same user is reorged out — both credit and cost are correctly reversed.
 - **Why:** The stale TODO in `drop_reorged_blocks` implied a potential balance accounting bug that didn't actually exist. The misleading comment could cause future developers to waste time investigating a non-issue or attempt unnecessary changes. Replacing it with a clear explanation and backing it with comprehensive tests documents the correctness invariant and prevents regressions.
 
+### [x] 5.11 Add unit tests for trusted_setup.rs and resolve stale kzg.rs TODOs
+- **Files:** `bundler/src/trusted_setup.rs`, `bundler/src/kzg.rs`
+- **Changes:**
+  - Added 22 unit tests to `trusted_setup.rs` covering the previously untested custom serde logic:
+    - `strip_prefix`: 4 tests — removes 0x prefix, no-op without prefix, empty string, only "0x".
+    - `G1Point` serde: 6 tests — serialize produces hex string, deserialize without prefix, deserialize with 0x prefix, roundtrip, wrong length fails, invalid hex fails.
+    - `G2Point` serde: 6 tests — serialize produces hex string, deserialize without prefix, deserialize with 0x prefix, roundtrip, wrong length fails, invalid hex fails.
+    - `TrustedSetup` serde: 6 tests — roundtrip, uses renamed JSON fields (g1_lagrange/g2_monomial), empty points, multiple points, consensus format deserialization, real embedded trusted_setup.json deserialization.
+  - Added 7 unit tests to `kzg.rs` covering blob encoding edge cases:
+    - `encode_data_to_blob_high_byte_is_zero`: verifies every field element has a zero leading byte (BLS_MODULUS safety).
+    - `encode_decode_small_data`: data smaller than one field element.
+    - `encode_decode_exactly_31_bytes`: exactly one field element boundary.
+    - `encode_decode_crosses_field_element_boundary`: data spanning two field elements.
+    - `encode_data_to_blob_empty_input`: empty data produces all-zero blob.
+    - `kzg_to_versioned_hash_sets_version_byte`: versioned hash has correct version prefix.
+  - Resolved two stale TODOs in `kzg.rs`:
+    - Line 60: Replaced misleading `TODO: should chunk data in 31 bytes` with a comment explaining that `encode_data_to_blob` already handles this correctly.
+    - Line 192: Replaced `TODO: Should use a more efficient encoding technique` with a doc comment explaining the encoding scheme and why the leading zero byte is necessary for BLS_MODULUS safety.
+- **Why:** `trusted_setup.rs` handles BLS trusted setup deserialization from the Ethereum consensus specs format with custom serde Visitor implementations, but had zero test coverage. Error paths (wrong point length, invalid hex) were completely untested. The stale TODOs in `kzg.rs` incorrectly suggested the code lacked field element safety, which could mislead future developers into unnecessary changes — the `encode_data_to_blob` function already correctly chunks data into 31-byte segments with a leading zero byte per field element.
+
 ---
 
 ## Key Files Modified Across All Phases

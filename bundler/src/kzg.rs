@@ -57,8 +57,8 @@ pub(crate) fn construct_blob_tx(
         data.extend_from_slice(&item);
     }
 
-    // TODO: should chunk data in 31 bytes to ensure each field element if < BLS_MODULUS
-    // pad data to fit blob
+    // Pad data to fit blob. Field element safety (each element < BLS_MODULUS) is handled
+    // by encode_data_to_blob which chunks data into 31-byte segments with a leading zero byte.
     let target_data_len = FIELD_ELEMENTS_PER_BLOB * 31;
     match data.len().cmp(&target_data_len) {
         Ordering::Less => data.extend(vec![0; target_data_len - data.len()]),
@@ -188,9 +188,13 @@ pub(crate) fn estimate_gas_limit(input: &[u8]) -> u64 {
     TX_BASE_GAS + calldata_gas + GAS_LIMIT_SAFETY_MARGIN
 }
 
-// Chunk data in 31 bytes to ensure each field element is < BLS_MODULUS
-// TODO: Should use a more efficient encoding technique in the future
-// Reference: https://github.com/ethpandaops/goomy-blob/blob/e4b460b17b6e2748995ef3d7b75cbe967dc49da4/txbuilder/blob_encode.go#L36
+/// Encode raw data into blob format by chunking into 31-byte field elements.
+///
+/// Each 32-byte field element in the blob has a leading zero byte followed by 31 bytes of data.
+/// The zero high byte ensures the field element value stays below BLS_MODULUS, which is required
+/// for valid KZG commitments and proofs.
+///
+/// Reference: <https://github.com/ethpandaops/goomy-blob/blob/e4b460b17b6e2748995ef3d7b75cbe967dc49da4/txbuilder/blob_encode.go#L36>
 fn encode_data_to_blob(data: &[u8]) -> Vec<u8> {
     let mut chunked_blob_data = vec![0u8; BYTES_PER_BLOB];
     for (field_index, chunk) in data.chunks(31).enumerate() {
@@ -239,6 +243,64 @@ mod tests {
         let data = vec![0xaa; MAX_USABLE_BLOB_DATA_LEN];
         let blob = encode_data_to_blob(&data);
         assert_eq!(hex::encode(&decode_blob_to_data(&blob)), hex::encode(&data));
+    }
+
+    #[test]
+    fn encode_data_to_blob_high_byte_is_zero() {
+        // Verify each 32-byte field element has a zero leading byte,
+        // ensuring the value is < BLS_MODULUS.
+        let data = vec![0xff; MAX_USABLE_BLOB_DATA_LEN];
+        let blob = encode_data_to_blob(&data);
+        for (i, chunk) in blob.chunks(32).enumerate() {
+            assert_eq!(
+                chunk[0], 0,
+                "field element {} has non-zero high byte: 0x{:02x}",
+                i, chunk[0]
+            );
+        }
+    }
+
+    #[test]
+    fn encode_decode_small_data() {
+        // Data smaller than 31 bytes fits in a single field element
+        let data = vec![0x42; 10];
+        let blob = encode_data_to_blob(&data);
+        let decoded = decode_blob_to_data(&blob);
+        assert_eq!(&decoded[..10], &data[..]);
+    }
+
+    #[test]
+    fn encode_decode_exactly_31_bytes() {
+        // Exactly one field element worth of data
+        let data = vec![0xab; 31];
+        let blob = encode_data_to_blob(&data);
+        let decoded = decode_blob_to_data(&blob);
+        assert_eq!(&decoded[..31], &data[..]);
+    }
+
+    #[test]
+    fn encode_decode_crosses_field_element_boundary() {
+        // 32 bytes spans two field elements (31 + 1)
+        let data: Vec<u8> = (0..32).collect();
+        let blob = encode_data_to_blob(&data);
+        let decoded = decode_blob_to_data(&blob);
+        assert_eq!(&decoded[..32], &data[..]);
+    }
+
+    #[test]
+    fn encode_data_to_blob_empty_input() {
+        let blob = encode_data_to_blob(&[]);
+        // All bytes should be zero
+        assert!(blob.iter().all(|&b| b == 0));
+        assert_eq!(blob.len(), c_kzg::BYTES_PER_BLOB);
+    }
+
+    #[test]
+    fn kzg_to_versioned_hash_sets_version_byte() {
+        use super::kzg_to_versioned_hash;
+        let commitment = c_kzg::KzgCommitment::from([0u8; 48]);
+        let hash = kzg_to_versioned_hash(&commitment);
+        assert_eq!(hash[0], super::VERSIONED_HASH_VERSION_KZG);
     }
 
     #[tokio::test]
