@@ -329,7 +329,7 @@ async fn test_post_two_data_intents_up_to_inclusion(
     let mut published_data = retry_with_timeout(
         || async {
             blob_consumer
-                .extract_data_participation_from_block_hash(intent_1_block)
+                .extract_data_participation_from_block_hash(intent_1_block, wallet.address())
                 .await
         },
         Duration::from_secs(5),

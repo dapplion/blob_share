@@ -8,6 +8,8 @@ use ethers::{
 };
 use eyre::{eyre, Context, Result};
 
+use ethers::signers::LocalWallet;
+
 use crate::{
     backoff::BackoffState,
     blob_tx_data::BlobTxParticipant,
@@ -142,8 +144,10 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
             // No viable set of intents at current gas prices. Check if this is
             // caused by a nonce deadlock: all pending blob txs are underpriced
             // and cannot be repriced because no intents can afford current gas.
-            if let Some((stuck_nonce, prev_gas)) = app_data.detect_nonce_deadlock().await {
-                return send_self_transfer(app_data, stuck_nonce, prev_gas).await;
+            if let Some((stuck_sender, stuck_nonce, prev_gas)) =
+                app_data.detect_nonce_deadlock().await
+            {
+                return send_self_transfer(app_data, stuck_sender, stuck_nonce, prev_gas).await;
             }
             return Ok(SendResult::NoViableSet);
         }
@@ -163,9 +167,24 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     // TODO: Do this sequence atomic, lock data intent rows here
     let data_intents = app_data.data_intents_by_id(&data_intent_ids).await?;
 
-    let sender_address = app_data.sender_wallet.address();
+    // Pick the sender with the fewest pending transactions
+    let sender_addresses = app_data.sender_addresses();
+    let (sender_address, sender_wallet) = {
+        let mut best: Option<(ethers::types::Address, usize)> = None;
+        for addr in &sender_addresses {
+            let count = app_data.pending_tx_count_for_sender(addr).await;
+            if best.is_none() || count < best.unwrap().1 {
+                best = Some((*addr, count));
+            }
+        }
+        let addr = best.ok_or_else(|| eyre!("no sender wallets configured"))?.0;
+        let wallet = app_data
+            .wallet_for_address(&addr)
+            .ok_or_else(|| eyre!("wallet not found for sender {}", addr))?;
+        (addr, wallet)
+    };
 
-    // Make getting the nonce reliable + heing able to send multiple txs at once
+    // Make getting the nonce reliable + being able to send multiple txs at once
     let nonce = match app_data.get_next_available_nonce(sender_address).await? {
         NonceStatus::NotAvailable => return Ok(SendResult::NoNonceAvailable),
         NonceStatus::Available(nonce) => nonce,
@@ -175,14 +194,21 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
         }
     };
 
-    let blob_tx =
-        match construct_and_send_tx(app_data.clone(), nonce, &gas_config, data_intents).await {
-            Ok(blob_tx) => blob_tx,
-            Err(e) => {
-                // TODO: consider persisting the existance of this transaction before sending it out
-                return Err(e);
-            }
-        };
+    let blob_tx = match construct_and_send_tx(
+        app_data.clone(),
+        nonce,
+        &gas_config,
+        data_intents,
+        sender_wallet,
+    )
+    .await
+    {
+        Ok(blob_tx) => blob_tx,
+        Err(e) => {
+            // TODO: consider persisting the existance of this transaction before sending it out
+            return Err(e);
+        }
+    };
 
     metrics::PACKED_BLOB_USED_LEN.observe(blob_tx.tx_summary.used_bytes as f64);
     metrics::PACKED_BLOB_ITEMS.observe(blob_tx.tx_summary.participants.len() as f64);
@@ -205,12 +231,13 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
     Ok(SendResult::SentBlobTx(blob_tx.tx_hash))
 }
 
-#[tracing::instrument(skip(app_data, gas_config, next_blob_items))]
+#[tracing::instrument(skip(app_data, gas_config, next_blob_items, wallet))]
 async fn construct_and_send_tx(
     app_data: Arc<AppData>,
     nonce: u64,
     gas_config: &GasConfig,
     next_blob_items: Vec<DataIntentDbRowFull>,
+    wallet: &LocalWallet,
 ) -> Result<BlobTx> {
     let intent_ids = next_blob_items.iter().map(|i| i.id).collect::<Vec<_>>();
 
@@ -245,7 +272,7 @@ async fn construct_and_send_tx(
         app_data.config.l1_inbox_address,
         gas_config,
         &tx_params,
-        &app_data.sender_wallet,
+        wallet,
         participants,
         datas,
     )?;
@@ -303,11 +330,10 @@ async fn construct_and_send_tx(
 #[tracing::instrument(skip(app_data))]
 async fn send_self_transfer(
     app_data: Arc<AppData>,
+    sender_address: ethers::types::Address,
     stuck_nonce: u64,
     prev_gas: GasConfig,
 ) -> Result<SendResult> {
-    let sender_address = app_data.sender_wallet.address();
-
     // Estimate current gas prices
     let (max_fee_per_gas, max_priority_fee_per_gas) =
         app_data.provider.estimate_eip1559_fees().await?;
@@ -341,8 +367,10 @@ async fn send_self_transfer(
     };
 
     let typed_tx: TypedTransaction = tx_request.into();
-    let signature = app_data
-        .sender_wallet
+    let wallet = app_data
+        .wallet_for_address(&sender_address)
+        .ok_or_else(|| eyre!("wallet not found for sender {}", sender_address))?;
+    let signature = wallet
         .sign_transaction(&typed_tx)
         .await
         .wrap_err("failed to sign self-transfer transaction")?;
@@ -361,7 +389,7 @@ async fn send_self_transfer(
 
     // Register the self-transfer in BlockSync so nonce tracking stays consistent
     app_data
-        .register_sent_self_transfer(stuck_nonce, tx_hash, gas_config)
+        .register_sent_self_transfer(sender_address, stuck_nonce, tx_hash, gas_config)
         .await;
 
     metrics::NONCE_DEADLOCK_SELF_TRANSFERS.inc();

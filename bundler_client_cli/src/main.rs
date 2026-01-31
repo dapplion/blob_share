@@ -134,7 +134,7 @@ async fn maybe_fund_sender_account(
         let client = SignerMiddleware::new(provider.clone(), wallet.clone());
 
         let tx = TransactionRequest::new()
-            .to(sender.address)
+            .to(sender.addresses[0])
             .value(args.balance_upper_bound.saturating_sub(balance));
 
         let pending_tx = client
@@ -143,7 +143,7 @@ async fn maybe_fund_sender_account(
             .wrap_err("send fund tx")?;
         println!(
             "sent funding transaction to sender address {}, hash: {}",
-            sender.address,
+            sender.addresses[0],
             pending_tx.tx_hash()
         );
 

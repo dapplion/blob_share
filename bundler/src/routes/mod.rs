@@ -3,7 +3,6 @@ use bundler_client::types::{
     DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary, GasRecommendation,
     GasResponse, SenderDetails, SyncStatus, SyncStatusBlock,
 };
-use ethers::signers::Signer;
 use ethers::types::Address;
 use eyre::{eyre, Result};
 use std::sync::Arc;
@@ -28,7 +27,7 @@ pub(crate) async fn get_health(
 #[get("/v1/sender")]
 pub(crate) async fn get_sender(data: web::Data<Arc<AppData>>) -> impl Responder {
     HttpResponse::Ok().json(SenderDetails {
-        address: data.sender_wallet.address(),
+        addresses: data.sender_addresses(),
     })
 }
 

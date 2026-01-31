@@ -63,6 +63,7 @@ pub struct TestHarness {
     lodestar_instance: Option<LodestarInstance>,
     pub temp_data_dir: TempDir,
     pub sender_address: Address,
+    pub sender_addresses: Vec<Address>,
     app_status: AppStatus,
 }
 
@@ -204,12 +205,22 @@ impl TestHarness {
             metrics_push_interval_sec: 15,
             metrics_push_basic_auth: None,
             metrics_push_format: PushMetricsFormat::PlainText,
+            db_max_connections: 10,
+            node_poll_interval_sec: 12,
+            rate_limit_per_second: 100,
+            rate_limit_burst: 200,
+            prune_after_blocks: 0,
+            evict_stale_intent_hours: 0,
+            beacon_api_url: None,
+            max_data_size: 126976 * 6,
+            sender_count: 1,
         };
 
         let app = App::build(args).await.unwrap();
 
         let base_url = format!("http://127.0.0.1:{}", app.port());
-        let sender_address = app.sender_address();
+        let sender_addresses = app.sender_addresses();
+        let sender_address = sender_addresses[0];
 
         let client = Client::new(&base_url).unwrap();
 
@@ -221,6 +232,7 @@ impl TestHarness {
             lodestar_instance,
             temp_data_dir,
             sender_address,
+            sender_addresses,
             app_status: AppStatus::Built(app),
         }
     }
@@ -287,7 +299,7 @@ impl TestHarness {
         get_eth_provider_urls(&self.geth_instance, &self.mock_ethereum_server)
     }
 
-    pub fn get_blob_consumer(&self, participant_address: Address) -> BlobConsumer {
+    pub fn get_blob_consumer(&self, _participant_address: Address) -> BlobConsumer {
         let beacon_api_base_url = match &self.lodestar_instance {
             Some(lodestar_instance) => lodestar_instance.http_url(),
             None => panic!("no beacon node is configured"),
@@ -296,8 +308,7 @@ impl TestHarness {
         BlobConsumer::new(
             beacon_api_base_url,
             &self.eth_provider_urls().http,
-            self.sender_address,
-            participant_address,
+            self.sender_addresses.iter().copied().collect(),
         )
         .unwrap()
     }
@@ -531,7 +542,7 @@ impl TestHarness {
 
         let tx = TransactionRequest::new()
             .from(wallet.address())
-            .to(sender.address)
+            .to(sender.addresses[0])
             .value(value);
         let tx = wallet.send_transaction(tx, None).await.unwrap();
         timeout(Duration::from_secs(30), tx.confirmations(1))

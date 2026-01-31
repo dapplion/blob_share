@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt, mem};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt, mem,
+};
 
 use async_trait::async_trait;
 use bundler_client::types::{BlockGasSummary, SyncStatusBlock};
@@ -60,17 +63,17 @@ type Nonce = u64;
 pub struct BlockSync {
     anchor_block: AnchorBlock,
     unfinalized_head_chain: Vec<BlockSummary>,
-    /// Tracks transactions not included in any block of the unfinalized head chain. Transaction
-    /// can become under-priced, which is a temporary state.
-    pending_transactions: HashMap<Nonce, BlobTxSummary>,
-    repriced_transactions: HashMap<Nonce, Vec<BlobTxSummary>>,
+    /// Tracks transactions not included in any block of the unfinalized head chain, per sender.
+    /// Transaction can become under-priced, which is a temporary state.
+    pending_transactions: HashMap<Address, HashMap<Nonce, BlobTxSummary>>,
+    repriced_transactions: HashMap<Address, HashMap<Nonce, Vec<BlobTxSummary>>>,
     config: BlockSyncConfig,
 
     cache_transactions_by_hash: HashMap<TxHash, TxInclusion>,
 }
 
 pub struct BlockSyncConfig {
-    pub target_address: Address,
+    pub target_addresses: HashSet<Address>,
     pub finalize_depth: u64,
     pub max_pending_transactions: u64,
 }
@@ -142,15 +145,14 @@ impl BlockSync {
         let head_gas = self.get_head_gas();
         let head_hash = self.get_head().hash;
 
-        // TODO: Support multiple sender addresses
-        assert_eq!(address, self.config.target_address);
-
         let transaction_count_at_head = provider.get_transaction_count(address, head_hash).await?;
+
+        let sender_pending = self.pending_transactions.get(&address);
 
         for next_nonce in transaction_count_at_head
             ..transaction_count_at_head + self.config.max_pending_transactions
         {
-            match self.pending_transactions.get(&next_nonce) {
+            match sender_pending.and_then(|m| m.get(&next_nonce)) {
                 None => return Ok(NonceStatus::Available(next_nonce)),
                 Some(tx) => {
                     if tx.is_underpriced(head_gas) {
@@ -178,6 +180,7 @@ impl BlockSync {
         let cost_of_pending_txs = self
             .pending_transactions
             .values()
+            .flat_map(|m| m.values())
             .map(|tx| tx.cost_to_participant(address, None))
             .sum::<u128>();
 
@@ -194,6 +197,7 @@ impl BlockSync {
     pub fn pending_txs_data_len(&self, address: &Address) -> usize {
         self.pending_transactions
             .values()
+            .flat_map(|m| m.values())
             .map(|tx| {
                 tx.participants
                     .iter()
@@ -201,6 +205,17 @@ impl BlockSync {
                     .sum::<usize>()
             })
             .sum()
+    }
+
+    /// Return the number of pending transactions for a given sender address.
+    pub fn pending_tx_count_for_sender(&self, sender: &Address) -> usize {
+        self.pending_transactions.get(sender).map_or(0, |m| m.len())
+    }
+
+    /// Return a reference to the set of target sender addresses.
+    #[allow(dead_code)]
+    pub fn target_addresses(&self) -> &HashSet<Address> {
+        &self.config.target_addresses
     }
 
     pub fn get_tx_status(&self, tx_hash: TxHash) -> Option<&TxInclusion> {
@@ -212,40 +227,52 @@ impl BlockSync {
     /// happens, no reprice is possible because `pack_items` cannot find a viable set of
     /// intents at current gas prices.
     ///
-    /// Returns `Some((nonce, gas))` for the lowest underpriced nonce if deadlocked, or `None`.
-    pub fn detect_nonce_deadlock(&self) -> Option<(u64, GasConfig)> {
-        if self.pending_transactions.is_empty() {
+    /// Returns `Some((sender, nonce, gas))` for the lowest underpriced nonce if deadlocked,
+    /// or `None`.
+    pub fn detect_nonce_deadlock(&self) -> Option<(Address, u64, GasConfig)> {
+        let all_pending: Vec<_> = self
+            .pending_transactions
+            .iter()
+            .flat_map(|(addr, m)| m.iter().map(move |(nonce, tx)| (*addr, *nonce, tx)))
+            .collect();
+
+        if all_pending.is_empty() {
             return None;
         }
 
         let head_gas = self.get_head_gas();
 
         // All pending transactions must be underpriced for a deadlock
-        let all_underpriced = self
-            .pending_transactions
-            .values()
-            .all(|tx| tx.is_underpriced(head_gas));
+        let all_underpriced = all_pending
+            .iter()
+            .all(|(_, _, tx)| tx.is_underpriced(head_gas));
 
         if !all_underpriced {
             return None;
         }
 
         // Return the lowest nonce that is underpriced - this is the one blocking progress
-        self.pending_transactions
+        all_pending
             .iter()
-            .min_by_key(|(nonce, _)| *nonce)
-            .map(|(nonce, tx)| (*nonce, tx.gas))
+            .min_by_key(|(_, nonce, _)| nonce)
+            .map(|(addr, nonce, tx)| (*addr, *nonce, tx.gas))
     }
 
     /// Register a self-transfer transaction sent to resolve a nonce deadlock.
     /// This replaces the pending blob tx at the given nonce, moving it to repriced.
-    pub fn register_sent_self_transfer(&mut self, nonce: u64, tx_hash: TxHash, gas: GasConfig) {
+    pub fn register_sent_self_transfer(
+        &mut self,
+        sender: Address,
+        nonce: u64,
+        tx_hash: TxHash,
+        gas: GasConfig,
+    ) {
+        let sender_pending = self.pending_transactions.entry(sender).or_default();
+        let sender_repriced = self.repriced_transactions.entry(sender).or_default();
+
         // Move the old pending blob tx at this nonce (if any) to repriced
-        if let Some(old_tx) = self.pending_transactions.remove(&nonce) {
-            self.repriced_transactions
-                .entry(nonce)
-                .or_default()
-                .push(old_tx);
+        if let Some(old_tx) = sender_pending.remove(&nonce) {
+            sender_repriced.entry(nonce).or_default().push(old_tx);
         }
 
         // Self-transfers don't consume blob gas, so set max_fee_per_blob_gas to MAX
@@ -260,7 +287,7 @@ impl BlockSync {
         let summary = BlobTxSummary {
             participants: vec![],
             tx_hash,
-            from: self.config.target_address,
+            from: sender,
             nonce,
             used_bytes: 0,
             gas: effective_gas,
@@ -273,7 +300,7 @@ impl BlockSync {
             },
         );
 
-        self.pending_transactions.insert(nonce, summary);
+        sender_pending.insert(nonce, summary);
     }
 
     /// Register valid accepted blob transaction by the EL node.
@@ -281,21 +308,22 @@ impl BlockSync {
     /// Allows to replace transactions with the same nonce. Only valid accepted transactions should
     /// be added via this fn, which assumes that the re-pricing is correct.
     pub fn register_sent_blob_tx(&mut self, tx: BlobTxSummary) {
-        // TODO: Handle multiple senders
-        assert_eq!(tx.from, self.config.target_address);
+        let sender = tx.from;
+        let sender_pending = self.pending_transactions.entry(sender).or_default();
+        let sender_repriced = self.repriced_transactions.entry(sender).or_default();
 
-        if let Some(tx) = self.pending_transactions.remove(&tx.nonce) {
-            self.repriced_transactions
-                .entry(tx.nonce)
+        if let Some(old_tx) = sender_pending.remove(&tx.nonce) {
+            sender_repriced
+                .entry(old_tx.nonce)
                 .or_default()
-                .push(tx);
+                .push(old_tx);
         }
 
         // Update cache
         self.cache_transactions_by_hash
             .insert(tx.tx_hash, TxInclusion::Pending { tx_gas: tx.gas });
 
-        self.pending_transactions.insert(tx.nonce, tx);
+        sender_pending.insert(tx.nonce, tx);
     }
 
     /// Advance anchor block if distance with head is greater than FINALIZE_DEPTH
@@ -329,10 +357,12 @@ impl BlockSync {
             self.anchor_block.apply_finalized_block(block);
 
             for tx in &block.blob_txs {
-                if let Some(txs) = self.repriced_transactions.remove(&tx.nonce) {
-                    for repriced_tx in txs {
-                        self.cache_transactions_by_hash.remove(&repriced_tx.tx_hash);
-                        repriced_transactions.push(repriced_tx);
+                if let Some(sender_repriced) = self.repriced_transactions.get_mut(&tx.from) {
+                    if let Some(txs) = sender_repriced.remove(&tx.nonce) {
+                        for repriced_tx in txs {
+                            self.cache_transactions_by_hash.remove(&repriced_tx.tx_hash);
+                            repriced_transactions.push(repriced_tx);
+                        }
                     }
                 }
                 self.cache_transactions_by_hash.remove(&tx.tx_hash);
@@ -403,7 +433,7 @@ impl BlockSync {
     /// re-orgs gracefully, the caller should recursively fetch all necessary blocks until finding
     /// a known ancenstor.
     fn sync_next_head_parent_known(&mut self, block: BlockWithTxs) -> Result<SyncBlockOutcome> {
-        let block = BlockSummary::from_block(block, self.config.target_address)?;
+        let block = BlockSummary::from_block(block, &self.config.target_addresses)?;
 
         if self.is_known_block(block.hash) {
             // Block already known
@@ -472,7 +502,10 @@ impl BlockSync {
         for reorged_block in &reorged_blocks {
             // TODO: do accounting on the balances cache
             for tx in &reorged_block.blob_txs {
-                self.pending_transactions.insert(tx.nonce, tx.clone());
+                self.pending_transactions
+                    .entry(tx.from)
+                    .or_default()
+                    .insert(tx.nonce, tx.clone());
                 self.cache_transactions_by_hash
                     .insert(tx.tx_hash, TxInclusion::Pending { tx_gas: tx.gas });
             }
@@ -484,7 +517,9 @@ impl BlockSync {
     fn sync_block(&mut self, block: BlockSummary) {
         // Drop pending transactions
         for tx in &block.blob_txs {
-            self.pending_transactions.remove(&tx.nonce);
+            if let Some(sender_pending) = self.pending_transactions.get_mut(&tx.from) {
+                sender_pending.remove(&tx.nonce);
+            }
             self.cache_transactions_by_hash.insert(
                 tx.tx_hash,
                 TxInclusion::Included {
@@ -642,20 +677,22 @@ impl TopupTx {
 }
 
 impl BlockSummary {
-    fn from_block(block: BlockWithTxs, target_address: Address) -> Result<Self> {
+    fn from_block(block: BlockWithTxs, target_addresses: &HashSet<Address>) -> Result<Self> {
         let mut topup_txs = vec![];
         let mut blob_txs = vec![];
 
         for tx in &block.transactions {
-            if tx.to == Some(target_address) {
-                topup_txs.push(TopupTx {
-                    from: tx.from,
-                    value: tx.value.as_u128(),
-                });
+            if let Some(to) = tx.to {
+                if target_addresses.contains(&to) {
+                    topup_txs.push(TopupTx {
+                        from: tx.from,
+                        value: tx.value.as_u128(),
+                    });
+                }
             }
 
             // TODO: Handle invalid blob tx errors more gracefully
-            if tx.from == target_address {
+            if target_addresses.contains(&tx.from) {
                 if let Some(blob_tx) = BlobTxSummary::from_tx(tx)? {
                     blob_txs.push(blob_tx)
                 }
@@ -793,7 +830,7 @@ mod tests {
         block.transactions.push(generate_topup_tx(addr_2, 2));
         block.transactions.push(generate_topup_tx(addr_2, 2));
 
-        let summary = BlockSummary::from_block(block, ADDRESS_SENDER).unwrap();
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
         assert_eq!(summary.balance_delta(&addr_1), 1);
         assert_eq!(summary.balance_delta(&addr_2), 2 * 2);
     }
@@ -1030,7 +1067,12 @@ mod tests {
     }
 
     async fn pending_tx_len(sync: &RwLock<BlockSync>) -> usize {
-        sync.read().await.pending_transactions.len()
+        sync.read()
+            .await
+            .pending_transactions
+            .values()
+            .map(|m| m.len())
+            .sum()
     }
 
     fn new_block_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
@@ -1040,7 +1082,7 @@ mod tests {
     fn new_block_sync_with_gas(hash: H256, number: u64, gas: BlockGasSummary) -> RwLock<BlockSync> {
         RwLock::new(BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1059,7 +1101,7 @@ mod tests {
     fn detect_nonce_deadlock_no_pending_txs() {
         let sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1079,7 +1121,7 @@ mod tests {
     fn detect_nonce_deadlock_not_underpriced() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1107,7 +1149,7 @@ mod tests {
     fn detect_nonce_deadlock_all_underpriced() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1130,7 +1172,8 @@ mod tests {
 
         let result = sync.detect_nonce_deadlock();
         assert!(result.is_some());
-        let (nonce, gas) = result.unwrap();
+        let (addr, nonce, gas) = result.unwrap();
+        assert_eq!(addr, ADDRESS_SENDER);
         assert_eq!(nonce, 0);
         assert_eq!(gas.max_fee_per_gas, 1);
     }
@@ -1139,7 +1182,7 @@ mod tests {
     fn detect_nonce_deadlock_mixed_returns_none() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1177,7 +1220,7 @@ mod tests {
     fn detect_nonce_deadlock_returns_lowest_nonce() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1200,7 +1243,7 @@ mod tests {
 
         let result = sync.detect_nonce_deadlock();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().0, 3); // Should return lowest nonce
+        assert_eq!(result.unwrap().1, 3); // Should return lowest nonce
     }
 
     // --- Self-transfer registration tests ---
@@ -1209,7 +1252,7 @@ mod tests {
     fn register_self_transfer_replaces_pending_tx() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1233,10 +1276,11 @@ mod tests {
             max_fee_per_gas: 100,
             max_fee_per_blob_gas: 0,
         };
-        sync.register_sent_self_transfer(0, self_tx_hash, new_gas);
+        sync.register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, new_gas);
 
         // The pending tx at nonce 0 should now be the self-transfer
-        let pending = sync.pending_transactions.get(&0).unwrap();
+        let sender_pending = sync.pending_transactions.get(&ADDRESS_SENDER).unwrap();
+        let pending = sender_pending.get(&0).unwrap();
         assert_eq!(pending.tx_hash, self_tx_hash);
         assert_eq!(pending.participants.len(), 0);
         // EVM gas fields should match, blob gas is set to MAX for self-transfers
@@ -1248,7 +1292,8 @@ mod tests {
         assert_eq!(pending.gas.max_fee_per_blob_gas, u128::MAX);
 
         // Old tx should be in repriced
-        let repriced = sync.repriced_transactions.get(&0).unwrap();
+        let sender_repriced = sync.repriced_transactions.get(&ADDRESS_SENDER).unwrap();
+        let repriced = sender_repriced.get(&0).unwrap();
         assert_eq!(repriced.len(), 1);
         assert_eq!(repriced[0].tx_hash, old_tx_hash);
 
@@ -1260,7 +1305,7 @@ mod tests {
     fn register_self_transfer_without_prior_pending() {
         let mut sync = BlockSync::new(
             BlockSyncConfig {
-                target_address: ADDRESS_SENDER,
+                target_addresses: HashSet::from([ADDRESS_SENDER]),
                 finalize_depth: 32,
                 max_pending_transactions: 6,
             },
@@ -1279,15 +1324,19 @@ mod tests {
             max_fee_per_gas: 50,
             max_fee_per_blob_gas: 0,
         };
-        sync.register_sent_self_transfer(0, self_tx_hash, gas);
+        sync.register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, gas);
 
         // Should be registered as pending with blob gas set to MAX
-        let pending = sync.pending_transactions.get(&0).unwrap();
+        let sender_pending = sync.pending_transactions.get(&ADDRESS_SENDER).unwrap();
+        let pending = sender_pending.get(&0).unwrap();
         assert_eq!(pending.tx_hash, self_tx_hash);
         assert_eq!(pending.gas.max_fee_per_blob_gas, u128::MAX);
 
-        // No repriced entries
-        assert!(sync.repriced_transactions.is_empty());
+        // No repriced entries (the sender entry exists but has no nonce entries)
+        assert!(sync
+            .repriced_transactions
+            .get(&ADDRESS_SENDER)
+            .map_or(true, |m| m.is_empty()));
     }
 
     #[tokio::test]
@@ -1325,7 +1374,7 @@ mod tests {
         };
         sync.write()
             .await
-            .register_sent_self_transfer(0, self_tx_hash, self_gas);
+            .register_sent_self_transfer(ADDRESS_SENDER, 0, self_tx_hash, self_gas);
 
         // Self-transfer is NOT underpriced (max_fee=200 > base_fee=100)
         // So deadlock should be resolved
@@ -1372,5 +1421,225 @@ mod tests {
         async fn get_transaction_count(&self, _from: Address, _block_hash: H256) -> Result<u64> {
             Ok(self.count)
         }
+    }
+
+    // --- Multi-sender tests ---
+
+    const ADDRESS_SENDER_2: Address = H160([0xcd; 20]);
+
+    fn new_multi_sender_sync(hash: H256, number: u64) -> RwLock<BlockSync> {
+        RwLock::new(BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER, ADDRESS_SENDER_2]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash,
+                number,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        ))
+    }
+
+    fn generate_pending_blob_tx_from(
+        sender: Address,
+        nonce: u64,
+        participant: Address,
+    ) -> BlobTxSummary {
+        let participant = BlobTxParticipant {
+            address: participant,
+            data_len: BYTES_PER_BLOB,
+        };
+        BlobTxSummary {
+            tx_hash: H256::from_low_u64_be(nonce * 100 + sender.0[0] as u64),
+            from: sender,
+            nonce,
+            participants: vec![participant],
+            used_bytes: BYTES_PER_BLOB,
+            gas: GasConfig {
+                max_priority_fee_per_gas: 0,
+                max_fee_per_gas: 1,
+                max_fee_per_blob_gas: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn multi_sender_independent_pending_tracking() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER, ADDRESS_SENDER_2]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary::default(),
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+
+        // Register pending tx for sender 1 at nonce 0
+        sync.register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER, 0, user));
+        // Register pending tx for sender 2 at nonce 0 (same nonce, different sender)
+        sync.register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER_2, 0, user));
+
+        // Each sender should have exactly 1 pending tx
+        assert_eq!(sync.pending_tx_count_for_sender(&ADDRESS_SENDER), 1);
+        assert_eq!(sync.pending_tx_count_for_sender(&ADDRESS_SENDER_2), 1);
+
+        // Register another tx for sender 1 at nonce 1
+        sync.register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER, 1, user));
+        assert_eq!(sync.pending_tx_count_for_sender(&ADDRESS_SENDER), 2);
+        assert_eq!(sync.pending_tx_count_for_sender(&ADDRESS_SENDER_2), 1);
+    }
+
+    #[test]
+    fn multi_sender_block_scanning() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let user = get_addr(1);
+        let target_addrs = HashSet::from([ADDRESS_SENDER, ADDRESS_SENDER_2]);
+
+        // Add a topup to sender 1
+        block.transactions.push(generate_topup_tx(user, 100));
+
+        // Add a topup to sender 2
+        let mut topup_tx2 = Transaction::default();
+        topup_tx2.from = user;
+        topup_tx2.to = Some(ADDRESS_SENDER_2);
+        topup_tx2.value = 200.into();
+        block.transactions.push(topup_tx2);
+
+        let summary = BlockSummary::from_block(block, &target_addrs).unwrap();
+        // Should detect topups to both sender addresses
+        assert_eq!(summary.topup_txs.len(), 2);
+        assert_eq!(summary.balance_delta(&user), 100 + 200);
+    }
+
+    #[tokio::test]
+    async fn multi_sender_nonce_tracking() {
+        let sync = new_multi_sender_sync(get_hash(0), 0);
+        let provider = MockEthereumProvider::default();
+        let user = get_addr(1);
+
+        // Register pending tx for sender 1 at nonce 0
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER, 0, user));
+
+        // Sender 1 nonce 0 is taken, next available should be 1
+        let status = sync
+            .read()
+            .await
+            .get_next_available_nonce(&provider, ADDRESS_SENDER)
+            .await
+            .unwrap();
+        assert!(matches!(status, NonceStatus::Available(1)));
+
+        // Sender 2 has no pending txs, next available should be 0
+        let status = sync
+            .read()
+            .await
+            .get_next_available_nonce(&provider, ADDRESS_SENDER_2)
+            .await
+            .unwrap();
+        assert!(matches!(status, NonceStatus::Available(0)));
+    }
+
+    #[tokio::test]
+    async fn multi_sender_reorg_restores_to_correct_sender() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_multi_sender_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        // Block 1 with a blob tx from sender 1
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        // Register the pending tx first
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER, 0, user));
+        // Simulate inclusion: add the blob tx to the block
+        block_1.transactions.push(generate_blob_tx(0, user)); // from ADDRESS_SENDER
+        sync_next_block(&sync, &provider, block_1).await;
+        assert_eq!(
+            sync.read()
+                .await
+                .pending_tx_count_for_sender(&ADDRESS_SENDER),
+            0
+        );
+
+        // Block 2a with a blob tx from sender 2
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER_2, 0, user));
+        // Create a blob tx from sender 2
+        let mut blob_tx_s2 = generate_blob_tx(0, user);
+        blob_tx_s2.from = ADDRESS_SENDER_2;
+        block_2a.transactions.push(blob_tx_s2);
+        sync_next_block(&sync, &provider, block_2a).await;
+        assert_eq!(
+            sync.read()
+                .await
+                .pending_tx_count_for_sender(&ADDRESS_SENDER_2),
+            0
+        );
+
+        // Now reorg: block_2b doesn't include sender 2's tx
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // Sender 2's tx should be back in pending
+        assert_eq!(
+            sync.read()
+                .await
+                .pending_tx_count_for_sender(&ADDRESS_SENDER_2),
+            1
+        );
+    }
+
+    #[test]
+    fn multi_sender_deadlock_detection() {
+        let mut sync = BlockSync::new(
+            BlockSyncConfig {
+                target_addresses: HashSet::from([ADDRESS_SENDER, ADDRESS_SENDER_2]),
+                finalize_depth: 32,
+                max_pending_transactions: 6,
+            },
+            AnchorBlock {
+                hash: get_hash(0),
+                number: 0,
+                gas: BlockGasSummary {
+                    base_fee_per_gas: 100,
+                    excess_blob_gas: 1,
+                    blob_gas_used: 1,
+                },
+                finalized_balances: <_>::default(),
+            },
+        );
+
+        let user = get_addr(1);
+
+        // Register underpriced txs for both senders
+        sync.register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER, 0, user));
+        sync.register_sent_blob_tx(generate_pending_blob_tx_from(ADDRESS_SENDER_2, 0, user));
+
+        // Both underpriced => deadlock detected
+        let result = sync.detect_nonce_deadlock();
+        assert!(result.is_some());
+        let (addr, nonce, _gas) = result.unwrap();
+        // Should return one of the stuck senders at nonce 0
+        assert_eq!(nonce, 0);
+        assert!(addr == ADDRESS_SENDER || addr == ADDRESS_SENDER_2);
     }
 }

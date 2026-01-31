@@ -7,7 +7,7 @@ use bundler_client::types::{
     HistoryEntry, HistoryEntryStatus, HistoryResponse, SyncStatusBlock,
 };
 use ethers::{
-    signers::LocalWallet,
+    signers::{LocalWallet, Signer},
     types::{Address, BlockNumber, H256},
 };
 use eyre::{bail, eyre, Result};
@@ -50,7 +50,7 @@ pub(crate) struct AppData {
     pub config: AppConfig,
     pub kzg_settings: c_kzg::KzgSettings,
     pub provider: EthProvider,
-    pub sender_wallet: LocalWallet,
+    pub sender_wallets: Vec<LocalWallet>,
     pub notify: Notify,
     pub chain_id: u64,
     /// Available when `--beacon-api-url` is set. Used by blob retrieval endpoints.
@@ -71,7 +71,7 @@ impl AppData {
         kzg_settings: c_kzg::KzgSettings,
         db_pool: MySqlPool,
         provider: EthProvider,
-        sender_wallet: LocalWallet,
+        sender_wallets: Vec<LocalWallet>,
         chain_id: u64,
         data_intent_tracker: DataIntentTracker,
         sync: BlockSync,
@@ -83,7 +83,7 @@ impl AppData {
             kzg_settings,
             db_pool,
             provider,
-            sender_wallet,
+            sender_wallets,
             notify: <_>::default(),
             chain_id,
             beacon_consumer,
@@ -91,6 +91,16 @@ impl AppData {
             data_intent_tracker: data_intent_tracker.into(),
             sync: sync.into(),
         }
+    }
+
+    /// Return the addresses of all sender wallets.
+    pub fn sender_addresses(&self) -> Vec<Address> {
+        self.sender_wallets.iter().map(|w| w.address()).collect()
+    }
+
+    /// Find the wallet for a given sender address.
+    pub fn wallet_for_address(&self, address: &Address) -> Option<&LocalWallet> {
+        self.sender_wallets.iter().find(|w| &w.address() == address)
     }
 
     #[tracing::instrument(skip(self, data_intent))]
@@ -335,14 +345,15 @@ impl AppData {
     }
 
     /// Detect if there is a nonce deadlock: all pending transactions are underpriced
-    /// and no viable intent set can reprice them.
-    pub async fn detect_nonce_deadlock(&self) -> Option<(u64, GasConfig)> {
+    /// and no viable intent set can reprice them. Returns (sender, nonce, gas) of the stuck tx.
+    pub async fn detect_nonce_deadlock(&self) -> Option<(Address, u64, GasConfig)> {
         self.sync.read().await.detect_nonce_deadlock()
     }
 
     /// Register a self-transfer transaction sent to resolve a nonce deadlock.
     pub async fn register_sent_self_transfer(
         &self,
+        sender: Address,
         nonce: u64,
         tx_hash: ethers::types::TxHash,
         gas: GasConfig,
@@ -350,7 +361,12 @@ impl AppData {
         self.sync
             .write()
             .await
-            .register_sent_self_transfer(nonce, tx_hash, gas);
+            .register_sent_self_transfer(sender, nonce, tx_hash, gas);
+    }
+
+    /// Return the number of pending transactions for a given sender.
+    pub async fn pending_tx_count_for_sender(&self, sender: &Address) -> usize {
+        self.sync.read().await.pending_tx_count_for_sender(sender)
     }
 
     #[tracing::instrument(skip(self))]

@@ -195,7 +195,7 @@ impl DataHash {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SenderDetails {
-    pub address: Address,
+    pub addresses: Vec<Address>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

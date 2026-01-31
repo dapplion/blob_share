@@ -16,45 +16,45 @@ use eyre::{bail, eyre, Result};
 pub struct BlobConsumer {
     beacon_api_client: BeaconApiClient,
     eth_provider: Provider<Http>,
-    target_address: Address,
-    participant_address: Address,
+    target_addresses: HashSet<Address>,
 }
 
 impl BlobConsumer {
     pub fn new(
         beacon_api_base_url: &str,
         eth_provider_base_url: &str,
-        target_address: Address,
-        participant_address: Address,
+        target_addresses: HashSet<Address>,
     ) -> Result<Self> {
         Ok(Self {
             beacon_api_client: BeaconApiClient::new(beacon_api_base_url)?,
             eth_provider: Provider::<Http>::try_from(eth_provider_base_url)?,
-            target_address,
-            participant_address,
+            target_addresses,
         })
     }
 
     pub async fn extract_data_participation_from_block_hash(
         &self,
         block_hash: H256,
+        participant_address: Address,
     ) -> Result<Vec<Vec<u8>>> {
         let block = self
             .eth_provider
             .get_block_with_txs(block_hash)
             .await?
             .ok_or_else(|| eyre!("no block found for hash {}", block_hash))?;
-        self.extract_data_participation_from_block(&block).await
+        self.extract_data_participation_from_block(&block, participant_address)
+            .await
     }
 
     pub async fn extract_data_participation_from_block(
         &self,
         block: &Block<Transaction>,
+        participant_address: Address,
     ) -> Result<Vec<Vec<u8>>> {
         let participants = extract_data_participations_from_block(
             block,
-            self.target_address,
-            self.participant_address,
+            &self.target_addresses,
+            participant_address,
         );
 
         if participants.is_empty() {
@@ -209,7 +209,7 @@ pub struct BlockDataChunk {
 
 pub fn extract_data_participations_from_block(
     block: &Block<Transaction>,
-    target_address: Address,
+    target_addresses: &HashSet<Address>,
     participant_address: Address,
 ) -> Vec<BlockDataChunk> {
     let mut block_blob_index = 0;
@@ -221,7 +221,7 @@ pub fn extract_data_participations_from_block(
             let blob_index = block_blob_index;
             block_blob_index += 1;
 
-            if tx.from == target_address {
+            if target_addresses.contains(&tx.from) {
                 match BlobTxSummary::from_tx(tx) {
                     Ok(None) => {}
                     // Ignore errors for invalid transactions
@@ -290,14 +290,22 @@ mod tests {
     #[test]
     fn extract_participations_empty_block() {
         let block = make_block(vec![]);
-        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        let chunks = extract_data_participations_from_block(
+            &block,
+            &HashSet::from([gen_addr(0xAA)]),
+            gen_addr(0xBB),
+        );
         assert_eq!(chunks.len(), 0);
     }
 
     #[test]
     fn extract_participations_no_blob_txs() {
         let block = make_block(vec![make_regular_tx(gen_addr(0xAA))]);
-        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        let chunks = extract_data_participations_from_block(
+            &block,
+            &HashSet::from([gen_addr(0xAA)]),
+            gen_addr(0xBB),
+        );
         assert_eq!(chunks.len(), 0);
     }
 
@@ -309,7 +317,11 @@ mod tests {
         }];
         let block = make_block(vec![make_blob_tx(gen_addr(0xCC), &participants)]);
         // target_address is 0xAA, but tx is from 0xCC
-        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        let chunks = extract_data_participations_from_block(
+            &block,
+            &HashSet::from([gen_addr(0xAA)]),
+            gen_addr(0xBB),
+        );
         assert_eq!(chunks.len(), 0);
     }
 
@@ -322,7 +334,11 @@ mod tests {
         }];
         let block = make_block(vec![make_blob_tx(target, &participants)]);
         // Looking for participant 0xBB, but only 0xCC is in the tx
-        let chunks = extract_data_participations_from_block(&block, target, gen_addr(0xBB));
+        let chunks = extract_data_participations_from_block(
+            &block,
+            &HashSet::from([target]),
+            gen_addr(0xBB),
+        );
         assert_eq!(chunks.len(), 0);
     }
 
@@ -335,7 +351,8 @@ mod tests {
             data_len: 2000,
         }];
         let block = make_block(vec![make_blob_tx(target, &participants)]);
-        let chunks = extract_data_participations_from_block(&block, target, participant);
+        let chunks =
+            extract_data_participations_from_block(&block, &HashSet::from([target]), participant);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].blob_index, 0);
@@ -358,7 +375,8 @@ mod tests {
             },
         ];
         let block = make_block(vec![make_blob_tx(target, &participants)]);
-        let chunks = extract_data_participations_from_block(&block, target, participant);
+        let chunks =
+            extract_data_participations_from_block(&block, &HashSet::from([target]), participant);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].blob_index, 0);
@@ -386,7 +404,8 @@ mod tests {
             },
         ];
         let block = make_block(vec![make_blob_tx(target, &participants)]);
-        let chunks = extract_data_participations_from_block(&block, target, participant);
+        let chunks =
+            extract_data_participations_from_block(&block, &HashSet::from([target]), participant);
 
         assert_eq!(chunks.len(), 2);
         // First match at offset 0
@@ -423,7 +442,8 @@ mod tests {
         );
 
         let block = make_block(vec![other_tx, target_tx]);
-        let chunks = extract_data_participations_from_block(&block, target, participant);
+        let chunks =
+            extract_data_participations_from_block(&block, &HashSet::from([target]), participant);
 
         assert_eq!(chunks.len(), 1);
         // blob_index should be 1 because the first blob tx incremented it
@@ -449,7 +469,8 @@ mod tests {
         );
 
         let block = make_block(vec![regular_tx, target_tx]);
-        let chunks = extract_data_participations_from_block(&block, target, participant);
+        let chunks =
+            extract_data_participations_from_block(&block, &HashSet::from([target]), participant);
 
         assert_eq!(chunks.len(), 1);
         // blob_index should still be 0 because the regular tx didn't count
@@ -461,8 +482,7 @@ mod tests {
         let consumer = BlobConsumer::new(
             "http://localhost:5052",
             "http://localhost:8545",
-            gen_addr(0xAA),
-            gen_addr(0xBB),
+            HashSet::from([gen_addr(0xAA)]),
         );
         assert!(consumer.is_ok());
     }
@@ -472,8 +492,7 @@ mod tests {
         let consumer = BlobConsumer::new(
             "not-a-valid-url",
             "http://localhost:8545",
-            gen_addr(0xAA),
-            gen_addr(0xBB),
+            HashSet::from([gen_addr(0xAA)]),
         );
         assert!(consumer.is_err());
     }
@@ -483,8 +502,7 @@ mod tests {
         let consumer = BlobConsumer::new(
             "http://localhost:5052",
             "not-a-valid-url",
-            gen_addr(0xAA),
-            gen_addr(0xBB),
+            HashSet::from([gen_addr(0xAA)]),
         );
         assert!(consumer.is_err());
     }

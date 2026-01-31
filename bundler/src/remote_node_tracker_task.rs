@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use ethers::signers::Signer;
 use eyre::Result;
 use tokio::time;
 
@@ -28,25 +27,28 @@ pub(crate) async fn remote_node_tracker_task(app_data: Arc<AppData>) -> Result<(
             }
         }
 
-        match app_data
-            .provider
-            .get_balance(app_data.sender_wallet.address())
-            .await
-        {
-            Ok(balance) => metrics::SENDER_BALANCE_REMOTE_HEAD.set(wei_to_f64(balance.as_u128())),
-            Err(e) => {
-                error!("Error fetching sender balance {e:?}");
+        // Track balance and nonce for the primary (first) sender wallet.
+        // With multi-sender, we report aggregated metrics from the first sender.
+        let sender_addresses = app_data.sender_addresses();
+        if let Some(primary_sender) = sender_addresses.first() {
+            match app_data.provider.get_balance(*primary_sender).await {
+                Ok(balance) => {
+                    metrics::SENDER_BALANCE_REMOTE_HEAD.set(wei_to_f64(balance.as_u128()))
+                }
+                Err(e) => {
+                    error!("Error fetching sender balance {e:?}");
+                }
             }
-        }
 
-        match app_data
-            .provider
-            .get_transaction_count(app_data.sender_wallet.address(), None)
-            .await
-        {
-            Ok(nonce) => metrics::SENDER_NONCE_REMOTE_HEAD.set(nonce.as_u64() as f64),
-            Err(e) => {
-                error!("Error fetching sender nonce {e:?}");
+            match app_data
+                .provider
+                .get_transaction_count(*primary_sender, None)
+                .await
+            {
+                Ok(nonce) => metrics::SENDER_NONCE_REMOTE_HEAD.set(nonce.as_u64() as f64),
+                Err(e) => {
+                    error!("Error fetching sender nonce {e:?}");
+                }
             }
         }
     }

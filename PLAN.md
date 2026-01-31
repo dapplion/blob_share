@@ -143,7 +143,7 @@ A reliable, self-operated blob bundling service where:
 
 ## Phase 4: Advanced Features
 
-### [ ] 4.1 Multi-sender support
+### [x] 4.1 Multi-sender support
 - **Files:** `bundler/src/lib.rs`, `bundler/src/sync.rs:144,220`, `bundler/src/blob_sender_task.rs`, `bundler/src/app.rs`
 - Accept `--mnemonic` as before but derive N sender wallets (add `--sender-count` arg, default 1)
 - Refactor `BlockSync` to track per-sender: nonce, pending TXs, repriced TXs (currently single `target_address`)

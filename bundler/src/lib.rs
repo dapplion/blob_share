@@ -11,7 +11,10 @@ use ethers::{
 use eyre::{Context, Result};
 use handlebars::Handlebars;
 use sqlx::mysql::MySqlPoolOptions;
-use std::{env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet, env, net::TcpListener, path::PathBuf, str::FromStr, sync::Arc,
+    time::Duration,
+};
 use tokio::fs;
 use url::Url;
 
@@ -197,6 +200,11 @@ pub struct Args {
     /// Set to MAX_USABLE_BLOB_DATA_LEN to disable splitting.
     #[arg(env, long, default_value_t = MAX_USABLE_BLOB_DATA_LEN * 6)]
     pub max_data_size: usize,
+
+    /// Number of sender wallets to derive from the mnemonic. Each sender maintains
+    /// independent nonce tracking to distribute nonce contention.
+    #[arg(env, long, default_value_t = 1)]
+    pub sender_count: u32,
 }
 
 impl Args {
@@ -240,27 +248,34 @@ impl App {
 
         let chain_id = provider.get_chainid().await?.as_u64();
 
-        // TODO: read as param
         // Child key at derivation path: m/44'/60'/0'/0/{index}
-        let wallet = match args.mnemonic {
-            Some(ref mnemonic) => MnemonicBuilder::<English>::default()
-                .phrase(mnemonic.as_str())
-                .build()?,
-            None => {
-                let mut rng = rand::thread_rng();
-                let dir = env::current_dir()?;
-                warn!(
-                    "USING RANDONMLY GENERATED MNEMONIC, persisted in {}",
-                    dir.to_string_lossy()
-                );
-                MnemonicBuilder::<English>::default()
-                    .write_to(dir)
-                    .build_random(&mut rng)?
-            }
-        }
-        .with_chain_id(chain_id);
-        // Address to send funds to increase an account's balance
-        let target_address = wallet.address();
+        // Derive sender_count wallets from the mnemonic
+        let sender_wallets: Vec<_> = if let Some(ref mnemonic) = args.mnemonic {
+            (0..args.sender_count)
+                .map(|i| {
+                    MnemonicBuilder::<English>::default()
+                        .phrase(mnemonic.as_str())
+                        .index(i)
+                        .expect("valid derivation index")
+                        .build()
+                        .map(|w| w.with_chain_id(chain_id))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut rng = rand::thread_rng();
+            let dir = env::current_dir()?;
+            warn!(
+                "USING RANDONMLY GENERATED MNEMONIC, persisted in {}",
+                dir.to_string_lossy()
+            );
+            let wallet = MnemonicBuilder::<English>::default()
+                .write_to(dir)
+                .build_random(&mut rng)?
+                .with_chain_id(chain_id);
+            vec![wallet]
+        };
+        let target_addresses: HashSet<Address> =
+            sender_wallets.iter().map(|w| w.address()).collect();
 
         // Ensure data_dir exists
         let data_dir = PathBuf::from(&args.data_dir);
@@ -279,7 +294,7 @@ impl App {
 
         let sync = BlockSync::new(
             BlockSyncConfig {
-                target_address,
+                target_addresses: target_addresses.clone(),
                 finalize_depth: args.finalize_depth,
                 max_pending_transactions: args.max_pending_transactions,
             },
@@ -327,12 +342,8 @@ impl App {
             .wrap_err("registering handlebars template")?;
 
         let beacon_consumer = if let Some(ref beacon_api_url) = args.beacon_api_url {
-            let consumer = BlobConsumer::new(
-                beacon_api_url,
-                &args.eth_provider,
-                target_address,
-                target_address,
-            )?;
+            let consumer =
+                BlobConsumer::new(beacon_api_url, &args.eth_provider, target_addresses.clone())?;
             info!("Beacon consumer enabled with API URL: {}", beacon_api_url);
             Some(consumer)
         } else {
@@ -345,7 +356,7 @@ impl App {
             load_kzg_settings()?,
             db_pool,
             provider,
-            wallet,
+            sender_wallets,
             chain_id,
             DataIntentTracker::default(),
             sync,
@@ -463,8 +474,8 @@ impl App {
         Ok(())
     }
 
-    pub fn sender_address(&self) -> Address {
-        self.data.sender_wallet.address()
+    pub fn sender_addresses(&self) -> Vec<Address> {
+        self.data.sender_addresses()
     }
 
     pub fn port(&self) -> u16 {
