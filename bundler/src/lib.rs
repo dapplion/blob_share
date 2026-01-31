@@ -37,6 +37,7 @@ use crate::{
 pub mod anchor_block;
 mod api_metrics;
 mod app;
+mod backoff;
 pub mod beacon_api_client;
 mod blob_sender_task;
 mod blob_tx_data;

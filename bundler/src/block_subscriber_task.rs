@@ -4,6 +4,7 @@ use ethers::{providers::StreamExt, types::TxHash};
 use eyre::{eyre, Context, Result};
 
 use crate::{
+    backoff::BackoffState,
     debug, error, info, metrics,
     sync::{BlockWithTxs, SyncBlockError, SyncBlockOutcome},
     warn, AppData,
@@ -23,6 +24,7 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
     // Ref: https://github.com/gakonst/ethers-rs/blob/f0e5b194f09c533feb10d1a686ddb9e5946ec107/ethers-providers/src/rpc/provider.rs#L1066
     // Ref: https://www.quicknode.com/docs/ethereum/eth_subscribe
     let mut s = app_data.provider.subscribe_blocks().await?;
+    let mut backoff = BackoffState::new("block_subscriber_task");
 
     loop {
         tokio::select! {
@@ -45,12 +47,20 @@ pub(crate) async fn block_subscriber_task(app_data: Arc<AppData>) -> Result<()> 
                     Err(SyncBlockError::Other(e)) => {
                         if app_data.config.panic_on_background_task_errors {
                             return Err(e);
-                        } else {
-                            metrics::BLOCK_SUBSCRIBER_TASK_ERRORS.inc();
-                            error!("error syncing block {:?}: {:?}", block_hash, e);
                         }
+
+                        metrics::BLOCK_SUBSCRIBER_TASK_ERRORS.inc();
+                        metrics::BLOCK_SUBSCRIBER_TASK_RETRIES.inc();
+                        error!("error syncing block {:?}: {:?}", block_hash, e);
+
+                        // Back off on transient errors (network issues, DB
+                        // connection problems) to avoid hammering failing
+                        // dependencies
+                        backoff.on_error().await;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        backoff.on_success();
+                    }
                 }
 
                 // Maybe compute new blob transactions

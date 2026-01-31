@@ -29,6 +29,8 @@ lazy_static! {
         register_histogram!("blobshare_block_subscriber_task_duration_seconds", "block subscriber task duration").unwrap();
     pub(crate) static ref BLOCK_SUBSCRIBER_TASK_ERRORS: Counter =
         register_counter!("blobshare_block_subscriber_task_errors", "block subscriber task errors").unwrap();
+    pub(crate) static ref BLOCK_SUBSCRIBER_TASK_RETRIES: Counter =
+        register_counter!("blobshare_block_subscriber_task_retries", "block subscriber task retries after transient errors").unwrap();
     pub(crate) static ref SYNC_BLOCK_KNOWN: Counter = register_counter!(
         "blobshare_sync_block_known",
         "Total count of attempts to import a known block"
@@ -65,6 +67,8 @@ lazy_static! {
         register_histogram!("blobshare_blob_sender_task_duration_seconds", "blob sender task duration seconds").unwrap();
     pub(crate) static ref BLOB_SENDER_TASK_ERRORS: Counter =
         register_counter!("blobshare_blob_sender_task_errors", "blob sender task errors").unwrap();
+    pub(crate) static ref BLOB_SENDER_TASK_RETRIES: Counter =
+        register_counter!("blobshare_blob_sender_task_retries", "blob sender task retries after transient errors").unwrap();
     pub(crate) static ref PACKING_TIMES: Histogram =
         register_histogram!("blobshare_packing_seconds", "packing seconds").unwrap();
     pub(crate) static ref PACKED_BLOB_ITEMS: Histogram = register_histogram!(
@@ -300,6 +304,7 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
 
         BLOCK_SUBSCRIBER_TASK_TIMES.observe(0.);
         BLOCK_SUBSCRIBER_TASK_ERRORS.inc();
+        BLOCK_SUBSCRIBER_TASK_RETRIES.inc();
         SYNC_BLOCK_KNOWN.inc();
         SYNC_REORGS.inc();
         SYNC_REORG_DEPTHS.observe(0.);
@@ -310,6 +315,7 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
         FINALIZED_TXS.inc();
         BLOB_SENDER_TASK_TIMES.observe(0.);
         BLOB_SENDER_TASK_ERRORS.inc();
+        BLOB_SENDER_TASK_RETRIES.inc();
         PACKING_TIMES.observe(0.);
         PACKED_BLOB_ITEMS.observe(0.);
         PACKED_BLOB_USED_LEN.observe(0.);

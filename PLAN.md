@@ -100,7 +100,7 @@ A reliable, self-operated blob bundling service where:
 - Add actix-web middleware using `actix-web-prom` or manual `Histogram` tracking request duration + status code per route
 - Add counters: `api_requests_total{method, path, status}`, `api_request_duration_seconds{method, path}`
 
-### [ ] 2.7 Improve background task error handling
+### [x] 2.7 Improve background task error handling
 - **Files:** `bundler/src/blob_sender_task.rs:32-50`, `bundler/src/block_subscriber_task.rs:45-51`
 - Replace catch-all with categorized error handling: transient errors (network timeout, DB connection) → retry with backoff; permanent errors (invalid state) → log + skip; fatal errors → propagate
 - Add retry counter metrics

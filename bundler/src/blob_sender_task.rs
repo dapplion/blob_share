@@ -4,6 +4,7 @@ use ethers::{signers::Signer, types::TxHash};
 use eyre::{eyre, Context, Result};
 
 use crate::{
+    backoff::BackoffState,
     blob_tx_data::BlobTxParticipant,
     data_intent_tracker::DataIntentDbRowFull,
     debug, error,
@@ -18,6 +19,7 @@ use crate::{
 
 pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
     let mut id = 0_u64;
+    let mut backoff = BackoffState::new("blob_sender_task");
 
     loop {
         // Race a notify signal with an interrupt from the OS
@@ -31,6 +33,7 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
 
             match maybe_send_blob_tx(app_data.clone(), id).await {
                 Ok(outcome) => {
+                    backoff.on_success();
                     match outcome {
                         // Loop again to try to create another blob transaction
                         SendResult::SentBlobTx(_) => continue,
@@ -41,12 +44,20 @@ pub(crate) async fn blob_sender_task(app_data: Arc<AppData>) -> Result<()> {
                 Err(e) => {
                     if app_data.config.panic_on_background_task_errors {
                         return Err(e);
-                    } else {
-                        metrics::BLOB_SENDER_TASK_ERRORS.inc();
-                        error!("error on send blob tx {:?}", e);
-                        // TODO: Review if breaking out of the inner loop is the best outcome
-                        break;
                     }
+
+                    metrics::BLOB_SENDER_TASK_ERRORS.inc();
+                    metrics::BLOB_SENDER_TASK_RETRIES.inc();
+                    error!("error on send blob tx {:?}", e);
+
+                    // Back off before retrying to avoid tight error loops on
+                    // transient failures (network timeouts, DB connection issues)
+                    backoff.on_error().await;
+
+                    // Break out to wait for next notification rather than
+                    // immediately retrying, since the error is likely
+                    // still present
+                    break;
                 }
             }
         }
