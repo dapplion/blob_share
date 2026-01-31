@@ -169,15 +169,13 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
 
     // Pick the sender with the fewest pending transactions
     let sender_addresses = app_data.sender_addresses();
+    let mut sender_pending_counts = Vec::with_capacity(sender_addresses.len());
+    for addr in &sender_addresses {
+        let count = app_data.pending_tx_count_for_sender(addr).await;
+        sender_pending_counts.push((*addr, count));
+    }
     let (sender_address, sender_wallet) = {
-        let mut best: Option<(ethers::types::Address, usize)> = None;
-        for addr in &sender_addresses {
-            let count = app_data.pending_tx_count_for_sender(addr).await;
-            if best.is_none() || count < best.unwrap().1 {
-                best = Some((*addr, count));
-            }
-        }
-        let addr = best.ok_or_else(|| eyre!("no sender wallets configured"))?.0;
+        let addr = pick_sender_with_fewest_pending(&sender_pending_counts)?;
         let wallet = app_data
             .wallet_for_address(&addr)
             .ok_or_else(|| eyre!("wallet not found for sender {}", addr))?;
@@ -395,4 +393,65 @@ async fn send_self_transfer(
     metrics::NONCE_DEADLOCK_SELF_TRANSFERS.inc();
 
     Ok(SendResult::SentSelfTransfer(tx_hash))
+}
+
+/// Pick the sender address with the fewest pending transactions.
+/// Returns an error if the input slice is empty (no sender wallets configured).
+pub(crate) fn pick_sender_with_fewest_pending(
+    sender_counts: &[(ethers::types::Address, usize)],
+) -> Result<ethers::types::Address> {
+    sender_counts
+        .iter()
+        .min_by_key(|(_, count)| *count)
+        .map(|(addr, _)| *addr)
+        .ok_or_else(|| eyre!("no sender wallets configured"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ethers::types::Address;
+
+    fn gen_addr(b: u8) -> Address {
+        [b; 20].into()
+    }
+
+    #[test]
+    fn pick_sender_single_sender() {
+        let addr = gen_addr(0xAA);
+        let counts = vec![(addr, 5)];
+        assert_eq!(pick_sender_with_fewest_pending(&counts).unwrap(), addr);
+    }
+
+    #[test]
+    fn pick_sender_prefers_fewer_pending() {
+        let addr_a = gen_addr(0xAA);
+        let addr_b = gen_addr(0xBB);
+        let addr_c = gen_addr(0xCC);
+        let counts = vec![(addr_a, 3), (addr_b, 1), (addr_c, 5)];
+        assert_eq!(pick_sender_with_fewest_pending(&counts).unwrap(), addr_b);
+    }
+
+    #[test]
+    fn pick_sender_tie_returns_first() {
+        let addr_a = gen_addr(0xAA);
+        let addr_b = gen_addr(0xBB);
+        // When tied, min_by_key returns the first occurrence
+        let counts = vec![(addr_a, 2), (addr_b, 2)];
+        assert_eq!(pick_sender_with_fewest_pending(&counts).unwrap(), addr_a);
+    }
+
+    #[test]
+    fn pick_sender_zero_pending() {
+        let addr_a = gen_addr(0xAA);
+        let addr_b = gen_addr(0xBB);
+        let counts = vec![(addr_a, 3), (addr_b, 0)];
+        assert_eq!(pick_sender_with_fewest_pending(&counts).unwrap(), addr_b);
+    }
+
+    #[test]
+    fn pick_sender_empty_returns_error() {
+        let counts: Vec<(Address, usize)> = vec![];
+        assert!(pick_sender_with_fewest_pending(&counts).is_err());
+    }
 }

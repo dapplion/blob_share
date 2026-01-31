@@ -208,6 +208,13 @@ Phase 4 (mostly independent)
 - **Change:** Replace hardcoded `gas_limit: 100_000` in `construct_blob_tx` with dynamic calculation based on actual calldata size. Gas = 21,000 (base) + calldata cost (4 per zero byte, 16 per non-zero byte) + 5,000 safety margin.
 - **Why:** Hardcoded 100k gas wastes gas for small payloads and could be insufficient for very large participant lists. Dynamic calculation matches actual EVM intrinsic gas rules.
 
+### [x] 5.2 Fix remaining production .unwrap() and add unit tests for untested modules
+- **Files:** `bundler/src/blob_sender_task.rs`, `bundler/src/utils/option_hex_vec.rs`
+- **Changes:**
+  - Extract sender selection logic in `blob_sender_task.rs` into a standalone `pick_sender_with_fewest_pending()` function, replacing an unsafe `.unwrap()` pattern with idiomatic `min_by_key()`. Add 5 unit tests covering single sender, preference for fewer pending, tie-breaking, zero pending, and empty input.
+  - Add 10 unit tests for `option_hex_vec.rs` serde module: serialize/deserialize for Some, None, empty bytes, roundtrip, invalid hex, and missing prefix cases.
+- **Why:** The `.unwrap()` in sender selection could panic in theory (though guarded by short-circuit `||`). Extracting it makes it testable and idiomatic. `option_hex_vec.rs` had zero test coverage despite being used for data serialization across the API.
+
 ---
 
 ## Key Files Modified Across All Phases

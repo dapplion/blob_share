@@ -54,3 +54,95 @@ impl<'de> Visitor<'de> for OptionPrefixedHexVisitor {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Wrapper {
+        #[serde(with = "super")]
+        data: Option<Vec<u8>>,
+    }
+
+    #[test]
+    fn serialize_some_bytes() {
+        let w = Wrapper {
+            data: Some(vec![0x00, 0x01, 0x02, 0x03]),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"data":"0x00010203"}"#);
+    }
+
+    #[test]
+    fn serialize_none() {
+        let w = Wrapper { data: None };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"data":null}"#);
+    }
+
+    #[test]
+    fn serialize_empty_bytes() {
+        let w = Wrapper { data: Some(vec![]) };
+        let json = serde_json::to_string(&w).unwrap();
+        assert_eq!(json, r#"{"data":"0x"}"#);
+    }
+
+    #[test]
+    fn deserialize_some_bytes() {
+        let json = r#"{"data":"0x00010203"}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            w,
+            Wrapper {
+                data: Some(vec![0x00, 0x01, 0x02, 0x03]),
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_null() {
+        let json = r#"{"data":null}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(w, Wrapper { data: None });
+    }
+
+    #[test]
+    fn deserialize_empty_hex() {
+        let json = r#"{"data":"0x"}"#;
+        let w: Wrapper = serde_json::from_str(json).unwrap();
+        assert_eq!(w, Wrapper { data: Some(vec![]) });
+    }
+
+    #[test]
+    fn roundtrip_some() {
+        let original = Wrapper {
+            data: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn roundtrip_none() {
+        let original = Wrapper { data: None };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn deserialize_invalid_hex_returns_error() {
+        let json = r#"{"data":"0xZZZZ"}"#;
+        let result = serde_json::from_str::<Wrapper>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_no_prefix_returns_error() {
+        let json = r#"{"data":"00010203"}"#;
+        let result = serde_json::from_str::<Wrapper>(json);
+        assert!(result.is_err());
+    }
+}
