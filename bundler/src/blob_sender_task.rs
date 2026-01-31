@@ -94,6 +94,19 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
 
     let max_fee_per_blob_gas = app_data.blob_gas_price_next_head_block().await;
 
+    // Estimate EVM fees proactively before packing. This allows us to build
+    // the full GasConfig up front and verify the gas state before committing
+    // to intent selection and packing.
+    let (max_fee_per_gas, max_priority_fee_per_gas) =
+        app_data.provider.estimate_eip1559_fees().await?;
+
+    let mut gas_config = GasConfig {
+        max_fee_per_gas: max_fee_per_gas.as_u128(),
+        max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
+        max_fee_per_blob_gas,
+    };
+    debug!("gas_config {:?}", gas_config);
+
     let data_intent_summaries = {
         let (mut pending_data_intents, items_from_previous_inclusions) = app_data
             .get_all_intents_available_for_packing(max_fee_per_blob_gas as u64)
@@ -147,21 +160,6 @@ pub(crate) async fn maybe_send_blob_tx(app_data: Arc<AppData>, _id: u64) -> Resu
 
     // TODO: Do this sequence atomic, lock data intent rows here
     let data_intents = app_data.data_intents_by_id(&data_intent_ids).await?;
-
-    // TODO: Check if it's necessary to do a round-trip to the EL to estimate gas
-    //
-    // ### EIP-1559 refresher:
-    // - assert tx.max_fee_per_gas >= tx.max_priority_fee_per_gas
-    // - priority_fee_per_gas = min(tx.max_priority_fee_per_gas, tx.max_fee_per_gas - block.base_fee_per_gas)
-    let (max_fee_per_gas, max_priority_fee_per_gas) =
-        app_data.provider.estimate_eip1559_fees().await?;
-
-    let mut gas_config = GasConfig {
-        max_fee_per_gas: max_fee_per_gas.as_u128(),
-        max_priority_fee_per_gas: max_priority_fee_per_gas.as_u128(),
-        max_fee_per_blob_gas,
-    };
-    debug!("gas_config {:?}", gas_config);
 
     let sender_address = app_data.sender_wallet.address();
 

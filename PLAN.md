@@ -158,7 +158,7 @@ A reliable, self-operated blob bundling service where:
 - Client receives a group ID to track all chunks
 - Add `--max-data-size` arg (default `MAX_USABLE_BLOB_DATA_LEN * 6` = ~762KB, one full block)
 
-### [ ] 4.3 Improved gas estimation
+### [x] 4.3 Improved gas estimation
 - **Files:** `bundler/src/gas.rs`, `bundler/src/blob_sender_task.rs:124`
 - Add proactive gas estimation: before packing, fetch current base fee + blob gas price, filter intents that can afford current prices
 - Add priority fee validation (`gas.rs:39` TODO)

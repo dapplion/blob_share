@@ -1,7 +1,7 @@
 use actix_web::{get, web, HttpResponse, Responder};
 use bundler_client::types::{
-    BlockGasSummary, DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary,
-    SenderDetails, SyncStatus, SyncStatusBlock,
+    DataIntentFull, DataIntentId, DataIntentStatus, DataIntentSummary, GasRecommendation,
+    GasResponse, SenderDetails, SyncStatus, SyncStatusBlock,
 };
 use ethers::signers::Signer;
 use ethers::types::Address;
@@ -48,8 +48,15 @@ pub(crate) async fn get_sync(
 pub(crate) async fn get_gas(
     data: web::Data<Arc<AppData>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let head_gas: BlockGasSummary = data.get_head_gas().await;
-    Ok(HttpResponse::Ok().json(head_gas))
+    let head_gas = data.get_head_gas().await;
+    let response = GasResponse {
+        recommended: GasRecommendation {
+            max_blob_gas_price: head_gas.blob_gas_price_next_block(),
+            base_fee_per_gas: head_gas.base_fee_per_gas,
+        },
+        head: head_gas,
+    };
+    Ok(HttpResponse::Ok().json(response))
 }
 
 // #[post("/v1/data")}

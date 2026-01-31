@@ -25,6 +25,25 @@ impl BlockGasSummary {
     }
 }
 
+/// Enhanced gas response that includes both current block gas state and
+/// recommended gas prices for next-block inclusion.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GasResponse {
+    /// Current head block gas summary
+    pub head: BlockGasSummary,
+    /// Recommended gas prices for next-block inclusion
+    pub recommended: GasRecommendation,
+}
+
+/// Recommended gas prices for next-block inclusion.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GasRecommendation {
+    /// Suggested max_blob_gas_price for data intents to be included in the next block
+    pub max_blob_gas_price: u128,
+    /// Current block's base fee (useful for EIP-1559 tx pricing)
+    pub base_fee_per_gas: u128,
+}
+
 fn calc_excess_blob_gas(parent_excess_blob_gas: u128, parent_blob_gas_used: u128) -> u128 {
     (parent_excess_blob_gas + parent_blob_gas_used).saturating_sub(TARGET_BLOB_GAS_PER_BLOCK)
 }
@@ -97,6 +116,67 @@ mod tests {
         assert_eq!(
             fake_exponential(1, 50 * 1000000, 1000000),
             5184705528494131044804
+        );
+    }
+
+    #[test]
+    fn gas_response_serde_roundtrip() {
+        let response = GasResponse {
+            head: BlockGasSummary {
+                blob_gas_used: 131072,
+                excess_blob_gas: 393216,
+                base_fee_per_gas: 15_000_000_000,
+            },
+            recommended: GasRecommendation {
+                max_blob_gas_price: 1,
+                base_fee_per_gas: 15_000_000_000,
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: GasResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.head.base_fee_per_gas, 15_000_000_000);
+        assert_eq!(deserialized.recommended.max_blob_gas_price, 1);
+        assert_eq!(deserialized.recommended.base_fee_per_gas, 15_000_000_000);
+    }
+
+    #[test]
+    fn gas_response_nested_fields_present_in_json() {
+        let response = GasResponse {
+            head: BlockGasSummary {
+                blob_gas_used: 100,
+                excess_blob_gas: 200,
+                base_fee_per_gas: 300,
+            },
+            recommended: GasRecommendation {
+                max_blob_gas_price: 42,
+                base_fee_per_gas: 300,
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // BlockGasSummary fields should be nested under "head"
+        assert_eq!(value["head"]["blob_gas_used"], 100);
+        assert_eq!(value["head"]["excess_blob_gas"], 200);
+        assert_eq!(value["head"]["base_fee_per_gas"], 300);
+        // Recommendation should be nested under "recommended"
+        assert_eq!(value["recommended"]["max_blob_gas_price"], 42);
+    }
+
+    #[test]
+    fn gas_recommendation_matches_next_block_price() {
+        let head = BlockGasSummary {
+            blob_gas_used: 131072,
+            excess_blob_gas: 10 * BLOB_GASPRICE_UPDATE_FRACTION,
+            base_fee_per_gas: 15_000_000_000,
+        };
+        let recommendation = GasRecommendation {
+            max_blob_gas_price: head.blob_gas_price_next_block(),
+            base_fee_per_gas: head.base_fee_per_gas,
+        };
+        // The recommendation should equal the calculated next-block price
+        assert_eq!(
+            recommendation.max_blob_gas_price,
+            head.blob_gas_price_next_block()
         );
     }
 }

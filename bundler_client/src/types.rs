@@ -17,7 +17,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub use crate::gas::BlockGasSummary;
+pub use crate::gas::{BlockGasSummary, GasRecommendation, GasResponse};
 
 pub type DataIntentId = Uuid;
 

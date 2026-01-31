@@ -7,9 +7,9 @@ use url::Url;
 
 use crate::{
     types::{
-        BlobGasPrice, BlockGasSummary, CancelDataIntentSigned, DataIntentFull, DataIntentId,
-        DataIntentStatus, DataIntentSummary, HistoryResponse, PostDataIntentV1,
-        PostDataIntentV1Signed, PostDataResponse, SenderDetails, SyncStatus,
+        BlobGasPrice, CancelDataIntentSigned, DataIntentFull, DataIntentId, DataIntentStatus,
+        DataIntentSummary, GasResponse, HistoryResponse, PostDataIntentV1, PostDataIntentV1Signed,
+        PostDataResponse, SenderDetails, SyncStatus,
     },
     utils::{address_to_hex_lowercase, is_ok_response, unix_timestamps_millis},
 };
@@ -36,12 +36,10 @@ impl Client {
         gas: &GasPreference,
         nonce: &NoncePreference,
     ) -> Result<PostDataResponse> {
-        // TODO: customize, for now set gas price equal to next block
-        // TODO: Close to genesis block the value is 1, which requires blobs to be perfectly full
         let max_blob_gas_price = match gas {
             GasPreference::RelativeToHead(factor) => {
-                let head_gas = self.get_gas().await.wrap_err("get_gas")?;
-                let blob_gas_price_next_block = head_gas.blob_gas_price_next_block();
+                let gas_response = self.get_gas().await.wrap_err("get_gas")?;
+                let blob_gas_price_next_block = gas_response.recommended.max_blob_gas_price;
                 if *factor == 1.0 {
                     blob_gas_price_next_block as BlobGasPrice
                 } else {
@@ -89,7 +87,7 @@ impl Client {
         Ok(is_ok_response(response).await?.json().await?)
     }
 
-    pub async fn get_gas(&self) -> Result<BlockGasSummary> {
+    pub async fn get_gas(&self) -> Result<GasResponse> {
         let response = self.client.get(self.url("v1/gas")).send().await?;
         Ok(is_ok_response(response).await?.json().await?)
     }
