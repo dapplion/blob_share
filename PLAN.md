@@ -464,6 +464,14 @@ Phase 4 (mostly independent)
     - `knapsack_all_items_fit`: 1 test — all items within capacity are selected.
 - **Why:** This was the last `assert_eq!` in production code. While the only current caller (`pack_items_knapsack`) always passes equal-length slices, the function's public contract should handle invalid inputs gracefully rather than crashing the service. The `pack_items_knapsack` returning `Some(vec![])` for zero-selected-items was also inconsistent with the other packing functions' contract where `None` means "no viable packing found".
 
+### [x] 5.21 Eagerly initialize metrics at startup via register_metrics()
+- **Files:** `bundler/src/metrics.rs`, `bundler/src/lib.rs`
+- **Changes:**
+  - Added `register_metrics()` function to `metrics.rs` that eagerly dereferences all 28 `lazy_static!` metric statics, forcing their Prometheus registration to happen immediately rather than on first use.
+  - Called `register_metrics()` at the start of `App::build()` in `lib.rs`, so any metric registration failure (e.g., duplicate metric name) surfaces as a startup error instead of a runtime panic in a background task.
+  - Added 2 unit tests: `register_metrics_does_not_panic` (basic invocation), `register_metrics_idempotent` (safe to call multiple times).
+- **Why:** Task 1.2 specified that the ~30 `.unwrap()` calls in the `lazy_static!` block should be caught at startup. While the unwraps are acceptable for metric registration (they only fail if the metric name collides with an already-registered metric), the failure would manifest as a panic at an unpredictable time when a background task first touches the metric. Eagerly initializing all metrics at startup converts this from a deferred panic to an immediate, predictable failure during `App::build()`.
+
 ---
 
 ## Key Files Modified Across All Phases

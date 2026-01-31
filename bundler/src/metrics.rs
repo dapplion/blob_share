@@ -128,6 +128,46 @@ lazy_static! {
 
 }
 
+/// Eagerly initialize all lazy_static metrics at startup.
+///
+/// Each lazy_static metric is registered with the global Prometheus registry on first access
+/// and will panic if registration fails (e.g., duplicate metric name). By forcing initialization
+/// here during `App::build()`, any registration error surfaces immediately at startup rather
+/// than causing a panic later during runtime when a background task first touches the metric.
+pub(crate) fn register_metrics() {
+    // Force initialization of every lazy_static metric by dereferencing it.
+    // The compiler will optimize away the actual reads; we only need the side effect
+    // of triggering lazy_static initialization.
+    let _ = &*BLOCK_SUBSCRIBER_TASK_TIMES;
+    let _ = &*BLOCK_SUBSCRIBER_TASK_ERRORS;
+    let _ = &*BLOCK_SUBSCRIBER_TASK_RETRIES;
+    let _ = &*SYNC_BLOCK_KNOWN;
+    let _ = &*SYNC_REORGS;
+    let _ = &*SYNC_REORG_DEPTHS;
+    let _ = &*SYNC_BLOCK_WITH_BLOB_TXS;
+    let _ = &*SYNC_BLOB_TXS_SYNCED;
+    let _ = &*SYNC_HEAD_NUMBER;
+    let _ = &*SYNC_ANCHOR_NUMBER;
+    let _ = &*FINALIZED_TXS;
+    let _ = &*BLOB_SENDER_TASK_TIMES;
+    let _ = &*BLOB_SENDER_TASK_ERRORS;
+    let _ = &*BLOB_SENDER_TASK_RETRIES;
+    let _ = &*PACKING_TIMES;
+    let _ = &*PACKED_BLOB_ITEMS;
+    let _ = &*PACKED_BLOB_USED_LEN;
+    let _ = &*REMOTE_NODE_HEAD_BLOCK_NUMBER;
+    let _ = &*REMOTE_NODE_HEAD_BLOCK_FETCH_ERRORS;
+    let _ = &*SENDER_BALANCE_REMOTE_HEAD;
+    let _ = &*SENDER_NONCE_REMOTE_HEAD;
+    let _ = &*PENDING_INTENTS_CACHE;
+    let _ = &*INCLUDED_INTENTS_CACHE;
+    let _ = &*EVICTED_STALE_INTENTS;
+    let _ = &*NONCE_DEADLOCK_SELF_TRANSFERS;
+    let _ = &*API_REQUESTS_TOTAL;
+    let _ = &*API_REQUEST_DURATION_SECONDS;
+    let _ = &*PUSH_REQ_HISTOGRAM;
+}
+
 #[get("/metrics")]
 pub(crate) async fn get_metrics(
     req: HttpRequest,
@@ -697,5 +737,21 @@ myprefix_test_counter{mykey=\"myvalue\"} 0
             .observe(0.);
 
         encode_metrics_plain_text(&prometheus::gather()).unwrap();
+    }
+
+    #[test]
+    fn register_metrics_does_not_panic() {
+        // Calling register_metrics() eagerly initializes all lazy_static metrics.
+        // This test verifies that calling it (even after metrics are already initialized
+        // by other tests in this module) does not panic.
+        register_metrics();
+    }
+
+    #[test]
+    fn register_metrics_idempotent() {
+        // Calling register_metrics() multiple times should be safe since lazy_static
+        // only initializes once.
+        register_metrics();
+        register_metrics();
     }
 }

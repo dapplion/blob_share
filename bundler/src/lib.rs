@@ -27,7 +27,7 @@ use crate::{
     consumer::BlobConsumer,
     evict_stale_intents_task::evict_stale_intents_task,
     explorer::register_explorer_service,
-    metrics::{get_metrics, push_metrics_task},
+    metrics::{get_metrics, push_metrics_task, register_metrics},
     remote_node_tracker_task::remote_node_tracker_task,
     routes::{
         delete_data::delete_data, get_balance_by_address, get_blobs::get_blobs_by_tx_hash,
@@ -240,6 +240,11 @@ impl App {
     /// Instantiates components, fetching initial data, binds http server. Does not make progress
     /// on the server future. To actually run the app, call `Self::run`.
     pub async fn build(args: Args) -> Result<Self> {
+        // Eagerly initialize all Prometheus metrics at startup so that any registration
+        // error (e.g. duplicate metric name) surfaces here rather than causing a panic
+        // later when a background task first touches the metric.
+        register_metrics();
+
         let mut provider = EthProvider::new(&args.eth_provider).await?;
 
         if let Some(eth_provider_interval) = args.eth_provider_interval {
