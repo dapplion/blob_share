@@ -80,7 +80,7 @@ A reliable, self-operated blob bundling service where:
 - When `maybe_advance_anchor_block()` finalizes blocks, update `inclusion_finalized = true` on included intents
 - This partially exists but the TODO indicates it's incomplete
 
-### [ ] 2.3 Drop inclusions for excluded transactions
+### [x] 2.3 Drop inclusions for excluded transactions
 - **File:** `bundler/src/app.rs:138` (TODO)
 - When finalization excludes a repriced TX, clean up the `intent_inclusion` rows for that TX hash
 

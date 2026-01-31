@@ -17,10 +17,10 @@ use tokio::sync::{Notify, RwLock};
 use crate::{
     anchor_block::persist_anchor_block_to_db,
     data_intent_tracker::{
-        fetch_all_intents_with_inclusion_not_finalized, fetch_data_intent_db_full,
-        fetch_data_intent_db_is_known, fetch_data_intent_inclusion, fetch_many_data_intent_db_full,
-        mark_data_intents_as_inclusion_finalized, store_data_intent, DataIntentDbRowFull,
-        DataIntentTracker,
+        delete_intent_inclusions_by_tx_hash, fetch_all_intents_with_inclusion_not_finalized,
+        fetch_data_intent_db_full, fetch_data_intent_db_is_known, fetch_data_intent_inclusion,
+        fetch_many_data_intent_db_full, mark_data_intents_as_inclusion_finalized,
+        store_data_intent, DataIntentDbRowFull, DataIntentTracker,
     },
     eth_provider::EthProvider,
     info,
@@ -138,10 +138,15 @@ impl AppData {
             // Mark finalized intents in database
             mark_data_intents_as_inclusion_finalized(&self.db_pool, &finalized_intent_ids).await?;
 
-            // Forget about excluded transactions
-            for _excluded_tx in finalized_result.finalized_excluded_txs {
-                // TODO: Drop inclusions for excluded transactions
-                // data_intent_tracker.drop_excluded_tx(excluded_tx.tx_hash);
+            // Drop inclusions for excluded (repriced) transactions
+            {
+                let mut data_intent_tracker = self.data_intent_tracker.write().await;
+                for excluded_tx in &finalized_result.finalized_excluded_txs {
+                    data_intent_tracker.drop_excluded_tx(excluded_tx.tx_hash);
+                }
+            }
+            for excluded_tx in &finalized_result.finalized_excluded_txs {
+                delete_intent_inclusions_by_tx_hash(&self.db_pool, excluded_tx.tx_hash).await?;
             }
 
             // TODO: Persist anchor block to DB less often

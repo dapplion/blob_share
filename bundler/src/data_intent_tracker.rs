@@ -138,6 +138,21 @@ ORDER BY updated_at ASC
             .sum()
     }
 
+    /// Drop inclusion records for an excluded (repriced) transaction. The intents themselves
+    /// remain pending so they can be re-included in another transaction.
+    pub fn drop_excluded_tx(&mut self, tx_hash: TxHash) {
+        if let Some(ids) = self.included_intents.remove(&tx_hash) {
+            for id in &ids {
+                if let Some(tx_hashes) = self.cache_intent_inclusions.get_mut(id) {
+                    tx_hashes.retain(|h| h != &tx_hash);
+                    if tx_hashes.is_empty() {
+                        self.cache_intent_inclusions.remove(id);
+                    }
+                }
+            }
+        }
+    }
+
     /// Drops all intents associated with transaction. Returns the finalized intent IDs
     /// so the caller can mark them as finalized in the database.
     pub fn finalize_tx(&mut self, tx_hash: TxHash) -> Vec<DataIntentId> {
@@ -402,6 +417,20 @@ WHERE id IN
     Ok(())
 }
 
+/// Delete all intent_inclusions rows for a given transaction hash.
+/// Called when a repriced transaction is excluded during finalization.
+pub(crate) async fn delete_intent_inclusions_by_tx_hash(
+    db_pool: &MySqlPool,
+    tx_hash: TxHash,
+) -> Result<()> {
+    let tx_hash_bytes = tx_hash.to_fixed_bytes().to_vec();
+    sqlx::query("DELETE FROM intent_inclusions WHERE tx_hash = ?")
+        .bind(tx_hash_bytes)
+        .execute(db_pool)
+        .await?;
+    Ok(())
+}
+
 // Private fn to ensure data consistency with local cache
 async fn insert_many_intent_tx_inclusions(
     db_pool: &MySqlPool,
@@ -547,6 +576,80 @@ mod tests {
         // tx_hash_b still tracked
         assert!(tracker.included_intents.contains_key(&tx_hash_b));
         assert!(tracker.cache_intent_inclusions.contains_key(&id2));
+    }
+
+    #[test]
+    fn drop_excluded_tx_removes_inclusion_keeps_intents_pending() {
+        let mut tracker = DataIntentTracker::default();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let tx_hash = H256::random();
+
+        tracker.pending_intents.insert(id1, make_summary(id1));
+        tracker.pending_intents.insert(id2, make_summary(id2));
+        tracker.included_intents.insert(tx_hash, vec![id1, id2]);
+        tracker.cache_intent_inclusions.insert(id1, vec![tx_hash]);
+        tracker.cache_intent_inclusions.insert(id2, vec![tx_hash]);
+
+        tracker.drop_excluded_tx(tx_hash);
+
+        // Intents remain pending (they can be re-included in another tx)
+        assert_eq!(tracker.pending_intents.len(), 2);
+        assert!(tracker.pending_intents.contains_key(&id1));
+        assert!(tracker.pending_intents.contains_key(&id2));
+        // Inclusion mappings are cleaned up
+        assert!(!tracker.included_intents.contains_key(&tx_hash));
+        assert!(tracker.cache_intent_inclusions.is_empty());
+    }
+
+    #[test]
+    fn drop_excluded_tx_preserves_other_inclusions() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        let tx_hash_old = H256::random();
+        let tx_hash_new = H256::random();
+
+        tracker.pending_intents.insert(id, make_summary(id));
+        // Intent is included in both old and new tx (repricing scenario)
+        tracker.included_intents.insert(tx_hash_old, vec![id]);
+        tracker.included_intents.insert(tx_hash_new, vec![id]);
+        tracker
+            .cache_intent_inclusions
+            .insert(id, vec![tx_hash_old, tx_hash_new]);
+
+        // Drop only the old tx
+        tracker.drop_excluded_tx(tx_hash_old);
+
+        // Old tx inclusion removed
+        assert!(!tracker.included_intents.contains_key(&tx_hash_old));
+        // New tx inclusion preserved
+        assert!(tracker.included_intents.contains_key(&tx_hash_new));
+        // Intent still has the new tx in its cache
+        assert_eq!(
+            tracker.cache_intent_inclusions.get(&id).unwrap(),
+            &vec![tx_hash_new]
+        );
+        // Intent still pending
+        assert!(tracker.pending_intents.contains_key(&id));
+    }
+
+    #[test]
+    fn drop_excluded_tx_unknown_hash_is_noop() {
+        let mut tracker = DataIntentTracker::default();
+        let id = Uuid::new_v4();
+        let tx_hash = H256::random();
+        let unknown_hash = H256::random();
+
+        tracker.pending_intents.insert(id, make_summary(id));
+        tracker.included_intents.insert(tx_hash, vec![id]);
+        tracker.cache_intent_inclusions.insert(id, vec![tx_hash]);
+
+        tracker.drop_excluded_tx(unknown_hash);
+
+        // Everything unchanged
+        assert_eq!(tracker.pending_intents.len(), 1);
+        assert_eq!(tracker.included_intents.len(), 1);
+        assert_eq!(tracker.cache_intent_inclusions.len(), 1);
     }
 
     #[test]
