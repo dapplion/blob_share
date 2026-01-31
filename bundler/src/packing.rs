@@ -143,13 +143,22 @@ pub fn pack_items_knapsack(
 ) -> Option<Vec<usize>> {
     // TODO: consider max_cost
     let item_lens = items.iter().map(|e| e.len).collect::<Vec<_>>();
-    Some(knapsack(max_len, &item_lens, &item_lens))
+    let selected = knapsack(max_len, &item_lens, &item_lens)?;
+    if selected.is_empty() {
+        None
+    } else {
+        Some(selected)
+    }
 }
 
 /// Ref: Space optimized Approach for 0/1 Knapsack Problem using Dynamic Programming:
 /// <https://www.geeksforgeeks.org/0-1-knapsack-problem-dp-10>
-fn knapsack(w_max: usize, wt: &[usize], val: &[usize]) -> Vec<usize> {
-    assert_eq!(wt.len(), val.len());
+///
+/// Returns `None` if `wt` and `val` have different lengths.
+fn knapsack(w_max: usize, wt: &[usize], val: &[usize]) -> Option<Vec<usize>> {
+    if wt.len() != val.len() {
+        return None;
+    }
     let n = wt.len();
 
     let mut dp = vec![0; w_max + 1];
@@ -170,7 +179,7 @@ fn knapsack(w_max: usize, wt: &[usize], val: &[usize]) -> Vec<usize> {
         }
     }
 
-    sel[w_max].clone()
+    Some(sel[w_max].clone())
 }
 
 /// Expects items to by sorted ascending by data len
@@ -356,7 +365,7 @@ mod tests {
     fn run_test_knapsack_proptest_max_len(item_lens: &[usize], max_len: usize) -> usize {
         // score = length of each item
         let values = item_lens;
-        let selected_indexes = knapsack(max_len, item_lens, values);
+        let selected_indexes = knapsack(max_len, item_lens, values).unwrap();
         selected_indexes.iter().map(|i| item_lens[*i]).sum()
     }
 
@@ -376,7 +385,7 @@ mod tests {
             .map(|len| Item::new(*len, 10 * max_len as u64))
             .collect::<Vec<Item>>();
 
-        let selected_indexes_knapsack = pack_items_knapsack(&items, max_len, 1).unwrap();
+        let selected_indexes_knapsack = pack_items_knapsack(&items, max_len, 1).unwrap_or_default();
 
         let selected_indexes_bruteforce =
             pack_items_brute_force(&items, max_len, 1).unwrap_or(vec![]);
@@ -658,5 +667,89 @@ mod tests {
         assert!(is_sorted_ascending(&items));
         let result = pack_items(&items, MAX_LEN, 1);
         assert!(result.is_some());
+    }
+
+    // --- knapsack ---
+
+    #[test]
+    fn knapsack_empty_inputs() {
+        let result = knapsack(100, &[], &[]);
+        assert_eq!(result, Some(vec![]));
+    }
+
+    #[test]
+    fn knapsack_single_item_fits() {
+        let result = knapsack(100, &[50], &[50]).unwrap();
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn knapsack_single_item_too_heavy() {
+        let result = knapsack(10, &[50], &[50]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn knapsack_selects_optimal_subset() {
+        // Items: (weight=60, value=60), (weight=50, value=50), (weight=50, value=50)
+        // Capacity 100: optimal is items 1+2 (weight=100, value=100) over item 0 alone (60)
+        let result = knapsack(100, &[60, 50, 50], &[60, 50, 50]).unwrap();
+        let total_weight: usize = result.iter().map(|&i| [60, 50, 50][i]).sum();
+        assert!(total_weight <= 100);
+        let total_value: usize = result.iter().map(|&i| [60, 50, 50][i]).sum();
+        assert_eq!(total_value, 100);
+    }
+
+    #[test]
+    fn knapsack_mismatched_lengths_returns_none() {
+        // wt has 3 elements, val has 2 — should return None instead of panicking
+        let result = knapsack(100, &[10, 20, 30], &[10, 20]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn knapsack_mismatched_val_longer_returns_none() {
+        let result = knapsack(100, &[10], &[10, 20]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn knapsack_zero_capacity() {
+        // No items can fit in zero capacity
+        let result = knapsack(0, &[10, 20], &[10, 20]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn knapsack_all_items_fit() {
+        let result = knapsack(100, &[10, 20, 30], &[10, 20, 30]).unwrap();
+        let total: usize = result.iter().map(|&i| [10, 20, 30][i]).sum();
+        assert_eq!(total, 60);
+        assert_eq!(result.len(), 3);
+    }
+
+    // --- pack_items_knapsack ---
+
+    #[test]
+    fn pack_items_knapsack_empty_returns_none() {
+        let result = pack_items_knapsack(&[], 100, 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pack_items_knapsack_no_items_fit_returns_none() {
+        // All items are too large for the capacity
+        let items = [Item::new(200, 10), Item::new(300, 10)];
+        let result = pack_items_knapsack(&items, 100, 1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn pack_items_knapsack_selects_fitting_items() {
+        let items = [Item::new(40, 10), Item::new(60, 10), Item::new(50, 10)];
+        let result = pack_items_knapsack(&items, 100, 1).unwrap();
+        let total_len: usize = result.iter().map(|&i| items[i].len).sum();
+        assert!(total_len <= 100);
+        assert!(!result.is_empty());
     }
 }

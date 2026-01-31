@@ -452,6 +452,18 @@ Phase 4 (mostly independent)
     - `load_kzg_settings()`: embedded trusted_setup.json loads successfully.
 - **Why:** `TryFrom<DataIntentDbRowSummary>` is the bridge between raw MySQL rows and in-memory `DataIntentSummary` structs used by the packing algorithm and balance calculations — its error path (invalid address length) had zero test coverage. The `metrics.rs` helper functions (`format_influx_tags`, `write_influx_line`, `write_influx_line_uint`) had only indirect coverage through higher-level integration tests; direct unit tests ensure edge cases like empty tags, negative values, and uint max are handled correctly. `lib.rs` had zero test coverage despite containing CLI argument parsing with 20+ configurable parameters, default values critical for production deployment, and the `load_kzg_settings` function that loads the embedded trusted setup at startup.
 
+### [x] 5.20 Replace last production assert_eq! in knapsack() and add knapsack/pack_items_knapsack tests
+- **File:** `bundler/src/packing.rs`
+- **Changes:**
+  - Replaced `assert_eq!(wt.len(), val.len())` in the private `knapsack()` function with an `if wt.len() != val.len() { return None; }` guard, preventing a panic if called with mismatched slice lengths. Changed return type from `Vec<usize>` to `Option<Vec<usize>>`.
+  - Updated `pack_items_knapsack` to propagate the `None` from `knapsack()` and also return `None` when the knapsack selects zero items (empty result), for consistency with `pack_items_brute_force` and `pack_items_greedy_sorted` which already return `None` in those cases.
+  - Updated existing proptest helpers to handle the new `Option` return type.
+  - Added 11 unit tests:
+    - `knapsack`: 7 tests — empty inputs, single item fits, single item too heavy, optimal subset selection, mismatched wt/val lengths (both directions), zero capacity.
+    - `pack_items_knapsack`: 3 tests — empty items returns None, no items fit returns None, selects fitting items.
+    - `knapsack_all_items_fit`: 1 test — all items within capacity are selected.
+- **Why:** This was the last `assert_eq!` in production code. While the only current caller (`pack_items_knapsack`) always passes equal-length slices, the function's public contract should handle invalid inputs gracefully rather than crashing the service. The `pack_items_knapsack` returning `Some(vec![])` for zero-selected-items was also inconsistent with the other packing functions' contract where `None` means "no viable packing found".
+
 ---
 
 ## Key Files Modified Across All Phases
