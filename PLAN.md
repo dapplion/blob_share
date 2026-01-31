@@ -215,6 +215,15 @@ Phase 4 (mostly independent)
   - Add 10 unit tests for `option_hex_vec.rs` serde module: serialize/deserialize for Some, None, empty bytes, roundtrip, invalid hex, and missing prefix cases.
 - **Why:** The `.unwrap()` in sender selection could panic in theory (though guarded by short-circuit `||`). Extracting it makes it testable and idiomatic. `option_hex_vec.rs` had zero test coverage despite being used for data serialization across the API.
 
+### [x] 5.3 Batch SQL bulk operations and add DataIntentTracker unit tests
+- **File:** `bundler/src/data_intent_tracker.rs`
+- **Changes:**
+  - Add `SQL_BATCH_SIZE` constant (500) and refactor four bulk SQL functions (`fetch_many_data_intent_db_full`, `mark_data_intents_as_inclusion_finalized`, `set_finalized_block_number`, `insert_many_intent_tx_inclusions`) to chunk IDs into batches, preventing MySQL `max_allowed_packet` / bind-variable overflow with large intent sets.
+  - Fix `mark_data_intents_as_inclusion_finalized` which incorrectly used `.fetch_all()` on an UPDATE statement (changed to `.execute()`).
+  - Add early-return for empty `ids` slices in `fetch_many_data_intent_db_full` and `insert_many_intent_tx_inclusions`.
+  - Add 10 unit tests for previously untested `DataIntentTracker` methods: `non_included_intents_total_cost` (3 tests), `non_included_intents_total_data_len` (2 tests), `get_all_intents` (2 tests), and `collect_metrics` (1 test).
+- **Why:** Unbounded `IN (...)` and `VALUES (...)` clauses could exceed MySQL's query size limits under production load. The `.fetch_all()` on UPDATE was also semantically incorrect.
+
 ---
 
 ## Key Files Modified Across All Phases

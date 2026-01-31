@@ -47,6 +47,10 @@ use crate::{
     BlobTxSummary, DataIntent,
 };
 
+/// Maximum number of IDs per SQL `IN (...)` or `VALUES (...)` clause to stay well within
+/// MySQL's `max_allowed_packet` and bind-variable limits.
+const SQL_BATCH_SIZE: usize = 500;
+
 #[derive(Default)]
 pub struct DataIntentTracker {
     // DateTime default = NaiveDateTime default = timestamp(0)
@@ -283,25 +287,35 @@ pub(crate) async fn fetch_many_data_intent_db_full(
     db_pool: &MySqlPool,
     ids: &[Uuid],
 ) -> Result<Vec<DataIntentDbRowFull>> {
-    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
-        r#"
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut all_rows = Vec::with_capacity(ids.len());
+
+    for chunk in ids.chunks(SQL_BATCH_SIZE) {
+        let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
+            r#"
 SELECT id, eth_address, data, data_len, data_hash, max_blob_gas_price, data_hash_signature, updated_at
 FROM data_intents
-WHERE id in
-    "#,
-    );
+WHERE id IN
+            "#,
+        );
 
-    // TODO: limit the amount of ids to not reach a limit
-    // TODO: try to use different API than `.push_tuples` since you only query by id
-    query_builder.push_tuples(ids.iter(), |mut b, id| {
-        b.push_bind(id);
-    });
+        query_builder.push_tuples(chunk.iter(), |mut b, id| {
+            b.push_bind(id);
+        });
 
-    let rows = query_builder.build().fetch_all(db_pool).await?;
+        let rows = query_builder.build().fetch_all(db_pool).await?;
 
-    rows.iter()
-        .map(|row| DataIntentDbRowFull::from_row(row).wrap_err("error decoding data_intent DB row"))
-        .collect::<Result<Vec<_>>>()
+        for row in &rows {
+            all_rows.push(
+                DataIntentDbRowFull::from_row(row).wrap_err("error decoding data_intent DB row")?,
+            );
+        }
+    }
+
+    Ok(all_rows)
 }
 
 pub(crate) async fn fetch_data_intent_db_is_known(db_pool: &MySqlPool, id: &Uuid) -> Result<bool> {
@@ -418,29 +432,27 @@ pub(crate) async fn mark_data_intents_as_inclusion_finalized(
     db_pool: &MySqlPool,
     ids: &[Uuid],
 ) -> Result<()> {
-    // Query builder below does not handle empty ids slice well
     if ids.is_empty() {
         return Ok(());
     }
 
-    // Bulk fetch all rows
-    let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
-        r#"
+    for chunk in ids.chunks(SQL_BATCH_SIZE) {
+        let mut query_builder: QueryBuilder<MySql> = QueryBuilder::new(
+            r#"
 UPDATE data_intents
 SET inclusion_finalized = TRUE
 WHERE id IN
-    "#,
-    );
+            "#,
+        );
 
-    // TODO: limit the amount of ids to not reach a limit
-    // TODO: try to use different API than `.push_tuples` since you only query by id
-    query_builder
-        .push_tuples(ids.iter(), |mut b, id| {
-            b.push_bind(id);
-        })
-        .build()
-        .fetch_all(db_pool)
-        .await?;
+        query_builder
+            .push_tuples(chunk.iter(), |mut b, id| {
+                b.push_bind(id);
+            })
+            .build()
+            .execute(db_pool)
+            .await?;
+    }
 
     Ok(())
 }
@@ -507,14 +519,17 @@ pub(crate) async fn set_finalized_block_number(
     }
 
     let block_number = block_number as u32;
-    let mut query_builder: QueryBuilder<MySql> =
-        QueryBuilder::new("UPDATE data_intents SET finalized_block_number = ");
-    query_builder.push_bind(block_number);
-    query_builder.push(" WHERE id IN ");
-    query_builder.push_tuples(ids.iter(), |mut b, id| {
-        b.push_bind(id);
-    });
-    query_builder.build().execute(db_pool).await?;
+
+    for chunk in ids.chunks(SQL_BATCH_SIZE) {
+        let mut query_builder: QueryBuilder<MySql> =
+            QueryBuilder::new("UPDATE data_intents SET finalized_block_number = ");
+        query_builder.push_bind(block_number);
+        query_builder.push(" WHERE id IN ");
+        query_builder.push_tuples(chunk.iter(), |mut b, id| {
+            b.push_bind(id);
+        });
+        query_builder.build().execute(db_pool).await?;
+    }
 
     Ok(())
 }
@@ -653,19 +668,27 @@ async fn insert_many_intent_tx_inclusions(
     ids: &[Uuid],
     blob_tx: &BlobTxSummary,
 ) -> Result<()> {
-    let mut query_builder =
-        QueryBuilder::new("INSERT INTO intent_inclusions (id, tx_hash, sender_address, nonce) ");
+    if ids.is_empty() {
+        return Ok(());
+    }
 
-    query_builder.push_values(ids, |mut b, id| {
-        b.push_bind(id)
-            .push_bind(blob_tx.tx_hash.to_fixed_bytes().to_vec())
-            .push_bind(blob_tx.from.to_fixed_bytes().to_vec())
-            .push_bind(blob_tx.nonce);
-    });
+    let tx_hash_bytes = blob_tx.tx_hash.to_fixed_bytes().to_vec();
+    let sender_bytes = blob_tx.from.to_fixed_bytes().to_vec();
 
-    let query = query_builder.build();
+    for chunk in ids.chunks(SQL_BATCH_SIZE) {
+        let mut query_builder = QueryBuilder::new(
+            "INSERT INTO intent_inclusions (id, tx_hash, sender_address, nonce) ",
+        );
 
-    query.execute(db_pool).await?;
+        query_builder.push_values(chunk, |mut b, id| {
+            b.push_bind(id)
+                .push_bind(tx_hash_bytes.clone())
+                .push_bind(sender_bytes.clone())
+                .push_bind(blob_tx.nonce);
+        });
+
+        query_builder.build().execute(db_pool).await?;
+    }
 
     Ok(())
 }
@@ -1113,5 +1136,174 @@ mod tests {
         // After cancel: cost is no longer counted
         tracker.remove_pending_intent(&id);
         assert_eq!(tracker.non_included_intents_total_cost(&from), 0);
+    }
+
+    fn make_summary_for_address(id: Uuid, from: Address, data_len: usize) -> DataIntentSummary {
+        DataIntentSummary {
+            id,
+            from,
+            data_hash: vec![0xcc; 32],
+            data_len,
+            max_blob_gas_price: 1000,
+            updated_at: DateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+            group_id: None,
+        }
+    }
+
+    #[test]
+    fn non_included_intents_total_cost_sums_only_non_included_for_address() {
+        let mut tracker = DataIntentTracker::default();
+        let addr_a = Address::random();
+        let addr_b = Address::random();
+        let tx_hash = H256::random();
+
+        // Two intents for addr_a, one included in a tx
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id1, make_summary_for_address(id1, addr_a, 100));
+        tracker
+            .pending_intents
+            .insert(id2, make_summary_for_address(id2, addr_a, 200));
+        // Mark id1 as included
+        tracker.cache_intent_inclusions.insert(id1, vec![tx_hash]);
+
+        // One intent for addr_b (not included)
+        let id3 = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id3, make_summary_for_address(id3, addr_b, 300));
+
+        // For addr_a: only id2 (non-included) should be counted
+        // data_len=200, max_blob_gas_price=1000 => max_cost = max(200,31)*1000 = 200_000
+        let cost_a = tracker.non_included_intents_total_cost(&addr_a);
+        assert_eq!(cost_a, 200 * 1000);
+
+        // For addr_b: id3 is non-included
+        let cost_b = tracker.non_included_intents_total_cost(&addr_b);
+        assert_eq!(cost_b, 300 * 1000);
+
+        // Unknown address returns 0
+        let cost_unknown = tracker.non_included_intents_total_cost(&Address::random());
+        assert_eq!(cost_unknown, 0);
+    }
+
+    #[test]
+    fn non_included_intents_total_cost_empty_tracker_returns_zero() {
+        let tracker = DataIntentTracker::default();
+        assert_eq!(
+            tracker.non_included_intents_total_cost(&Address::random()),
+            0
+        );
+    }
+
+    #[test]
+    fn non_included_intents_total_data_len_sums_only_non_included_for_address() {
+        let mut tracker = DataIntentTracker::default();
+        let addr = Address::random();
+        let tx_hash = H256::random();
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id1, make_summary_for_address(id1, addr, 100));
+        tracker
+            .pending_intents
+            .insert(id2, make_summary_for_address(id2, addr, 250));
+        tracker
+            .pending_intents
+            .insert(id3, make_summary_for_address(id3, addr, 400));
+
+        // Mark id2 as included
+        tracker.cache_intent_inclusions.insert(id2, vec![tx_hash]);
+
+        // Only id1 + id3 should be counted: 100 + 400 = 500
+        assert_eq!(tracker.non_included_intents_total_data_len(&addr), 500);
+    }
+
+    #[test]
+    fn non_included_intents_total_data_len_excludes_other_addresses() {
+        let mut tracker = DataIntentTracker::default();
+        let addr_a = Address::random();
+        let addr_b = Address::random();
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        tracker
+            .pending_intents
+            .insert(id1, make_summary_for_address(id1, addr_a, 100));
+        tracker
+            .pending_intents
+            .insert(id2, make_summary_for_address(id2, addr_b, 200));
+
+        assert_eq!(tracker.non_included_intents_total_data_len(&addr_a), 100);
+        assert_eq!(tracker.non_included_intents_total_data_len(&addr_b), 200);
+    }
+
+    #[test]
+    fn get_all_intents_returns_pending_with_inclusion_info() {
+        let mut tracker = DataIntentTracker::default();
+        let tx_hash_1 = H256::random();
+        let tx_hash_2 = H256::random();
+
+        // Intent with no inclusion
+        let id1 = Uuid::new_v4();
+        tracker.pending_intents.insert(id1, make_summary(id1));
+
+        // Intent included in one tx
+        let id2 = Uuid::new_v4();
+        tracker.pending_intents.insert(id2, make_summary(id2));
+        tracker.cache_intent_inclusions.insert(id2, vec![tx_hash_1]);
+
+        // Intent included in two txs (repricing)
+        let id3 = Uuid::new_v4();
+        tracker.pending_intents.insert(id3, make_summary(id3));
+        tracker
+            .cache_intent_inclusions
+            .insert(id3, vec![tx_hash_1, tx_hash_2]);
+
+        let all = tracker.get_all_intents();
+        assert_eq!(all.len(), 3);
+
+        // Find each intent in the results
+        let find = |id: Uuid| all.iter().find(|(s, _, _)| s.id == id).unwrap();
+
+        let (_, tx1, count1) = find(id1);
+        assert!(tx1.is_none());
+        assert_eq!(*count1, 0);
+
+        let (_, tx2, count2) = find(id2);
+        assert_eq!(*tx2, Some(tx_hash_1));
+        assert_eq!(*count2, 1);
+
+        let (_, tx3, count3) = find(id3);
+        // Last tx_hash should be returned
+        assert_eq!(*tx3, Some(tx_hash_2));
+        assert_eq!(*count3, 2);
+    }
+
+    #[test]
+    fn get_all_intents_empty_tracker() {
+        let tracker = DataIntentTracker::default();
+        assert!(tracker.get_all_intents().is_empty());
+    }
+
+    #[test]
+    fn collect_metrics_does_not_panic() {
+        let mut tracker = DataIntentTracker::default();
+
+        // Empty state
+        tracker.collect_metrics();
+
+        // With some data
+        let id = Uuid::new_v4();
+        let tx_hash = H256::random();
+        tracker.pending_intents.insert(id, make_summary(id));
+        tracker.included_intents.insert(tx_hash, vec![id]);
+
+        tracker.collect_metrics();
     }
 }
