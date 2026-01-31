@@ -295,6 +295,18 @@ Phase 4 (mostly independent)
   - Added 4 unit tests: `from_block_skips_malformed_blob_tx_from_sender`, `from_block_malformed_blob_tx_does_not_affect_valid_txs`, `from_block_malformed_blob_tx_from_non_sender_ignored`, `sync_block_clears_pending_for_malformed_blob_tx`.
 - **Why:** A single malformed blob transaction from a sender address (e.g., a third party sending a blob tx with unexpected input encoding) would cause `from_block` to return an error, crashing the entire block sync loop. The fix gracefully handles the error by logging a warning and still tracking the transaction for nonce accounting, preventing sync stalls.
 
+### [x] 5.9 Resolve stale TODO in drop_reorged_blocks and add reorg balance accounting tests
+- **File:** `bundler/src/sync.rs`
+- **Changes:**
+  - Resolved the stale `TODO: do accounting on the balances cache` comment in `drop_reorged_blocks` by replacing it with an explanatory note documenting why no cache accounting is needed: `balance_with_pending` recomputes dynamically from `unfinalized_head_chain` (trimmed during reorg) and `pending_transactions` (restored during reorg), while `finalized_balances` only changes during `maybe_advance_anchor_block`.
+  - Added 5 unit tests covering reorg balance accounting edge cases:
+    - `reorg_topup_only_block_adjusts_balance`: reorg that removes a topup-only block correctly reduces balance.
+    - `reorg_blob_tx_restores_pending_cost`: blob tx moves back to pending after reorg, balance stays consistent whether tx is pending or included.
+    - `reorg_and_reinclude_preserves_balance`: full cycle — include → reorg out → re-include in different block — balance is identical.
+    - `finalized_balances_unaffected_by_unfinalized_reorg`: confirms `anchor_block.finalized_balances` is never mutated by unfinalized block reorgs.
+    - `reorg_with_topup_and_blob_tx_in_same_block`: edge case where a block containing both a topup AND a blob tx for the same user is reorged out — both credit and cost are correctly reversed.
+- **Why:** The stale TODO in `drop_reorged_blocks` implied a potential balance accounting bug that didn't actually exist. The misleading comment could cause future developers to waste time investigating a non-issue or attempt unnecessary changes. Replacing it with a clear explanation and backing it with comprehensive tests documents the correctness invariant and prevents regressions.
+
 ---
 
 ## Key Files Modified Across All Phases

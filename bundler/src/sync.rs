@@ -514,7 +514,11 @@ impl BlockSync {
         let reorged_blocks = self.unfinalized_head_chain.split_off(new_head_index);
 
         for reorged_block in &reorged_blocks {
-            // TODO: do accounting on the balances cache
+            // Note: no balance cache accounting needed here. `balance_with_pending`
+            // recomputes dynamically from `unfinalized_head_chain` (which no longer
+            // contains the reorged blocks) and `pending_transactions` (which gets
+            // the blob txs restored below). `finalized_balances` only changes during
+            // `maybe_advance_anchor_block`, never during sync/reorg.
             for tx in &reorged_block.blob_txs {
                 self.pending_transactions
                     .entry(tx.from)
@@ -2525,5 +2529,221 @@ mod tests {
 
         // Should not panic regardless of metrics registry state
         sync.read().await.collect_metrics();
+    }
+
+    // --- Reorg balance accounting tests ---
+
+    #[tokio::test]
+    async fn reorg_topup_only_block_adjusts_balance() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        // Block 1: topup of 1000
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_topup_tx(user, 1000));
+        sync_next_block(&sync, &provider, block_1).await;
+        assert_eq!(sync.read().await.balance_with_pending(&user), 1000);
+
+        // Block 2a: another topup of 500
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        block_2a.transactions.push(generate_topup_tx(user, 500));
+        sync_next_block(&sync, &provider, block_2a).await;
+        assert_eq!(sync.read().await.balance_with_pending(&user), 1500);
+
+        // Reorg: block 2b replaces block 2a, no topup in 2b
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // The 500 topup from block 2a should be gone
+        assert_eq!(sync.read().await.balance_with_pending(&user), 1000);
+    }
+
+    #[tokio::test]
+    async fn reorg_blob_tx_restores_pending_cost() {
+        // Tests that when a blob tx is included in a block that gets reorged out:
+        // 1. The blob tx moves back to pending_transactions
+        // 2. balance_with_pending deducts its cost from pending (not from block inclusion)
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        const TOP_UP: i128 = 5 * BYTES_PER_BLOB as i128;
+        const NONCE0: u64 = 0;
+
+        // Block 1: topup
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_topup_tx(user, TOP_UP));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Register pending blob tx, then include it in block 2a
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(NONCE0, user));
+        let balance_with_pending_tx = sync.read().await.balance_with_pending(&user);
+
+        // Block 2a includes the blob tx
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        block_2a.transactions.push(generate_blob_tx(NONCE0, user));
+        sync_next_block(&sync, &provider, block_2a).await;
+        let balance_after_inclusion = sync.read().await.balance_with_pending(&user);
+
+        // Balance should be the same whether the tx is pending or included in a block
+        // (both deduct the cost from the user's balance)
+        assert_eq!(balance_with_pending_tx, balance_after_inclusion);
+
+        // Reorg: block 2b replaces block 2a (no blob tx in 2b)
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // Blob tx should be back in pending, balance unchanged
+        let balance_after_reorg = sync.read().await.balance_with_pending(&user);
+        assert_eq!(balance_after_reorg, balance_with_pending_tx);
+        assert_eq!(pending_tx_len(&sync).await, 1);
+    }
+
+    #[tokio::test]
+    async fn reorg_and_reinclude_preserves_balance() {
+        // Full cycle: include blob tx → reorg out → re-include in new block
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+        let hash_3b = get_hash(0x3b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        const TOP_UP: i128 = 5 * BYTES_PER_BLOB as i128;
+        const NONCE0: u64 = 0;
+
+        // Block 1: topup
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_topup_tx(user, TOP_UP));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Register and include blob tx in block 2a
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(NONCE0, user));
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        block_2a.transactions.push(generate_blob_tx(NONCE0, user));
+        sync_next_block(&sync, &provider, block_2a).await;
+        let balance_included = sync.read().await.balance_with_pending(&user);
+
+        // Reorg: block 2b without the blob tx
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // Re-include the blob tx in block 3b
+        let mut block_3b = generate_block(hash_2b, hash_3b, 3);
+        block_3b.transactions.push(generate_blob_tx(NONCE0, user));
+        sync_next_block(&sync, &provider, block_3b).await;
+
+        // Balance should be the same as when it was originally included
+        let balance_reincluded = sync.read().await.balance_with_pending(&user);
+        assert_eq!(balance_reincluded, balance_included);
+        assert_eq!(pending_tx_len(&sync).await, 0);
+    }
+
+    #[tokio::test]
+    async fn finalized_balances_unaffected_by_unfinalized_reorg() {
+        // Verify that finalized_balances (on anchor_block) are never mutated by reorgs
+        // of unfinalized blocks — only by maybe_advance_anchor_block.
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        // Block 1: topup of 1000
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1.transactions.push(generate_topup_tx(user, 1000));
+        sync_next_block(&sync, &provider, block_1).await;
+
+        // Block 2a: topup of 500
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        block_2a.transactions.push(generate_topup_tx(user, 500));
+        sync_next_block(&sync, &provider, block_2a).await;
+
+        // Before reorg: finalized_balances should be empty (nothing finalized yet)
+        assert!(sync.read().await.anchor_block.finalized_balances.is_empty());
+
+        // Reorg
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // After reorg: finalized_balances should still be empty
+        assert!(sync.read().await.anchor_block.finalized_balances.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reorg_with_topup_and_blob_tx_in_same_block() {
+        // Edge case: a block containing both a topup AND a blob tx for the same user
+        // gets reorged out. Both the topup credit and the blob tx cost must be
+        // correctly removed/restored.
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+        let hash_2a = get_hash(0x2a);
+        let hash_2b = get_hash(0x2b);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::with_blocks(&[generate_block(hash_1, hash_2b, 2)]);
+        let user = get_addr(1);
+
+        const INITIAL_TOP_UP: i128 = 10 * BYTES_PER_BLOB as i128;
+        const NONCE0: u64 = 0;
+
+        // Block 1: initial topup
+        let mut block_1 = generate_block(hash_0, hash_1, 1);
+        block_1
+            .transactions
+            .push(generate_topup_tx(user, INITIAL_TOP_UP));
+        sync_next_block(&sync, &provider, block_1).await;
+        let balance_after_topup = sync.read().await.balance_with_pending(&user);
+        assert_eq!(balance_after_topup, INITIAL_TOP_UP);
+
+        // Register pending blob tx
+        sync.write()
+            .await
+            .register_sent_blob_tx(generate_pending_blob_tx(NONCE0, user));
+        let balance_with_pending = sync.read().await.balance_with_pending(&user);
+
+        // Block 2a: another topup AND the blob tx included
+        let mut block_2a = generate_block(hash_1, hash_2a, 2);
+        block_2a.transactions.push(generate_topup_tx(user, 2000));
+        block_2a.transactions.push(generate_blob_tx(NONCE0, user));
+        sync_next_block(&sync, &provider, block_2a).await;
+
+        // Balance should be: INITIAL_TOP_UP + 2000 - blob_tx_cost_at_block_gas
+        // (no longer pending, now included)
+        let balance_after_block2a = sync.read().await.balance_with_pending(&user);
+        assert!(balance_after_block2a > balance_with_pending); // 2000 topup exceeds cost difference
+
+        // Reorg: block 2b replaces block 2a (empty block)
+        let block_2b = generate_block(hash_1, hash_2b, 2);
+        sync_next_block(&sync, &provider, block_2b).await;
+
+        // Both the 2000 topup and blob tx inclusion are gone.
+        // Blob tx is back in pending. Balance should match what it was before block 2a.
+        assert_eq!(
+            sync.read().await.balance_with_pending(&user),
+            balance_with_pending
+        );
+        assert_eq!(pending_tx_len(&sync).await, 1);
     }
 }
