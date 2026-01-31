@@ -17,7 +17,7 @@ IMPORTANT:
 - author unit tests for the change (or integration tests if more appropriate)
 - after making the changes to the files run the tests with `SQLX_OFFLINE=true cargo test --lib`
 - run `cargo fmt` and `SQLX_OFFLINE=true cargo clippy -- --deny warnings` and fix any issues
-- when tests pass, commit and push the changes
+- when tests pass, commit the changes. If you have SSH keys available (check ~/.ssh), also push
 - update PLAN.md when the task is done by changing `### [ ]` to `### [x]` for that task
 PROMPT
 }
@@ -51,7 +51,7 @@ while true; do
 
     echo "--- Iteration $ITERATION | Remaining: $LEFT ---"
 
-    claude --dangerously-skip-permissions -p "$(prompt)"
+    echo "$(prompt)" | claude --dangerously-skip-permissions
 
     echo ""
     echo "--- Iteration $ITERATION complete ---"

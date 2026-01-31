@@ -56,3 +56,18 @@ Options:
 ## Usage
 
 WIP / unpublished
+
+## Development
+
+See [CLAUDE.md](./CLAUDE.md) for project structure and build commands.
+
+### Autonomous development with Ralph Loop
+
+The project includes a [Ralph Loop](https://ghuntley.com/loop/) setup for autonomous AI-driven development. Tasks are tracked in [PLAN.md](./PLAN.md) using `### [ ]` / `### [x]` checkbox markers.
+
+```bash
+# Run in a VM for sandboxing (recommended)
+./ralph.sh
+```
+
+Run inside a sandboxed VM (e.g. OrbStack, Lima) since the script uses `--dangerously-skip-permissions`.
