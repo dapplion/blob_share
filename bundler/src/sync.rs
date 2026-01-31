@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     blob_tx_data::BlobTxSummary, debug, eth_provider::EthProvider, gas::GasConfig, info, metrics,
+    warn,
 };
 
 type Nonce = u64;
@@ -446,7 +447,7 @@ impl BlockSync {
     /// re-orgs gracefully, the caller should recursively fetch all necessary blocks until finding
     /// a known ancenstor.
     fn sync_next_head_parent_known(&mut self, block: BlockWithTxs) -> Result<SyncBlockOutcome> {
-        let block = BlockSummary::from_block(block, &self.config.target_addresses)?;
+        let block = BlockSummary::from_block(block, &self.config.target_addresses);
 
         if self.is_known_block(block.hash) {
             // Block already known
@@ -742,7 +743,7 @@ impl TopupTx {
 }
 
 impl BlockSummary {
-    fn from_block(block: BlockWithTxs, target_addresses: &HashSet<Address>) -> Result<Self> {
+    fn from_block(block: BlockWithTxs, target_addresses: &HashSet<Address>) -> Self {
         let mut topup_txs = vec![];
         let mut blob_txs = vec![];
         let mut sender_non_blob_txs = vec![];
@@ -757,25 +758,41 @@ impl BlockSummary {
                 }
             }
 
-            // TODO: Handle invalid blob tx errors more gracefully
             if target_addresses.contains(&tx.from) {
-                if let Some(blob_tx) = BlobTxSummary::from_tx(tx)? {
-                    blob_txs.push(blob_tx)
-                } else {
-                    // Track non-blob transactions from sender addresses (e.g. self-transfers
-                    // sent to resolve nonce deadlocks) so sync_block can clear their
-                    // pending_transactions entries.
-                    sender_non_blob_txs.push(NonBlobSenderTx {
-                        from: tx.from,
-                        nonce: tx.nonce.as_u64(),
-                        tx_hash: tx.hash,
-                        pending_placeholder: None,
-                    });
+                match BlobTxSummary::from_tx(tx) {
+                    Ok(Some(blob_tx)) => blob_txs.push(blob_tx),
+                    Ok(None) => {
+                        // Track non-blob transactions from sender addresses (e.g. self-transfers
+                        // sent to resolve nonce deadlocks) so sync_block can clear their
+                        // pending_transactions entries.
+                        sender_non_blob_txs.push(NonBlobSenderTx {
+                            from: tx.from,
+                            nonce: tx.nonce.as_u64(),
+                            tx_hash: tx.hash,
+                            pending_placeholder: None,
+                        });
+                    }
+                    Err(e) => {
+                        // Treat blob txs with unparseable input as non-blob sender txs so
+                        // nonce accounting still works. This can happen when a third party
+                        // sends a blob tx from a sender address with unexpected input format.
+                        warn!(
+                            "failed to parse blob tx {} from sender {}: {:#}. \
+                             Treating as non-blob sender tx for nonce accounting",
+                            tx.hash, tx.from, e
+                        );
+                        sender_non_blob_txs.push(NonBlobSenderTx {
+                            from: tx.from,
+                            nonce: tx.nonce.as_u64(),
+                            tx_hash: tx.hash,
+                            pending_placeholder: None,
+                        });
+                    }
                 }
             }
         }
 
-        Ok(Self {
+        Self {
             number: block.number,
             hash: block.hash,
             parent_hash: block.parent_hash,
@@ -783,7 +800,7 @@ impl BlockSummary {
             blob_txs,
             sender_non_blob_txs,
             gas: block.gas,
-        })
+        }
     }
 
     fn balance_delta(&self, address: &Address) -> i128 {
@@ -905,7 +922,7 @@ mod tests {
         block.transactions.push(generate_topup_tx(addr_2, 2));
         block.transactions.push(generate_topup_tx(addr_2, 2));
 
-        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
         assert_eq!(summary.balance_delta(&addr_1), 1);
         assert_eq!(summary.balance_delta(&addr_2), 2 * 2);
     }
@@ -1590,7 +1607,7 @@ mod tests {
         topup_tx2.value = 200.into();
         block.transactions.push(topup_tx2);
 
-        let summary = BlockSummary::from_block(block, &target_addrs).unwrap();
+        let summary = BlockSummary::from_block(block, &target_addrs);
         // Should detect topups to both sender addresses
         assert_eq!(summary.topup_txs.len(), 2);
         assert_eq!(summary.balance_delta(&user), 100 + 200);
@@ -1739,7 +1756,7 @@ mod tests {
             .transactions
             .push(generate_non_blob_sender_tx(ADDRESS_SENDER, 5, tx_hash));
 
-        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
 
         assert_eq!(summary.sender_non_blob_txs.len(), 1);
         assert_eq!(summary.sender_non_blob_txs[0].from, ADDRESS_SENDER);
@@ -1757,10 +1774,137 @@ mod tests {
             .transactions
             .push(generate_non_blob_sender_tx(random_addr, 0, tx_hash));
 
-        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER])).unwrap();
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
 
         // Should not be tracked — it's not from a sender address
         assert!(summary.sender_non_blob_txs.is_empty());
+    }
+
+    /// Creates a blob-typed transaction (type 3) from a sender address with invalid input
+    /// data that `BlobTxSummary::from_tx` cannot parse.
+    fn generate_malformed_blob_tx(sender: Address, nonce: u64, tx_hash: H256) -> Transaction {
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.from = sender;
+        tx.nonce = nonce.into();
+        tx.hash = tx_hash;
+        // Blob tx requires max_fee_per_gas, max_priority_fee_per_gas, and
+        // max_fee_per_blob_gas. Omit them to trigger a parse error.
+        tx.input = ethers::types::Bytes::from(vec![0xff, 0xfe]); // garbage input
+        tx
+    }
+
+    #[test]
+    fn from_block_skips_malformed_blob_tx_from_sender() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let tx_hash = get_hash(0xdd);
+        block
+            .transactions
+            .push(generate_malformed_blob_tx(ADDRESS_SENDER, 3, tx_hash));
+
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
+
+        // Malformed blob tx should not appear in blob_txs
+        assert!(summary.blob_txs.is_empty());
+        // But should be tracked as a non-blob sender tx for nonce accounting
+        assert_eq!(summary.sender_non_blob_txs.len(), 1);
+        assert_eq!(summary.sender_non_blob_txs[0].from, ADDRESS_SENDER);
+        assert_eq!(summary.sender_non_blob_txs[0].nonce, 3);
+        assert_eq!(summary.sender_non_blob_txs[0].tx_hash, tx_hash);
+    }
+
+    #[test]
+    fn from_block_malformed_blob_tx_does_not_affect_valid_txs() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let addr_user = get_addr(1);
+
+        // Add a valid blob tx first
+        block.transactions.push(generate_blob_tx(0, addr_user));
+        // Then add a malformed one
+        let bad_hash = get_hash(0xee);
+        block
+            .transactions
+            .push(generate_malformed_blob_tx(ADDRESS_SENDER, 1, bad_hash));
+        // And a topup
+        block.transactions.push(generate_topup_tx(addr_user, 100));
+
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
+
+        // Valid blob tx is parsed correctly
+        assert_eq!(summary.blob_txs.len(), 1);
+        assert_eq!(summary.blob_txs[0].nonce, 0);
+        // Malformed blob tx tracked as non-blob sender tx
+        assert_eq!(summary.sender_non_blob_txs.len(), 1);
+        assert_eq!(summary.sender_non_blob_txs[0].tx_hash, bad_hash);
+        // Topup is still tracked
+        assert_eq!(summary.topup_txs.len(), 1);
+        assert_eq!(summary.topup_txs[0].value, 100);
+    }
+
+    #[test]
+    fn from_block_malformed_blob_tx_from_non_sender_ignored() {
+        let mut block = generate_block(get_hash(0), get_hash(1), 1);
+        let non_sender = get_addr(99);
+        let tx_hash = get_hash(0xff);
+        block
+            .transactions
+            .push(generate_malformed_blob_tx(non_sender, 0, tx_hash));
+
+        let summary = BlockSummary::from_block(block, &HashSet::from([ADDRESS_SENDER]));
+
+        // Non-sender malformed blob tx should be completely ignored
+        assert!(summary.blob_txs.is_empty());
+        assert!(summary.sender_non_blob_txs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_block_clears_pending_for_malformed_blob_tx() {
+        let hash_0 = get_hash(0);
+        let hash_1 = get_hash(1);
+
+        let sync = new_block_sync(hash_0, 0);
+        let provider = MockEthereumProvider::default();
+
+        // Register a pending blob tx placeholder at nonce 0
+        let placeholder_gas = GasConfig {
+            max_priority_fee_per_gas: 10,
+            max_fee_per_gas: 200,
+            max_fee_per_blob_gas: 50,
+        };
+        {
+            let mut s = sync.write().await;
+            s.pending_transactions
+                .entry(ADDRESS_SENDER)
+                .or_default()
+                .insert(
+                    0,
+                    BlobTxSummary {
+                        participants: vec![],
+                        tx_hash: get_hash(0xaa),
+                        from: ADDRESS_SENDER,
+                        nonce: 0,
+                        used_bytes: 0,
+                        gas: placeholder_gas,
+                    },
+                );
+        }
+        assert_eq!(pending_tx_len(&sync).await, 1);
+
+        // Now sync a block containing a malformed blob tx at nonce 0.
+        // This simulates a scenario where the sender sent a blob tx that we can't parse
+        // (e.g., different input encoding). It should still clear the pending entry.
+        let malformed_tx_hash = get_hash(0xbb);
+        let mut block = generate_block(hash_0, hash_1, 1);
+        block.transactions.push(generate_malformed_blob_tx(
+            ADDRESS_SENDER,
+            0,
+            malformed_tx_hash,
+        ));
+
+        sync_next_block(&sync, &provider, block).await;
+
+        // Pending should be cleared — the malformed blob tx consumed nonce 0
+        assert_eq!(pending_tx_len(&sync).await, 0);
     }
 
     #[tokio::test]

@@ -286,6 +286,15 @@ Phase 4 (mostly independent)
     - Type conversions: 1 test — reth_rpc_types sidecar conversion roundtrip.
 - **Why:** The `reth_fork` module contains forked reth types for EIP-4844 blob transaction RLP encoding and decoding. This is critical infrastructure — encoding bugs would cause transaction rejections on the network. Both files had zero test coverage despite containing complex RLP serialization logic, signature handling, and unsafe transmute operations.
 
+### [x] 5.8 Handle invalid blob tx errors gracefully in block sync
+- **File:** `bundler/src/sync.rs`
+- **Changes:**
+  - In `BlockSummary::from_block`, replaced the `?` error propagation on `BlobTxSummary::from_tx(tx)` with a `match` that logs a warning and falls through to treat unparseable blob transactions as non-blob sender transactions for nonce accounting.
+  - Made `from_block` infallible (returns `Self` instead of `Result<Self>`) since it no longer has any fallible operations.
+  - Updated all call sites (1 production, 4 test) to remove `.unwrap()` / `?` on the return value.
+  - Added 4 unit tests: `from_block_skips_malformed_blob_tx_from_sender`, `from_block_malformed_blob_tx_does_not_affect_valid_txs`, `from_block_malformed_blob_tx_from_non_sender_ignored`, `sync_block_clears_pending_for_malformed_blob_tx`.
+- **Why:** A single malformed blob transaction from a sender address (e.g., a third party sending a blob tx with unexpected input encoding) would cause `from_block` to return an error, crashing the entire block sync loop. The fix gracefully handles the error by logging a warning and still tracking the transaction for nonce accounting, preventing sync stalls.
+
 ---
 
 ## Key Files Modified Across All Phases
