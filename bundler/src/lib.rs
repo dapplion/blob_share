@@ -21,6 +21,7 @@ use crate::{
     app::AppData,
     blob_sender_task::blob_sender_task,
     block_subscriber_task::block_subscriber_task,
+    consumer::BlobConsumer,
     evict_stale_intents_task::evict_stale_intents_task,
     explorer::register_explorer_service,
     metrics::{get_metrics, push_metrics_task},
@@ -183,6 +184,11 @@ pub struct Args {
     /// Set to 0 to disable eviction.
     #[arg(env, long, default_value_t = 24)]
     pub evict_stale_intent_hours: u64,
+
+    /// Beacon API URL (e.g. http://localhost:5052). Enables beacon consumer features
+    /// such as blob retrieval and decoding when set.
+    #[arg(env, long)]
+    pub beacon_api_url: Option<String>,
 }
 
 impl Args {
@@ -309,6 +315,19 @@ impl App {
             )
             .wrap_err("registering handlebars template")?;
 
+        let beacon_consumer = if let Some(ref beacon_api_url) = args.beacon_api_url {
+            let consumer = BlobConsumer::new(
+                beacon_api_url,
+                &args.eth_provider,
+                target_address,
+                target_address,
+            )?;
+            info!("Beacon consumer enabled with API URL: {}", beacon_api_url);
+            Some(consumer)
+        } else {
+            None
+        };
+
         let app_data = Arc::new(AppData::new(
             handlebars,
             config,
@@ -319,6 +338,7 @@ impl App {
             chain_id,
             DataIntentTracker::default(),
             sync,
+            beacon_consumer,
         ));
 
         info!(

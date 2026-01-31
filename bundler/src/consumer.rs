@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     beacon_api_client::{BeaconApiClient, Slot},
@@ -73,21 +73,35 @@ impl BlobConsumer {
             .get_blob_sidecars(block_slot, Some(&blob_indicies))
             .await?;
 
-        let datas_from_blob = blob_sidecars
+        // Build a map from blob index to decoded blob data to handle multi-blob transactions
+        let blob_data_by_index: HashMap<usize, Vec<u8>> = blob_sidecars
             .data
             .iter()
-            .map(|item| decode_blob_to_data(&item.blob))
-            .collect::<Vec<_>>();
+            .map(|item| (item.index as usize, decode_blob_to_data(&item.blob)))
+            .collect();
 
-        // TODO extend to more
-        assert_eq!(blob_sidecars.data.len(), 1);
-
-        Ok(participants
+        participants
             .iter()
             .map(|item| {
-                datas_from_blob[0][item.data_offset..item.data_offset + item.data_len].to_vec()
+                let blob_data = blob_data_by_index.get(&item.blob_index).ok_or_else(|| {
+                    eyre!(
+                        "blob index {} not found in sidecars response",
+                        item.blob_index
+                    )
+                })?;
+                let end = item.data_offset + item.data_len;
+                if end > blob_data.len() {
+                    bail!(
+                        "data range {}..{} exceeds blob {} decoded length {}",
+                        item.data_offset,
+                        end,
+                        item.blob_index,
+                        blob_data.len()
+                    );
+                }
+                Ok(blob_data[item.data_offset..end].to_vec())
             })
-            .collect::<Vec<_>>())
+            .collect::<Result<Vec<_>>>()
     }
 
     async fn slot_of_block(&self, timestamp: u64) -> Result<Slot> {
@@ -155,4 +169,244 @@ pub fn extract_data_participations_from_block(
     }
 
     block_data_chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_tx_data::{encode_blob_tx_data, BlobTxParticipant, BLOB_TX_TYPE};
+
+    fn gen_addr(b: u8) -> Address {
+        [b; 20].into()
+    }
+
+    /// Create a blob transaction with the given participants, sender, and fees.
+    fn make_blob_tx(from: Address, participants: &[BlobTxParticipant]) -> Transaction {
+        let input = encode_blob_tx_data(participants).unwrap();
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(BLOB_TX_TYPE.into());
+        tx.from = from;
+        tx.input = input.into();
+        tx.max_fee_per_gas = Some(1.into());
+        tx.max_priority_fee_per_gas = Some(1.into());
+        tx.other.insert("maxFeePerBlobGas".to_string(), "1".into());
+        tx
+    }
+
+    /// Create a non-blob (type 2) transaction.
+    fn make_regular_tx(from: Address) -> Transaction {
+        let mut tx = Transaction::default();
+        tx.transaction_type = Some(2.into());
+        tx.from = from;
+        tx
+    }
+
+    fn make_block(transactions: Vec<Transaction>) -> Block<Transaction> {
+        Block {
+            transactions,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extract_participations_empty_block() {
+        let block = make_block(vec![]);
+        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn extract_participations_no_blob_txs() {
+        let block = make_block(vec![make_regular_tx(gen_addr(0xAA))]);
+        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn extract_participations_blob_tx_wrong_sender() {
+        let participants = vec![BlobTxParticipant {
+            address: gen_addr(0xBB),
+            data_len: 1000,
+        }];
+        let block = make_block(vec![make_blob_tx(gen_addr(0xCC), &participants)]);
+        // target_address is 0xAA, but tx is from 0xCC
+        let chunks = extract_data_participations_from_block(&block, gen_addr(0xAA), gen_addr(0xBB));
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn extract_participations_no_matching_participant() {
+        let target = gen_addr(0xAA);
+        let participants = vec![BlobTxParticipant {
+            address: gen_addr(0xCC),
+            data_len: 500,
+        }];
+        let block = make_block(vec![make_blob_tx(target, &participants)]);
+        // Looking for participant 0xBB, but only 0xCC is in the tx
+        let chunks = extract_data_participations_from_block(&block, target, gen_addr(0xBB));
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn extract_participations_single_participant_match() {
+        let target = gen_addr(0xAA);
+        let participant = gen_addr(0xBB);
+        let participants = vec![BlobTxParticipant {
+            address: participant,
+            data_len: 2000,
+        }];
+        let block = make_block(vec![make_blob_tx(target, &participants)]);
+        let chunks = extract_data_participations_from_block(&block, target, participant);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].blob_index, 0);
+        assert_eq!(chunks[0].data_offset, 0);
+        assert_eq!(chunks[0].data_len, 2000);
+    }
+
+    #[test]
+    fn extract_participations_multiple_participants_one_match() {
+        let target = gen_addr(0xAA);
+        let participant = gen_addr(0xBB);
+        let participants = vec![
+            BlobTxParticipant {
+                address: gen_addr(0xCC),
+                data_len: 3000,
+            },
+            BlobTxParticipant {
+                address: participant,
+                data_len: 1500,
+            },
+        ];
+        let block = make_block(vec![make_blob_tx(target, &participants)]);
+        let chunks = extract_data_participations_from_block(&block, target, participant);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].blob_index, 0);
+        // data_offset = 3000 (after first participant's data)
+        assert_eq!(chunks[0].data_offset, 3000);
+        assert_eq!(chunks[0].data_len, 1500);
+    }
+
+    #[test]
+    fn extract_participations_multiple_matches_same_tx() {
+        let target = gen_addr(0xAA);
+        let participant = gen_addr(0xBB);
+        let participants = vec![
+            BlobTxParticipant {
+                address: participant,
+                data_len: 1000,
+            },
+            BlobTxParticipant {
+                address: gen_addr(0xCC),
+                data_len: 500,
+            },
+            BlobTxParticipant {
+                address: participant,
+                data_len: 2000,
+            },
+        ];
+        let block = make_block(vec![make_blob_tx(target, &participants)]);
+        let chunks = extract_data_participations_from_block(&block, target, participant);
+
+        assert_eq!(chunks.len(), 2);
+        // First match at offset 0
+        assert_eq!(chunks[0].blob_index, 0);
+        assert_eq!(chunks[0].data_offset, 0);
+        assert_eq!(chunks[0].data_len, 1000);
+        // Second match after 1000 + 500
+        assert_eq!(chunks[1].blob_index, 0);
+        assert_eq!(chunks[1].data_offset, 1500);
+        assert_eq!(chunks[1].data_len, 2000);
+    }
+
+    #[test]
+    fn extract_participations_blob_index_increments_across_blob_txs() {
+        let target = gen_addr(0xAA);
+        let participant = gen_addr(0xBB);
+
+        // First blob tx from a different sender (counts toward blob index)
+        let other_tx = make_blob_tx(
+            gen_addr(0xDD),
+            &[BlobTxParticipant {
+                address: gen_addr(0xEE),
+                data_len: 500,
+            }],
+        );
+
+        // Second blob tx from target with our participant
+        let target_tx = make_blob_tx(
+            target,
+            &[BlobTxParticipant {
+                address: participant,
+                data_len: 1000,
+            }],
+        );
+
+        let block = make_block(vec![other_tx, target_tx]);
+        let chunks = extract_data_participations_from_block(&block, target, participant);
+
+        assert_eq!(chunks.len(), 1);
+        // blob_index should be 1 because the first blob tx incremented it
+        assert_eq!(chunks[0].blob_index, 1);
+        assert_eq!(chunks[0].data_offset, 0);
+        assert_eq!(chunks[0].data_len, 1000);
+    }
+
+    #[test]
+    fn extract_participations_regular_tx_does_not_increment_blob_index() {
+        let target = gen_addr(0xAA);
+        let participant = gen_addr(0xBB);
+
+        // A regular (non-blob) tx should not increment the blob index
+        let regular_tx = make_regular_tx(gen_addr(0xDD));
+
+        let target_tx = make_blob_tx(
+            target,
+            &[BlobTxParticipant {
+                address: participant,
+                data_len: 1000,
+            }],
+        );
+
+        let block = make_block(vec![regular_tx, target_tx]);
+        let chunks = extract_data_participations_from_block(&block, target, participant);
+
+        assert_eq!(chunks.len(), 1);
+        // blob_index should still be 0 because the regular tx didn't count
+        assert_eq!(chunks[0].blob_index, 0);
+    }
+
+    #[test]
+    fn blob_consumer_new_valid_urls() {
+        let consumer = BlobConsumer::new(
+            "http://localhost:5052",
+            "http://localhost:8545",
+            gen_addr(0xAA),
+            gen_addr(0xBB),
+        );
+        assert!(consumer.is_ok());
+    }
+
+    #[test]
+    fn blob_consumer_new_invalid_beacon_url() {
+        let consumer = BlobConsumer::new(
+            "not-a-valid-url",
+            "http://localhost:8545",
+            gen_addr(0xAA),
+            gen_addr(0xBB),
+        );
+        assert!(consumer.is_err());
+    }
+
+    #[test]
+    fn blob_consumer_new_invalid_eth_url() {
+        let consumer = BlobConsumer::new(
+            "http://localhost:5052",
+            "not-a-valid-url",
+            gen_addr(0xAA),
+            gen_addr(0xBB),
+        );
+        assert!(consumer.is_err());
+    }
 }

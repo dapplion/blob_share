@@ -115,7 +115,7 @@ A reliable, self-operated blob bundling service where:
 
 ## Phase 3: Beacon Consumer + Explorer UI
 
-### [ ] 3.1 Wire beacon consumer into the service
+### [x] 3.1 Wire beacon consumer into the service
 - **Files:** `bundler/src/lib.rs` (Args), `bundler/src/app.rs` (AppData), `bundler/src/consumer.rs`
 - Add CLI args: `--beacon-api-url` (optional; enables consumer features when set)
 - Add `BlobConsumer` (or just `BeaconApiClient`) to `AppData`

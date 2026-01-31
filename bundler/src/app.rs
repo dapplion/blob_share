@@ -16,6 +16,7 @@ use tokio::sync::{Notify, RwLock};
 
 use crate::{
     anchor_block::persist_anchor_block_to_db,
+    consumer::BlobConsumer,
     data_intent_tracker::{
         delete_intent_inclusions_by_tx_hash, fetch_all_intents_with_inclusion_not_finalized,
         fetch_data_intent_db_full, fetch_data_intent_db_is_known, fetch_data_intent_inclusion,
@@ -46,6 +47,9 @@ pub(crate) struct AppData {
     pub sender_wallet: LocalWallet,
     pub notify: Notify,
     pub chain_id: u64,
+    /// Available when `--beacon-api-url` is set. Used by blob retrieval endpoints (task 3.2).
+    #[allow(dead_code)]
+    pub beacon_consumer: Option<BlobConsumer>,
     // Private members, to ensure consistent manipulation
     data_intent_tracker: RwLock<DataIntentTracker>,
     sync: RwLock<BlockSync>,
@@ -64,6 +68,7 @@ impl AppData {
         chain_id: u64,
         data_intent_tracker: DataIntentTracker,
         sync: BlockSync,
+        beacon_consumer: Option<BlobConsumer>,
     ) -> Self {
         AppData {
             handlebars,
@@ -74,6 +79,7 @@ impl AppData {
             sender_wallet,
             notify: <_>::default(),
             chain_id,
+            beacon_consumer,
             data_intent_tracker: data_intent_tracker.into(),
             sync: sync.into(),
         }
