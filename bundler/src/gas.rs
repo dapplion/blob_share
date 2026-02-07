@@ -19,18 +19,18 @@ impl GasConfig {
     /// Bump a GasConfig to re-price by at least +110% another gas config from a previous
     /// transaction.
     /// Ref: <https://docs.alchemy.com/docs/retrying-an-eip-1559-transaction>
-    pub fn reprice_to_at_least(&mut self, other_gas: GasConfig) {
+    pub fn reprice_to_at_least(&mut self, other_gas: GasConfig, bump_percent: u128) {
         self.max_priority_fee_per_gas = cmp::max(
             self.max_priority_fee_per_gas,
-            (11 * other_gas.max_priority_fee_per_gas) / 10,
+            ((100 + bump_percent) * other_gas.max_priority_fee_per_gas) / 100,
         );
         self.max_fee_per_gas = cmp::max(
             self.max_fee_per_gas, //
-            (11 * other_gas.max_fee_per_gas) / 10,
+            ((100 + bump_percent) * other_gas.max_fee_per_gas) / 100,
         );
         self.max_fee_per_blob_gas = cmp::max(
             self.max_fee_per_blob_gas,
-            (11 * other_gas.max_fee_per_blob_gas) / 10,
+            ((100 + bump_percent) * other_gas.max_fee_per_blob_gas) / 100,
         );
     }
 
